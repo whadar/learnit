@@ -20,11 +20,11 @@ app.configure(function(){
   app.use(app.router);
   app.use(express.static(__dirname + '/public'));
 });
-
+/*
 app.configure('development', function(){
   app.use(express.errorHandler());
 });
-
+*/
 app.get('/', routes.index);
 
 http.createServer(app).listen(app.get('port'), function(){
