@@ -7,7 +7,7 @@ var express = require('express')
   , routes = require('./routes')
   , http = require('http');
 
-var app = express();
+var app = express.createServer();
 
 app.configure(function(){
   app.set('port', process.env.PORT || 8080);
