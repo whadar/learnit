@@ -14,6 +14,7 @@ app.configure(function(){
     app.set('views', __dirname + '/views');
     app.set('view engine', 'jade');
     app.use(express.bodyParser());
+    app.use(express.logger());
     app.use(express.methodOverride());
     app.use(app.router);
     app.use(express.static(__dirname + '/public'));
@@ -30,7 +31,9 @@ app.configure('production', function(){
 // Routes
 
 app.get('/', routes.index);
-app.get('/aaa', routes.index);
+app.get('/aaa/:d',  function(req, res){
+    			res.send('user ' + req.params.d)
+    });
 
 var port = process.env.PORT || 5000;
 app.listen(port, function(){
