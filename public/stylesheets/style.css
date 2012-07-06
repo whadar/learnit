@@ -6,3 +6,9 @@ body {
 a {
   color: #00B7FF;
 }
+
+table,th,td {
+    border-color: blue;
+    border-style: solid;
+    border-width: 1px;
+}

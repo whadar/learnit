@@ -2,29 +2,76 @@
         "http://www.w3.org/TR/html4/loose.dtd">
 <html>
 <head>
+    <script type="text/javascript" src="javascripts/jquery.js"></script>
+    <script type="text/javascript">
+        function cell(x) {
+            return "<td>" +x +"</td>";
+        }
+        function fillTable() {
+            $("#cont").find("tr:gt(0)").remove();
+            var params = 'topic=' + $("#topic").val() + '&type=' + $("#type").val();
+
+            $.getJSON('/content/' + params, function(data){
+
+                $.each(data, function(i,item){
+                    $("table").append("<tr>" +
+                            cell(item.topic) +
+                            cell(item.type) +
+                            cell(item.title) +
+                            cell(item.author) +
+                            "/tr>");
+                });
+
+            });
+        }
+        $(document).ready(function() {
+            // do stuff when DOM is ready
+            //$("td").append("bbb");
+           /* $("input").click(function() {
+               alert("Hoho");
+            });*/
+            //$.getJSON('test.json', function(data)
+
+            //$("#topic").change(fillTable());
+            $("select").change(fillTable);
+            fillTable();
+
+        });
+
+    </script>
     <title>learnit: Content available</title>
     <link rel="stylesheet" href="stylesheets/style.css">
 </head>
 <body>
-    <form name="ContentLookup" action="/lookup" method="get">
-        Topic <input type="text" name="topic"/>
-        Type <input type="text" name="Type"/>
-        <input type="submit" value="Go!" />
 
-    </form>
-    <table>
-        <tr>
+        <label for="topic">Topic</label>
+        <select  id="topic"  >
+            <option>All</option>
+            <option>Spanish</option>
+            <option>Cooking</option>
+            <option>Traveling</option>
+            <option>Art</option>
+        </select>
+        <label for="type">Type</label>
+        <select id="type">
+            <option>All</option>
+            <option>Book</option>
+            <option>Podcast</option>
+            <option>Presentation</option>
+            <option>Blog</option>
+        </select>
+    <br><br>
+    <table id="cont">
+        <tr id="title_row">
             <th>Topic</th>
             <th>Type</th>
             <th>Title</th>
             <th>Author</th>
         </tr>
-        <tr>
-            <td>Spanish</td>
-            <td>Book</td>
-            <td>Spanish for intermediate learners</td>
-            <td>Cecilia Torres</td>
-        </tr>
+
     </table>
+
+
+
 </body>
 </html>

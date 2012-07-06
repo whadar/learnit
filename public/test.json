@@ -1,0 +1,17 @@
+{"items": [
+
+{
+    "topic": "Spanish",
+    "type": "Book",
+    "title": "Basic spanish",
+    "author": "Paul1"
+},
+{
+    "topic": "Spanish",
+    "type": "Podcast",
+    "title": "Intermediate",
+    "author": "dd"
+}
+]
+
+}
