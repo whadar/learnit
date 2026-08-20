@@ -7,3 +7,6 @@ data/ov_building_index.json
 data/amikam-dem.f32
 .sky-probe.mjs
 *-probe.mjs
+game/preview/_*.html
+game/tools/sim/_*.mjs
+game/shots/dbg*

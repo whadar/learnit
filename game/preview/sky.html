@@ -85,8 +85,10 @@ function props(ctx) {
       x + (r() - 0.5) * 2, y + ht + w * 0.27, z + (r() - 0.5) * 2, 1, 1, 1, ry);
     tk.rotation.z = Math.PI / 2;
     if (r() < 0.5) {   // a few east-side houses so the lane is enclosed
-      const x2 = LANE_X + 13 + r() * 4, y2 = h(x2, z);
-      add(box, plaster, x2, y2 + 1.7, z, 7 + r() * 3, 3.4, 7 + r() * 2, (r() - 0.5) * 0.2);
+      const x2 = LANE_X + 15 + r() * 5, y2 = h(x2, z), w2 = 7 + r() * 3, d2 = 7 + r() * 2;
+      const ry2 = (r() - 0.5) * 0.2;
+      add(box, plaster, x2, y2 + 1.7, z, w2, 3.4, d2, ry2);
+      add(roofGeo, tile, x2, y2 + 3.4, z, w2 * 1.18, w2 * 0.4, d2 * 1.18, ry2);
     }
   }
 
@@ -114,7 +116,7 @@ function props(ctx) {
   const oTr = new THREE.InstancedMesh(trGeo, trunk, M);
   for (let i = 0; i < M; i++) {
     const gx = i % 14, gz = (i / 14) | 0;
-    const x = LANE_X + 34 + gx * 10 + (r() - 0.5) * 2.5, z = -60 + gz * 10 + (r() - 0.5) * 2.5;
+    const x = LANE_X + 52 + gx * 10 + (r() - 0.5) * 2.5, z = -70 + gz * 10 + (r() - 0.5) * 2.5;
     const y = h(x, z), rad = 2.5 + r() * 1.1;
     olive.setMatrixAt(i, m4.compose(v.set(x, y + 2.3 + rad * 0.6, z), q4, s3.set(rad * 1.3, rad * 0.85, rad * 1.3)));
     oTr.setMatrixAt(i, m4.compose(v.set(x, y + 1.3, z), q4, s3.set(1.7, 2.6, 1.7)));
@@ -164,9 +166,9 @@ boot({
       establish: { pos: [330, h(330, 330) + 130, 330], look: [-70, h(-70, -110) + 12, -110], fov: 44 },
       // eye level at kart height, looking north up the lane: cypress and house shadows
       // stripe straight across the road
-      lane:      { pos: [24, h(24, 66) + 1.6, 66], look: [-46, h(-46, -170) + 12, -170], fov: 60 },
+      lane:      { pos: [17, h(17, -118) + 1.6, -118], look: [11, h(11, 150) + 10, 150], fov: 58 },
       // eye level, straight into the WNW sun
-      intosun:   { pos: [95, h(95, 20) + 1.6, 20], look: [-330, h(-330, -50) + 40, -50], fov: 58 },
+      intosun:   { pos: [34, h(34, -34) + 1.6, -34], look: [-366, h(-366, -94) + 96, -94], fov: 58 },
       // tilted up: cumulus deck, cirrus and the zenith gradient
       cloudscape:{ pos: [30, h(30, 90) + 3, 90], look: [-140, h(-140, -300) + 400, -300], fov: 66 },
       // long range to the SE, sun behind: aerial perspective stacking on the far ridges

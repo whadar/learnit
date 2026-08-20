@@ -150,7 +150,7 @@ function makeCloudTexture(size = 512, seed = 20250815) {
       for (let i = 0; i < 4; i++) { bill += amp * (1 - Math.abs(2 * n(uu, vv, f) - 1)); norm += amp; amp *= 0.5; f *= 2; }
       bill /= norm;
       const detail = fbm(u, v, 32, 3);
-      const clump = fbm(u * 0.5 + 0.11, v * 0.5 + 0.83, 2, 3);
+      const clump = fbm(u + 0.11, v + 0.83, 2, 3);
       const i4 = (y * size + x) * 4;
       data[i4] = clamp(base * 255, 0, 255);
       data[i4 + 1] = clamp(bill * 255, 0, 255);
@@ -204,14 +204,15 @@ const SKY_FRAG = /* glsl */`
 varying vec3 vWorldPosition, vSunDirection, vBetaR, vBetaM;
 varying float vSunE, vSunfade;
 
-uniform float uMieG;
+uniform float uMieG, uKnee;
+uniform vec3  uAureole;
 uniform vec3  uGroundHaze;
 uniform float uHorizonHaze;
 uniform vec3  uHazeTint;
 uniform float uExposure;
 
 uniform sampler2D uCloudTex;
-uniform float uCoverage, uCloudScale, uCloudOpacity, uShine, uCirrus;
+uniform float uCoverage, uCloudScale, uCloudOpacity, uShine, uCirrus, uAbsorb, uShadeStep;
 uniform vec2  uDrift;
 uniform vec3  uCloudLit, uCloudDark;
 
@@ -226,18 +227,49 @@ float hg( float c, float g ) {
   return ONE_OVER_FOURPI * ( ( 1.0 - g2 ) / pow( 1.0 - 2.0 * g * c + g2, 1.5 ) );
 }
 
-// density of the cumulus deck at a cloud-plane uv
+// Raw density of the cumulus deck at a cloud-plane uv. Two decorrelated taps of the same
+// tiling field hide the repeat; the clump channel punches holes of clear blue.
 float cloudField( vec2 uv ) {
   vec4 a = texture2D( uCloudTex, uv * 0.55 );
   vec4 b = texture2D( uCloudTex, uv * 1.43 + vec2( 0.31, 0.67 ) );
   float clump = a.a * 0.62 + b.a * 0.38;
-  float base  = a.r * 0.60 + b.g * 0.40;
-  clump = clump * clump * ( 3.0 - 2.0 * clump );          // punch holes of clear blue
+  clump = clump * clump * ( 3.0 - 2.0 * clump );
+  float base  = a.r * 0.58 + b.g * 0.42;
   float d = base * ( 0.30 + 1.45 * clump );
   #ifndef ENV_PASS
-    d -= 0.22 * b.b * ( 1.0 - clump );                     // erode the edges into cauliflower
+    d -= 0.11 * b.b * ( 1.0 - clump );
   #endif
   return d;
+}
+
+// Cheap single-scatter cumulus: thickness from the field, sun transmittance from a short
+// march toward the sun inside the deck, plus a powder term so cores go dark and edges glow.
+vec4 cumulus( vec2 uv, float cosTheta ) {
+  float d = cloudField( uv );
+  float t = ( d - uCoverage ) * 5.0;
+  if ( t <= 0.0 ) return vec4( 0.0 );
+
+  float alpha = clamp( t * 2.6, 0.0, 1.0 );
+  alpha = alpha * alpha * ( 3.0 - 2.0 * alpha );
+
+  vec3 col;
+#ifdef ENV_PASS
+  col = mix( uCloudDark, uCloudLit, 0.6 );
+#else
+  vec2 stp = normalize( vSunDirection.xz + vec2( 1e-4, 0.0 ) ) * uShadeStep;
+  float od = max( cloudField( uv + stp ) - uCoverage, 0.0 )
+           + max( cloudField( uv + stp * 2.4 ) - uCoverage, 0.0 ) * 0.70
+           + max( cloudField( uv + stp * 4.6 ) - uCoverage, 0.0 ) * 0.42;
+  float T = exp( - uAbsorb * od );
+  float powder = 1.0 - exp( - 2.6 * t );
+
+  col = uCloudDark * ( 0.55 + 0.45 * powder );
+  col += uCloudLit * T * mix( 0.30, 1.0, powder );
+  // forward scattering: thin edges in front of the sun light up silver
+  float fwd = pow( max( cosTheta, 0.0 ), 9.0 );
+  col += uCloudLit * fwd * uShine * ( 0.25 + 0.9 * ( 1.0 - alpha ) );
+#endif
+  return vec4( col, alpha );
 }
 
 void main() {
@@ -263,49 +295,42 @@ void main() {
   // --- dry Mediterranean horizon haze: whiten and desaturate the bottom of the dome ------
   float hz = 1.0 - smoothstep( -0.012, 0.135, direction.y );
   vec3 hazeCol = mix( sky, uHazeTint * ( 0.35 + 0.65 * dot( sky, vec3( 0.33 ) ) ), 0.75 );
-  hazeCol = mix( hazeCol, uHazeTint * 1.25, pow( max( cosTheta, 0.0 ), 4.0 ) * 0.45 );
+  hazeCol = mix( hazeCol, uHazeTint * 1.2, pow( max( cosTheta, 0.0 ), 6.0 ) * 0.35 );
   sky = mix( sky, hazeCol, hz * uHorizonHaze );
 
   // --- clouds ----------------------------------------------------------------------------
-  float above = smoothstep( 0.0, 0.055, direction.y );
+  float above = smoothstep( 0.012, 0.10, direction.y );
   if ( above > 0.001 ) {
-    vec2 pl = direction.xz / max( direction.y, 0.018 );
+    vec2 pl = direction.xz / max( direction.y, 0.055 );
 
     #ifndef ENV_PASS
-    // high cirrus first, they sit behind the cumulus deck
+    // a thin cirrus veil sits behind the cumulus deck
     if ( uCirrus > 0.001 ) {
-      vec2 cu = pl * uCloudScale * 0.26 * vec2( 0.42, 1.7 ) + uDrift * 0.35;
-      float w = texture2D( uCloudTex, cu ).r * 0.7 + texture2D( uCloudTex, cu * 2.3 + 0.4 ).g * 0.3;
-      float wisp = smoothstep( 0.52, 0.86, 1.0 - abs( 2.0 * w - 1.0 ) );
-      vec3 cirrusCol = mix( uCloudLit * 0.9, uCloudLit * 1.35, pow( max( cosTheta, 0.0 ), 6.0 ) );
-      sky = mix( sky, mix( cirrusCol, sky, 0.25 ), wisp * uCirrus * above );
+      vec2 cu = pl * uCloudScale * 0.30 * vec2( 0.62, 1.35 ) + uDrift * 0.35;
+      float w = texture2D( uCloudTex, cu ).r * 0.65 + texture2D( uCloudTex, cu * 2.1 + 0.4 ).g * 0.35;
+      float wisp = smoothstep( 0.50, 0.80, 1.0 - abs( 2.0 * w - 1.0 ) );
+      wisp *= smoothstep( 0.08, 0.34, direction.y );
+      sky = mix( sky, mix( uCloudLit * 0.55, sky, 0.35 ), wisp * uCirrus );
     }
     #endif
 
-    vec2 uv = pl * uCloudScale + uDrift;
-    float d = cloudField( uv );
-    float dens = smoothstep( uCoverage, uCoverage + 0.075, d );
-
-    if ( dens > 0.001 ) {
-      // fake self-shadowing: step toward the sun in the cloud plane
-      vec2 toSun = normalize( vSunDirection.xz + vec2( 1e-4, 0.0 ) );
-      float d2 = cloudField( uv + toSun * 0.030 );
-      float d3 = cloudField( uv + toSun * 0.075 );
-      float shade = clamp( 0.30 + 5.5 * ( d - d2 ) + 2.6 * ( d - d3 ), 0.0, 1.0 );
-      shade = shade * shade * ( 3.0 - 2.0 * shade );
-      // tops catch the sun, bases stay in their own shadow
-      shade = mix( shade, 1.0, 0.30 * smoothstep( 0.25, 0.0, vSunDirection.y ) );
-
-      vec3 col = mix( uCloudDark, uCloudLit, shade );
-      float fwd = pow( max( cosTheta, 0.0 ), 8.0 );
-      col += uCloudLit * fwd * ( 0.25 + 0.85 * ( 1.0 - dens ) ) * uShine;
-
-      // distant clouds sink into the same haze the hills do
-      float far = 1.0 - smoothstep( 0.03, 0.42, direction.y );
-      col = mix( col, mix( sky, uHazeTint * 0.9, 0.45 ), far * 0.85 );
-
-      sky = mix( sky, col, dens * uCloudOpacity * above );
+    vec4 cl = cumulus( pl * uCloudScale + uDrift, cosTheta );
+    if ( cl.a > 0.001 ) {
+      // distant clouds sink into the same haze the far hills do
+      float far = 1.0 - smoothstep( 0.03, 0.40, direction.y );
+      cl.rgb = mix( cl.rgb, mix( sky, uHazeTint * 0.95, 0.45 ), far * 0.85 );
+      sky = mix( sky, cl.rgb, cl.a * uCloudOpacity * above );
     }
+  }
+
+  // The Mie aureole around a low sun is golden, not white; tint it and roll off the
+  // highlight so a quarter of the frame does not clip to flat paper.
+  float aur = pow( max( cosTheta, 0.0 ), 7.0 );
+  sky *= mix( vec3( 1.0 ), uAureole, aur * 0.55 );
+  {
+    float L = dot( sky, vec3( 0.2126, 0.7152, 0.0722 ) );
+    float Lc = L <= 1.0 ? L : 1.0 + ( L - 1.0 ) / ( 1.0 + ( L - 1.0 ) * uKnee );
+    sky *= Lc / max( L, 1e-4 );
   }
 
   // --- solar disc with limb darkening + glow ---------------------------------------------
@@ -315,9 +340,9 @@ void main() {
   float limb = 1.0 - 0.62 * ( 1.0 - sqrt( max( 0.0, 1.0 - u * u ) ) );
   float disc = smoothstep( sunR, sunR * 0.82, ang ) * limb;
   vec3 sunCol = vSunE * Fex;
-  float glow = pow( max( cosTheta, 0.0 ), 1600.0 ) * 6.0
-             + pow( max( cosTheta, 0.0 ), 220.0 ) * 0.16
-             + pow( max( cosTheta, 0.0 ), 18.0 ) * 0.030;
+  float glow = pow( max( cosTheta, 0.0 ), 2600.0 ) * 5.0
+             + pow( max( cosTheta, 0.0 ), 400.0 ) * 0.10
+             + pow( max( cosTheta, 0.0 ), 40.0 ) * 0.014;
   #ifdef ENV_PASS
     // The directional light already carries the beam; a sun in the IBL would blow out
     // every diffuse surface in the scene.
@@ -328,7 +353,7 @@ void main() {
   sky += sunCol * glow * 0.04;
 
   // --- below the horizon: dusty ground haze so terrain edges never show black ------------
-  float below = smoothstep( 0.0, -0.09, direction.y );
+  float below = smoothstep( -0.01, -0.22, direction.y );
   sky = mix( sky, uGroundHaze, below );
 
   sky *= uExposure;
@@ -356,8 +381,8 @@ export const TIME_PRESETS = {
 const DEFAULTS = {
   lat: 32.5636, lon: 35.0208, tz: 3, dayOfYear: 196,   // mid-July, Israel summer time
   hour: 17.15,
-  turbidity: 3.1, rayleigh: 2.75, mie: 0.0035, mieG: 0.80,
-  coverage: 0.52, cloudScale: 0.36, cloudOpacity: 1.0, cirrus: 0.10,
+  turbidity: 2.7, rayleigh: 2.9, mie: 0.0022, mieG: 0.72,
+  coverage: 0.45, cloudScale: 0.22, cloudOpacity: 1.0, cirrus: 0.055,
   cloudSeed: 20250815, cloudSpeed: 0.0022,
   exposure: 0.34,
 };
@@ -373,7 +398,7 @@ const DEFAULTS = {
 export function createSky(engine, world, opts = {}) {
   const o = { ...DEFAULTS, ...opts };
 
-  const cloudTex = makeCloudTexture(opts.cloudRes ?? 512, o.cloudSeed);
+  const cloudTex = makeCloudTexture(opts.cloudRes ?? 768, o.cloudSeed);
 
   const uniforms = {
     uSunDir:      { value: new THREE.Vector3(0.4, 0.5, -0.7).normalize() },
@@ -381,6 +406,8 @@ export function createSky(engine, world, opts = {}) {
     uTurbidity:   { value: o.turbidity },
     uMie:         { value: o.mie },
     uMieG:        { value: o.mieG },
+    uKnee:        { value: 0.62 },
+    uAureole:     { value: new THREE.Color(1.10, 0.99, 0.82) },
     uGroundHaze:  { value: new THREE.Color(0.34, 0.30, 0.25) },
     uHorizonHaze: { value: 0.30 },
     uHazeTint:    { value: new THREE.Color(0.72, 0.74, 0.76) },
@@ -390,6 +417,8 @@ export function createSky(engine, world, opts = {}) {
     uCloudScale:  { value: o.cloudScale },
     uCloudOpacity:{ value: o.cloudOpacity },
     uShine:       { value: 0.55 },
+    uAbsorb:      { value: 4.5 },
+    uShadeStep:   { value: 0.019 },
     uCirrus:      { value: o.cirrus },
     uDrift:       { value: new THREE.Vector2(0, 0) },
     uCloudLit:    { value: new THREE.Color(1, 1, 1) },
@@ -463,15 +492,25 @@ export function createSky(engine, world, opts = {}) {
       lerp(warm[2], 1, mixBack * 1.25),
       THREE.LinearSRGBColorSpace);
     const up = clamp(Math.sin(Math.max(elev, 0) * D2R), 0, 1);
-    palette.sunIntensity = (opts.sunIntensity ?? 4.3) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
+    palette.sunIntensity = (opts.sunIntensity ?? 4.9) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
 
     // Sky colours straight out of the same scattering model the dome renders.
     const ex = uniforms.uExposure.value;
-    const zen = skyRadiance(_d.set(0, 1, 0), state.sunDir, p).map(v => v * ex);
-    const side = sunDirection(4, (state.azimuth + 100) % 360, _d);
-    const hor = skyRadiance(side, state.sunDir, p).map(v => v * ex);
+    const knee = uniforms.uKnee.value;
+    const expose = a => {
+      const v = a.map(x => x * ex);
+      const L = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+      if (L <= 1) return v;
+      const k = (1 + (L - 1) / (1 + (L - 1) * knee)) / L;
+      return v.map(x => x * k);
+    };
+    const zen = expose(skyRadiance(_d.set(0, 1, 0), state.sunDir, p));
+    // Airlight away from the sun is the dim end of the range; the shader interpolates
+    // toward `hazeSun` as the view swings back into the beam.
+    const side = sunDirection(3, (state.azimuth + 155) % 360, _d);
+    const hor = expose(skyRadiance(side, state.sunDir, p));
     const towardSun = sunDirection(5, state.azimuth, _d);
-    const hsun = skyRadiance(towardSun, state.sunDir, p).map(v => v * ex);
+    const hsun = expose(skyRadiance(towardSun, state.sunDir, p));
 
     const clampCol = (c, arr, boost = 1) => c.setRGB(
       clamp(arr[0] * boost, 0, 4), clamp(arr[1] * boost, 0, 4), clamp(arr[2] * boost, 0, 4),
@@ -488,32 +527,32 @@ export function createSky(engine, world, opts = {}) {
       palette.horizon.lerp(_dust, 0.40);
     }
     uniforms.uHazeTint.value.copy(palette.horizon).multiplyScalar(1.05);
-    uniforms.uGroundHaze.value.copy(palette.horizon).lerp(new THREE.Color(0.34, 0.27, 0.20), 0.45);
+    uniforms.uGroundHaze.value.copy(palette.horizon).lerp(new THREE.Color(0.42, 0.34, 0.25), 0.20);
 
     // Ambient: sky dome above, warm terra-rossa / dry-stubble bounce below.
     palette.skyAmbient.copy(palette.zenith).lerp(palette.horizon, 0.35);
     const skyLum = 0.2126 * palette.skyAmbient.r + 0.7152 * palette.skyAmbient.g + 0.0722 * palette.skyAmbient.b;
     palette.skyAmbient.multiplyScalar(1 / Math.max(skyLum, 1e-3));
     palette.groundAmbient.setRGB(0.42, 0.30, 0.20, THREE.LinearSRGBColorSpace);
-    palette.hemiIntensity = (opts.hemiIntensity ?? 0.22) * lerp(0.55, 1, smoothstep(-2, 18, elev));
+    palette.hemiIntensity = (opts.hemiIntensity ?? 0.16) * lerp(0.55, 1, smoothstep(-2, 18, elev));
 
     palette.bounceColor.setRGB(0.55, 0.34, 0.22, THREE.LinearSRGBColorSpace)
       .lerp(palette.sunColor, 0.25);
-    palette.bounceIntensity = (opts.bounceIntensity ?? 0.30) * lerp(0.3, 1, smoothstep(0, 25, elev));
+    palette.bounceIntensity = (opts.bounceIntensity ?? 0.22) * lerp(0.3, 1, smoothstep(0, 25, elev));
 
-    palette.hazeDensity = opts.hazeDensity ?? 0.00145;
-    palette.hazeSunAmount = 0.35 + 0.35 * smoothstep(30, 4, elev);
+    palette.hazeDensity = opts.hazeDensity ?? 0.00105;
+    palette.hazeSunAmount = 0.55 + 0.30 * smoothstep(30, 4, elev);
 
     // Cloud lighting tracks the sun so the deck never looks pasted on. Values are given in
     // pre-exposure radiance (the dome multiplies by uExposure at the end), so a sunlit top
     // lands well above 1.0 after tonemapping — cumulus must read as white, not putty.
     const gain = 1 / Math.max(ex, 1e-3);
     uniforms.uCloudLit.value.copy(palette.sunColor)
-      .lerp(new THREE.Color(1, 1, 1), 0.45)
-      .multiplyScalar(gain * lerp(1.5, 2.6, smoothstep(2, 30, elev)));
-    uniforms.uCloudDark.value.copy(palette.zenith).multiplyScalar(1 / Math.max(ex, 1e-3))
-      .lerp(new THREE.Color(0.52, 0.58, 0.72).multiplyScalar(gain * 0.6), 0.6)
-      .lerp(palette.sunColor.clone().multiplyScalar(gain * 0.55), 0.12 + 0.22 * smoothstep(20, 0, elev));
+      .lerp(new THREE.Color(1, 1, 1), 0.70)
+      .multiplyScalar(gain * lerp(1.7, 3.3, smoothstep(2, 30, elev)));
+    uniforms.uCloudDark.value.copy(palette.zenith).lerp(palette.horizon, 0.40)
+      .multiplyScalar(gain * 0.42)
+      .lerp(palette.sunColor.clone().multiplyScalar(gain * 0.30), 0.18 + 0.25 * smoothstep(20, 0, elev));
     uniforms.uShine.value = lerp(0.35, 0.8, smoothstep(25, 3, elev));
     uniforms.uHorizonHaze.value = 0.26 + 0.22 * smoothstep(25, 3, elev);
   }

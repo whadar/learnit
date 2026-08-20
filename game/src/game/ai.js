@@ -1,0 +1,854 @@
+/**
+ * Kat Racing — opponent AI.
+ *
+ * Three layers:
+ *
+ *  1. `buildRacingLine(track)` — an optimised line around the circuit. A minimum-curvature
+ *     relaxation inside the legal corridor produces out-in-out geometry on its own; a
+ *     per-corner "late apex" shift then delays the apex of any corner that leads onto a
+ *     straight, because exit speed is worth more than entry speed there. A speed profile is
+ *     precomputed from curvature, banking, surface grip and gradient with a backward
+ *     (braking) and forward (traction) pass, so the AI brakes at the right *distance*
+ *     instead of the right *moment*.
+ *
+ *  2. The driver — every opponent runs the player's `createVehicle()` physics and is steered
+ *     with a pure-pursuit controller plus a Stanley cross-track term, throttled from the
+ *     speed profile, and drifts through anything tight enough to charge a mini-turbo. It
+ *     hunts boost pads and item boxes, uses items with some sense, dodges hazards, and
+ *     overtakes by shifting its line offset rather than driving through a rival.
+ *
+ *  3. Personality — four difficulty tiers times per-racer traits (pace, aggression,
+ *     consistency, mistake rate, preferred line offset) so a twelve-kart field argues with
+ *     itself instead of running as a train. Catch-up assist is mild, capped and honest: it
+ *     nudges the target speed of the trailing pack and never touches the player.
+ *
+ *   const ai = createAI(world, track, (i, o) => createVehicle(world, track, o), { count: 11 });
+ *   ai.update(dt);                       // steers and steps every AI vehicle
+ *
+ * No Three.js import: this file runs unchanged in the browser and in tools/sim/race.mjs.
+ */
+import { clamp, lerp, smoothstep, damp, wrapPi, rng, TAU } from '../core/mathx.js';
+import { createVehicle, makeFallbackTrack, DEFAULTS } from '../physics/vehicle.js';
+import { surfaceInfo } from '../physics/collision.js';
+
+const G = 9.81;
+const EPS = 1e-6;
+
+/* ==================================================================== track == */
+
+export function validTrack(t) {
+  if (!t) return false;
+  try {
+    if (typeof t.sample !== 'function' || typeof t.nearest !== 'function') return false;
+    if (!Number.isFinite(t.length) || t.length < 20) return false;
+    const s = t.sample(0), n = t.nearest({ x: 0, y: 0, z: 0 });
+    return !!(s && s.pos && Number.isFinite(s.pos.x) && n && Number.isFinite(n.s));
+  } catch (e) { return false; }
+}
+
+/** The real course when it exists, a closed loop over the real terrain when it does not. */
+export function resolveTrack(world, track, opts = {}) {
+  if (validTrack(track)) return track;
+  try { return makeFallbackTrack(world, opts); } catch (e) { return null; }
+}
+
+/* ============================================================== racing line == */
+
+/**
+ * @param {object} track  buildTrack() result
+ * @param {object} opts   corridor + vehicle limits used to build the speed profile
+ * @returns {object} line { at(s), speedAt(s), offsetAt(s), curvatureAt(s), headingAt(s), stats }
+ */
+export function buildRacingLine(track, opts = {}) {
+  const O = Object.assign({
+    ds: 3.0,               // centre-line sampling step
+    margin: 1.75,          // metres of tarmac kept between the line and the edge
+    minHalf: 0.8,
+    iterations: 900,       // Gauss-Seidel sweeps of the min-curvature relaxation
+    relax: 0.42,
+    apexShift: 8.5,        // metres the apex is delayed on a corner that leads to a straight
+    apexLook: 80,
+    smooth: 2,
+    // vehicle envelope (defaults track src/physics/vehicle.js)
+    latGrip: 1.22,         // measured: the kart holds ~1.2 g on clean tarmac (tools/sim skidpad)
+    bankAssist: 0.55,      // how much of the banking angle is worth extra lateral grip
+    accelLimit: 8.5,       // m/s^2 available for acceleration at low speed
+    brakeLimit: 10.5,      // m/s^2 available for braking
+    topSpeed: DEFAULTS.topSpeed,
+    speedCap: 1.06,        // the profile may ask for a little more than topSpeed (boosts)
+    minSpeed: 6.0,
+    dragK: DEFAULTS.dragCdA / DEFAULTS.mass,
+    passes: 3,
+  }, opts);
+
+  const len = track.length;
+  const N = Math.max(32, Math.round(len / O.ds));
+  const ds = len / N;
+
+  const cx = new Float64Array(N), cy = new Float64Array(N), cz = new Float64Array(N);
+  const nx = new Float64Array(N), nz = new Float64Array(N);
+  const hw = new Float64Array(N), wid = new Float64Array(N);
+  const bank = new Float64Array(N), mu = new Float64Array(N);
+
+  for (let i = 0; i < N; i++) {
+    let sm;
+    try { sm = track.sample(i * ds); } catch (e) { sm = null; }
+    if (!sm || !sm.pos) sm = { pos: { x: 0, y: 0, z: 0 }, tangent: { x: 0, y: 0, z: 1 }, normal: { x: 1, y: 0, z: 0 }, width: 12, banking: 0, surface: 'tarmac' };
+    cx[i] = sm.pos.x; cy[i] = sm.pos.y; cz[i] = sm.pos.z;
+    const nl = Math.hypot(sm.normal.x, sm.normal.z) || 1;
+    nx[i] = sm.normal.x / nl; nz[i] = sm.normal.z / nl;
+    const w = Math.max(4, sm.width || 12);
+    wid[i] = w;
+    hw[i] = Math.max(O.minHalf, w * 0.5 - O.margin);
+    bank[i] = sm.banking || 0;
+    const si = surfaceInfo(sm.surface || 'tarmac');
+    mu[i] = O.latGrip * (si ? si.grip : 1);
+  }
+
+  /* ---- minimum-curvature relaxation inside the corridor ---- */
+  const off = new Float64Array(N);
+  for (let it = 0; it < O.iterations; it++) {
+    for (let i = 0; i < N; i++) {
+      const a = (i - 1 + N) % N, b = (i + 1) % N;
+      const ax = cx[a] + nx[a] * off[a], az = cz[a] + nz[a] * off[a];
+      const bx = cx[b] + nx[b] * off[b], bz = cz[b] + nz[b] * off[b];
+      const mx = (ax + bx) * 0.5, mz = (az + bz) * 0.5;
+      const t = (mx - cx[i]) * nx[i] + (mz - cz[i]) * nz[i];
+      off[i] = clamp(lerp(off[i], t, O.relax), -hw[i], hw[i]);
+    }
+  }
+
+  /* ---- geometry of the relaxed line ---- */
+  const px = new Float64Array(N), py = new Float64Array(N), pz = new Float64Array(N);
+  const seg = new Float64Array(N);       // length of segment i -> i+1
+  const head = new Float64Array(N);      // heading of that segment (atan2(dx, dz))
+  const curv = new Float64Array(N);      // signed rad/m, positive = the way positive steer turns
+  const grade = new Float64Array(N);     // sin(slope), positive = uphill
+
+  function rebuild() {
+    for (let i = 0; i < N; i++) { px[i] = cx[i] + nx[i] * off[i]; py[i] = cy[i]; pz[i] = cz[i] + nz[i] * off[i]; }
+    for (let i = 0; i < N; i++) {
+      const j = (i + 1) % N;
+      const dx = px[j] - px[i], dz = pz[j] - pz[i], dy = py[j] - py[i];
+      const l = Math.hypot(dx, dz) || EPS;
+      seg[i] = Math.hypot(dx, dy, dz) || EPS;
+      head[i] = Math.atan2(dx, dz);
+      grade[i] = dy / seg[i];
+    }
+    for (let i = 0; i < N; i++) {
+      const a = (i - 1 + N) % N;
+      const dh = wrapPi(head[i] - head[a]);
+      curv[i] = dh / (0.5 * (seg[i] + seg[a]) || EPS);
+    }
+    // curvature is noisy at 3 m spacing; a light smooth keeps the speed profile sane
+    for (let pass = 0; pass < 2; pass++) {
+      const src = Float64Array.from(curv);
+      for (let i = 0; i < N; i++) curv[i] = src[(i - 1 + N) % N] * 0.25 + src[i] * 0.5 + src[(i + 1) % N] * 0.25;
+    }
+  }
+  rebuild();
+
+  /* ---- late apex: delay the apex of corners that lead onto a straight ---- */
+  if (O.apexShift > 0) {
+    const aheadK = new Float64Array(N);
+    const win = Math.max(2, Math.round(O.apexLook / ds));
+    for (let i = 0; i < N; i++) {
+      let sum = 0;
+      for (let k = 1; k <= win; k++) sum += Math.abs(curv[(i + k) % N]);
+      aheadK[i] = sum / win;
+    }
+    let kRef = 0;
+    for (let i = 0; i < N; i++) kRef = Math.max(kRef, Math.abs(curv[i]));
+    kRef = Math.max(kRef, 0.01);
+    const shifted = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const cornerNow = clamp(Math.abs(curv[i]) / (kRef * 0.35), 0, 1);
+      const straightAhead = 1 - clamp(aheadK[i] / (kRef * 0.28), 0, 1);
+      const d = O.apexShift * cornerNow * straightAhead;      // metres to delay by
+      // read the offset from *earlier* on the lap: the apex now arrives later
+      const u = i - d / ds;
+      const i0 = Math.floor(u), f = u - i0;
+      const a = off[((i0 % N) + N) % N], b = off[(((i0 + 1) % N) + N) % N];
+      shifted[i] = clamp(lerp(a, b, f), -hw[i], hw[i]);
+    }
+    off.set(shifted);
+    for (let pass = 0; pass < O.smooth; pass++) {
+      const src = Float64Array.from(off);
+      for (let i = 0; i < N; i++) {
+        off[i] = clamp(src[(i - 1 + N) % N] * 0.25 + src[i] * 0.5 + src[(i + 1) % N] * 0.25, -hw[i], hw[i]);
+      }
+    }
+    rebuild();
+  }
+
+  /* ---- speed profile ---- */
+  const vmax = new Float64Array(N);
+  const cap = O.topSpeed * O.speedCap;
+  for (let i = 0; i < N; i++) {
+    const k = Math.abs(curv[i]);
+    // banking pays for part of the lateral load; treat it as extra available mu
+    const aLat = mu[i] * G * (1 + O.bankAssist * Math.abs(Math.sin(bank[i])));
+    const v = k > 1e-5 ? Math.sqrt(aLat / k) : cap;
+    vmax[i] = clamp(v, O.minSpeed, cap);
+  }
+  const spd = Float64Array.from(vmax);
+
+  const gripCircle = (i, v) => {
+    // whatever lateral grip the corner is already using is not available for accel/brake
+    const aLat = Math.abs(curv[i]) * v * v;
+    const total = mu[i] * G;
+    return Math.sqrt(Math.max(0, total * total - aLat * aLat)) / Math.max(total, EPS);
+  };
+  for (let pass = 0; pass < O.passes; pass++) {
+    // backward: brake early enough for the corner ahead (and note that uphill braking is easier)
+    for (let n = N; n > 0; n--) {
+      const i = n % N, j = (i + 1) % N;
+      const frac = gripCircle(i, spd[i]);
+      const a = O.brakeLimit * (0.35 + 0.65 * frac) + G * grade[i];
+      const lim = Math.sqrt(Math.max(0, spd[j] * spd[j] + 2 * Math.max(a, 1.0) * seg[i]));
+      if (lim < spd[i]) spd[i] = Math.max(lim, O.minSpeed);
+    }
+    // forward: traction and drag limit how fast the exit can be
+    for (let n = 0; n < N; n++) {
+      const i = n % N, h = (i - 1 + N) % N;
+      const frac = gripCircle(i, spd[i]);
+      const v = spd[h];
+      const accel = O.accelLimit * (0.3 + 0.7 * frac) * clamp(1 - (v / cap) ** 2, 0.06, 1)
+        - O.dragK * v * v - G * grade[h];
+      const lim = Math.sqrt(Math.max(0, v * v + 2 * Math.max(accel, 0.15) * seg[h]));
+      if (lim < spd[i]) spd[i] = Math.max(lim, O.minSpeed);
+    }
+  }
+
+  /* ---- sampling ---- */
+  const idx = s => {
+    let u = (s / ds) % N; if (u < 0) u += N;
+    const i = Math.floor(u);
+    return { i, j: (i + 1) % N, f: u - i };
+  };
+  const _out = { x: 0, y: 0, z: 0, nx: 0, nz: 0, tx: 0, tz: 0, offset: 0, curvature: 0, speed: 0, width: 12, heading: 0, radius: 1e6 };
+  function at(s, out = _out) {
+    const { i, j, f } = idx(s);
+    out.x = lerp(px[i], px[j], f); out.y = lerp(py[i], py[j], f); out.z = lerp(pz[i], pz[j], f);
+    out.nx = lerp(nx[i], nx[j], f); out.nz = lerp(nz[i], nz[j], f);
+    const nl = Math.hypot(out.nx, out.nz) || 1; out.nx /= nl; out.nz /= nl;
+    out.heading = head[i] + wrapPi(head[j] - head[i]) * f;
+    out.tx = Math.sin(out.heading); out.tz = Math.cos(out.heading);
+    out.offset = lerp(off[i], off[j], f);
+    out.curvature = lerp(curv[i], curv[j], f);
+    out.speed = lerp(spd[i], spd[j], f);
+    out.width = lerp(wid[i], wid[j], f);
+    out.radius = 1 / Math.max(Math.abs(out.curvature), 1e-5);
+    return out;
+  }
+  const speedAt = s => { const { i, j, f } = idx(s); return lerp(spd[i], spd[j], f); };
+  const offsetAt = s => { const { i, j, f } = idx(s); return lerp(off[i], off[j], f); };
+  const curvatureAt = s => { const { i, j, f } = idx(s); return lerp(curv[i], curv[j], f); };
+  const headingAt = s => { const { i, j, f } = idx(s); return head[i] + wrapPi(head[j] - head[i]) * f; };
+  /** Signed heading change from s over `win` metres — the sign a corner steers in. */
+  const turnOver = (s, win) => wrapPi(headingAt(s + win) - headingAt(s));
+  /** Mean |curvature| over a window, for "is there a corner coming" questions. */
+  function meanCurvature(s0, s1) {
+    const n = Math.max(2, Math.round(Math.abs(s1 - s0) / ds));
+    let sum = 0;
+    for (let k = 0; k < n; k++) sum += Math.abs(curvatureAt(s0 + (s1 - s0) * (k / n)));
+    return sum / n;
+  }
+  /** Signed mean curvature — which way the next `win` metres bend, on average. */
+  function bend(s0, win) {
+    const n = Math.max(2, Math.round(win / ds));
+    let sum = 0;
+    for (let k = 0; k < n; k++) sum += curvatureAt(s0 + win * (k / n));
+    return sum / n;
+  }
+
+  let lineLen = 0, est = 0, vmin = Infinity, vmaxs = 0, vsum = 0, minR = Infinity;
+  for (let i = 0; i < N; i++) {
+    lineLen += seg[i]; est += seg[i] / Math.max(spd[i], 1);
+    vmin = Math.min(vmin, spd[i]); vmaxs = Math.max(vmaxs, spd[i]); vsum += spd[i];
+    minR = Math.min(minR, 1 / Math.max(Math.abs(curv[i]), 1e-5));
+  }
+
+  return {
+    N, ds, length: len, lineLength: lineLen,
+    offset: off, curvature: curv, speed: spd, segment: seg, heading: head, halfWidth: hw,
+    point(i) { const k = ((i % N) + N) % N; return { x: px[k], y: py[k], z: pz[k] }; },
+    at, speedAt, offsetAt, curvatureAt, headingAt, turnOver, meanCurvature, bend,
+    stats: {
+      estLap: est, minSpeed: vmin, maxSpeed: vmaxs, meanSpeed: vsum / N, minRadius: minR,
+      maxOffset: Math.max(...Array.from(off, Math.abs)),
+    },
+  };
+}
+
+/* =============================================================== difficulty == */
+
+/** Four tiers. `speed` scales the profile, the rest scale skill and patience. */
+export const TIERS = [
+  { id: 'sunday', name: 'Sunday Driver', speed: 0.855, look: 1.20, brake: 0.84, drift: 0.30, item: 0.35, mistake: 2.4, catch: 1.15, react: 0.30 },
+  { id: 'club', name: 'Club Racer', speed: 0.912, look: 1.10, brake: 0.91, drift: 0.60, item: 0.60, mistake: 1.5, catch: 1.00, react: 0.20 },
+  { id: 'pro', name: 'Pro', speed: 0.962, look: 1.02, brake: 0.97, drift: 0.85, item: 0.85, mistake: 0.8, catch: 0.80, react: 0.13 },
+  { id: 'ace', name: 'Ace', speed: 1.000, look: 0.96, brake: 1.00, drift: 1.00, item: 1.00, mistake: 0.4, catch: 0.60, react: 0.08 },
+];
+export const tierByName = n => TIERS.find(t => t.id === n) || TIERS[2];
+
+/** Difficulty presets: how the field's tiers are drawn for a 12-kart grid. */
+export const DIFFICULTY = {
+  50: [0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2],
+  100: [0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3],
+  150: [1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3],
+  200: [2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
+};
+
+/* ==================================================================== the AI == */
+
+/**
+ * @param {object} world      WorldData
+ * @param {object} track      buildTrack() result (a fallback loop is substituted if absent)
+ * @param {Function} vehicleFactory (index, opts) => createVehicle(...)
+ * @param {object} opts       { count, vehicles, grid, seed, items, difficulty, tiers, line }
+ * @returns {{ racers: Array, update: Function }}
+ */
+export function createAI(world, track, vehicleFactory, opts = {}) {
+  const O = Object.assign({
+    count: 11,
+    seed: 20250820,
+    difficulty: 150,
+    tiers: null,               // explicit per-racer tier indices
+    items: null,               // createItemSystem() instance
+    line: null,                // prebuilt racing line (shared with the race / HUD)
+    lineOpts: null,
+    vehicles: null,            // pre-made vehicles (race.js makes the whole field at once)
+    grid: null,                // [{pos, rot}] starting slots
+    ids: null, names: null, stats: null,
+    vehicleOpts: {},
+    // steering gains (tuned in tools/sim/race.mjs)
+    aimBase: 4.6, aimGain: 0.56, aimMin: 6.0, aimMax: 21.0,
+    stanley: 0.42, crossGain: 0.85, yawDamp: 0.055,
+    driftSkill: 1.0,       // global multiplier on how willing the field is to drift
+    driftMaxSpeed: 16.5,   // m/s: above this a slide costs more grip than the mini-turbo pays
+    driftCornerV: 15.0,    // only corners the profile takes below this are worth a drift
+    rubberBand: true,
+    catchMax: 0.060,           // +6.0 % target speed when far behind …
+    leadDrag: 0.028,           // … and -2.8 % when running away with it
+    catchBoost: true,          // rare, small, capped catch-up boost
+    step: true,                // call vehicle.update() ourselves
+  }, opts);
+
+  const trk = resolveTrack(world, track, { seed: O.seed }) || track;
+  const len = trk.length;
+  const line = O.line || buildRacingLine(trk, O.lineOpts || {});
+  const rand = rng(O.seed >>> 0);
+
+  /* ---- points of interest, resolved into track space once ---- */
+  const pads = [];
+  for (const p of (trk.boostPads || [])) {
+    const pos = p.pos || p;
+    try { const n = trk.nearest(pos); pads.push({ pos, s: n.s, lateral: n.lateral, radius: p.radius || 3.5 }); } catch (e) { /* skip */ }
+  }
+  const boxSlots = [];
+  for (const b of (trk.itemBoxes || [])) {
+    const pos = b.pos || b;
+    try {
+      const n = trk.nearest(pos);
+      boxSlots.push({ pos, s: b.s ?? n.s, lateral: b.lateral ?? n.lateral });
+    } catch (e) { /* skip */ }
+  }
+
+  const dS = (a, b) => { let d = a - b; while (d > len * 0.5) d -= len; while (d < -len * 0.5) d += len; return d; };
+
+  /* ---- the field ---- */
+  const tiers = O.tiers || (DIFFICULTY[O.difficulty] || DIFFICULTY[150]);
+  const racers = [];
+  for (let i = 0; i < O.count; i++) {
+    const ti = clamp(Array.isArray(tiers) ? (tiers[i % tiers.length] | 0) : 2, 0, TIERS.length - 1);
+    const tier = TIERS[ti];
+    const r0 = rand(), r1 = rand(), r2 = rand(), r3 = rand(), r4 = rand();
+    const stats = O.stats?.[i] || null;
+    // roster stats (0..5) nudge the personality so the grid matches the character select
+    const sSpeed = stats ? (stats.speed - 3.25) / 5 : 0;
+    const sHandling = stats ? (stats.handling - 3.25) / 5 : 0;
+    const sDrift = stats ? (stats.drift - 3.25) / 5 : 0;
+    const person = {
+      pace: 1 + (r0 - 0.5) * 0.030 + sSpeed * 0.05,
+      aggression: clamp(0.25 + r1 * 0.7 + (stats ? (stats.weight - 3) * 0.04 : 0), 0, 1),
+      consistency: clamp(0.35 + r2 * 0.6 + sHandling * 0.4, 0.05, 1),
+      lineOffset: (r3 - 0.5) * 2.6 * (1.25 - clamp(0.35 + r2 * 0.6, 0, 1)),
+      driftLove: clamp(0.35 + r4 * 0.65 + sDrift * 0.5, 0, 1.2),
+      launch: 0.16 + r1 * 0.55,          // seconds before GO that the throttle goes down
+      itemDelay: 0.25 + r2 * 1.5,
+    };
+    const v = O.vehicles?.[i] || vehicleFactory?.(i, Object.assign({ seed: (O.seed + i * 7919) >>> 0 }, O.vehicleOpts))
+      || createVehicle(world, trk, Object.assign({ seed: (O.seed + i * 7919) >>> 0 }, O.vehicleOpts));
+    const slot = O.grid?.[i] || trk.startGrid?.[i % Math.max(1, (trk.startGrid || [1]).length)];
+    if (slot && O.vehicles == null) { try { v.reset(slot.pos, slot.rot); } catch (e) { /* keep the default */ } }
+    racers.push({
+      index: i,
+      id: O.ids?.[i] || ('cpu' + i),
+      name: O.names?.[i] || ('CPU ' + (i + 1)),
+      vehicle: v, tier, tierIndex: ti, personality: person,
+      isPlayer: false, isAI: true,
+      rand: rng((O.seed ^ (i * 2654435761)) >>> 0),
+      input: { throttle: 0, brake: 0, steer: 0, drift: 0, item: 0, look: 0 },
+      s: 0, lateral: 0, progress: 0, place: i + 1, targetSpeed: 0, speedScale: 1, catchup: 1,
+      avoid: 0, attract: 0, mistake: { t: 2 + rand() * 6, kind: null, left: 0, steer: 0, pace: 1 },
+      drift: { on: false, dir: 0, t: 0, cool: 0, want: 0 },
+      hold: 0, useTimer: 0, boostCool: 0, react: 0, aim: { s: 0, lat: 0 },
+      offTrackTime: 0, stats: { drifts: 0, miniturbos: 0, items: 0, mistakes: 0, catchBoosts: 0 },
+    });
+  }
+
+  /* ---- shared race context (race.js keeps this fresh; we can also derive it) ---- */
+  let field = racers;               // every racer on track, player included
+  let leaderProgress = 0;
+  let gate = { racing: true, tMinus: 0, go: true };
+
+  function setField(list) { field = (list && list.length) ? list : racers; }
+  function setGate(g) { gate = Object.assign({ racing: true, tMinus: 0, go: true }, g || {}); }
+
+  /* -------------------------------------------------------------- steering -- */
+
+  const _l1 = { x: 0, y: 0, z: 0, nx: 0, nz: 0, tx: 0, tz: 0, offset: 0, curvature: 0, speed: 0, width: 12, heading: 0, radius: 1e6 };
+  const _l2 = Object.assign({}, _l1);
+
+  function rivalPressure(r) {
+    // nearest rival ahead and behind, in track space
+    let ahead = null, behind = null, aheadD = 1e9, behindD = 1e9;
+    for (const o of field) {
+      if (o === r || !o.vehicle) continue;
+      const d = dS(o.s, r.s);
+      const lat = (o.lateral ?? 0) - (r.lateral ?? 0);
+      if (d > 0 && d < aheadD) { aheadD = d; ahead = { r: o, d, lat }; }
+      if (d < 0 && -d < behindD) { behindD = -d; behind = { r: o, d: -d, lat }; }
+    }
+    return { ahead, behind };
+  }
+
+  function chooseAvoid(r, near, dt) {
+    const { ahead } = near;
+    let want = 0;
+    if (ahead && ahead.d < 26 && Math.abs(ahead.lat) < 3.6) {
+      const p = r.personality;
+      const closing = r.vehicle.state.forwardSpeed - (ahead.r.vehicle?.state.forwardSpeed ?? 0);
+      const drafting = ahead.d > 8 && ahead.d < 15 && closing < 1.2 && p.aggression < 0.55;
+      if (!drafting) {
+        // pass on whichever side has room; break ties with personality
+        const room = line.at(r.s + 20, _l2);
+        const half = room.width * 0.5 - 1.6;
+        const mine = r.lateral ?? 0, his = (ahead.r.lateral ?? 0);
+        const leftRoom = half + his, rightRoom = half - his;     // space either side of the rival
+        let side = his > 0 ? -1 : 1;
+        if (Math.abs(his) < 0.8) side = Math.sign(mine || p.lineOffset || 1) || 1;
+        if (side < 0 && leftRoom < 3.4) side = 1;
+        if (side > 0 && rightRoom < 3.4) side = -1;
+        const urgency = clamp((26 - ahead.d) / 18, 0, 1) * (0.55 + 0.75 * p.aggression);
+        want = side * clamp(3.0 * urgency, 0, half - 0.4);
+      }
+    }
+    // side-by-side: don't share the same metre of tarmac
+    for (const o of field) {
+      if (o === r || !o.vehicle) continue;
+      const d = dS(o.s, r.s);
+      if (Math.abs(d) > 4.2) continue;
+      const lat = (o.lateral ?? 0) - (r.lateral ?? 0);
+      if (Math.abs(lat) < 2.4) want += -Math.sign(lat || 1) * (2.4 - Math.abs(lat)) * 0.9;
+    }
+    r.avoid = damp(r.avoid, clamp(want, -6, 6), 3.4, dt);
+    return r.avoid;
+  }
+
+  function chooseAttract(r, dt) {
+    let want = 0, bestScore = 0;
+    const spd = Math.max(r.vehicle.state.forwardSpeed, 4);
+    const reach = clamp(spd * 1.7, 18, 45);
+    const baseLat = line.offsetAt(r.s + 12);
+    // A pad or a box is only worth a detour if it is nearly on the line already: leaving the
+    // racing line to fetch one costs more than it pays.
+    const consider = (s, lat, weight, maxDetour) => {
+      const d = dS(s, r.s);
+      if (d < 5 || d > reach) return;
+      const detour = Math.abs(lat - baseLat);
+      if (detour > maxDetour) return;
+      const score = weight * (1 - detour / maxDetour) * (1 - clamp(d / reach, 0, 1) * 0.4);
+      if (score > bestScore) { bestScore = score; want = clamp(lat - baseLat, -maxDetour, maxDetour); }
+    };
+    for (const p of pads) consider(p.s, p.lateral, 1.0, 3.4);
+    if (O.items) {
+      let hud = null;
+      try { hud = O.items.hud(r.vehicle); } catch (e) { hud = null; }
+      if (hud && !hud.item && !hud.spinning) {
+        for (const b of O.items.boxes) { if (b.active) consider(b.s, b.lateral ?? 0, 0.9, 3.0); }
+      }
+    }
+    r.attract = damp(r.attract, clamp(want, -3.4, 3.4), 2.2, dt);
+    return r.attract;
+  }
+
+  function hazardDodge(r) {
+    if (!O.items) return 0;
+    let push = 0;
+    const st = r.vehicle.state;
+    const scan = (list, rad) => {
+      for (const h of list) {
+        if (!h || h.dead || !h.pos) continue;
+        if (h.owner === r.vehicle) continue;
+        const dx = h.pos.x - st.pos.x, dz = h.pos.z - st.pos.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 34) continue;
+        const fwdDot = dx * Math.sin(st.yaw) + dz * Math.cos(st.yaw);
+        if (fwdDot < -2) continue;
+        const side = dx * Math.cos(st.yaw) - dz * Math.sin(st.yaw);
+        const near = clamp(1 - d / 34, 0, 1);
+        if (Math.abs(side) < (h.radius || rad) + 2.4) push += -Math.sign(side || 1) * 3.2 * near * near;
+      }
+    };
+    try { scan(O.items.hazards || [], 2.0); scan(O.items.projectiles || [], 1.8); } catch (e) { /* ignore */ }
+    return clamp(push, -4, 4);
+  }
+
+  /* ---------------------------------------------------------------- items --- */
+
+  function useItems(r, dt, near) {
+    const items = O.items;
+    if (!items) return;
+    let hud;
+    try { hud = items.hud(r.vehicle); } catch (e) { return; }
+    if (!hud || !hud.item) { r.hold = 0; return; }
+    r.hold += dt;
+    const def = items.ITEMS?.[hud.item];
+    if (!def) return;
+    const skill = r.tier.item;
+    const p = r.personality;
+    const wait = p.itemDelay * (1.6 - skill);
+    if (r.hold < wait * 0.35) return;
+
+    const behind = near.behind && near.behind.d < 24 ? near.behind : null;
+    const ahead = near.ahead && near.ahead.d < 70 ? near.ahead : null;
+    const threat = incomingThreat(r);
+    const straight = Math.abs(line.bend(r.s + 6, 60)) < 0.006 && line.meanCurvature(r.s, r.s + 55) < 0.010;
+    const kind = def.kind;
+    let fire = false, backwards = false;
+
+    if (kind === 'shield') {
+      // hold the pan out as a shield; throw it back at whoever is right behind
+      if (threat || (behind && behind.d < 13 && r.rand() < 0.6 + 0.4 * skill)) { fire = true; backwards = true; }
+      else if (r.hold > 6 && !behind) { fire = true; backwards = false; }
+    } else if (kind === 'drop') {
+      if (threat) { fire = true; backwards = true; }
+      else if (r.hold > wait + 1.2) { fire = true; backwards = true; }
+    } else if (kind === 'shot') {
+      if (def.orbit > 1) {
+        if (ahead && ahead.d < 40 && Math.abs(ahead.lat) < 5) fire = true;
+        else if (behind && behind.d < 12 && r.rand() < 0.3) { fire = true; backwards = true; }
+        else if (r.hold > 5) fire = true;
+      } else {
+        if (threat && r.rand() < skill) { fire = true; backwards = true; }
+        else if (ahead && ahead.d < 26 && Math.abs(ahead.lat) < 3.5) fire = true;
+        else if (r.hold > wait + 2.5) { fire = true; backwards = !!behind; }
+      }
+    } else if (kind === 'homing' || kind === 'hunter' || kind === 'field') {
+      if (ahead && ahead.d < 65) fire = true;
+      else if (r.hold > wait + 1.5 && r.place > 1) fire = true;
+      else if (r.hold > 5) fire = true;
+    } else if (kind === 'self') {
+      const boostable = !!def.boost;
+      const busy = r.vehicle.state.boost.time > 0.25 || r.drift.on;
+      if (!boostable) fire = r.hold > wait;                      // hamsa / watermelon: just pop it
+      else if (straight && !busy && r.vehicle.state.onTrack) fire = true;
+      else if (r.hold > 7) fire = true;
+      // low skill wastes boosts in odd places
+      if (!fire && skill < 0.5 && r.hold > wait + 1.5 && r.rand() < 0.02) fire = true;
+    } else if (kind === 'rush') {
+      fire = r.hold > wait;
+    }
+
+    if (fire) {
+      try { items.useItem(r.vehicle, backwards); r.stats.items++; } catch (e) { /* ignore */ }
+      r.hold = 0;
+    }
+  }
+
+  function incomingThreat(r) {
+    const items = O.items;
+    if (!items) return false;
+    const st = r.vehicle.state;
+    try {
+      for (const p of items.projectiles) {
+        if (!p || p.dead || p.owner === r.vehicle || !p.pos) continue;
+        if (p.kind === 'orbit') continue;
+        const dx = p.pos.x - st.pos.x, dz = p.pos.z - st.pos.z;
+        const d = Math.hypot(dx, dz);
+        if (d < 26) return true;
+      }
+    } catch (e) { /* ignore */ }
+    return false;
+  }
+
+  /* --------------------------------------------------------------- driving -- */
+
+  function drive(r, dt) {
+    const v = r.vehicle, st = v.state, P = v.params || DEFAULTS;
+    const inp = r.input;
+    const tf = v.getTransform();
+    const spd = Math.max(st.forwardSpeed, 0);
+
+    // where am I
+    let nr = null;
+    try { nr = trk.nearest(st.pos); } catch (e) { nr = null; }
+    if (nr) { r.s = nr.s; r.lateral = nr.lateral; }
+    r.offTrackTime = st.onTrack ? 0 : r.offTrackTime + dt;
+
+    /* -- grid / countdown: sit still, then launch -- */
+    if (!gate.racing) {
+      const launch = gate.tMinus <= r.personality.launch;
+      inp.throttle = launch ? 1 : 0;
+      inp.brake = gate.tMinus > 0.05 && !launch ? 0.15 : 0;
+      inp.steer = 0; inp.drift = 0;
+      if (O.step) v.update(dt, inp);
+      return;
+    }
+
+    /* -- mistakes -- */
+    const m = r.mistake;
+    m.t -= dt;
+    if (m.left > 0) {
+      m.left -= dt;
+      if (m.left <= 0) { m.kind = null; m.steer = 0; m.pace = 1; }
+    } else if (m.t <= 0) {
+      const rate = r.tier.mistake * (1.35 - r.personality.consistency);   // events per minute-ish
+      m.t = 6 + r.rand() * 26 / Math.max(rate, 0.05);
+      const pick = r.rand();
+      if (pick < 0.4) { m.kind = 'wide'; m.left = 0.7 + r.rand() * 0.9; m.steer = (r.rand() < 0.5 ? -1 : 1) * (0.10 + r.rand() * 0.14); m.pace = 1; }
+      else if (pick < 0.78) { m.kind = 'late'; m.left = 0.5 + r.rand() * 0.8; m.steer = 0; m.pace = 1.10 + r.rand() * 0.10; }
+      else { m.kind = 'lift'; m.left = 0.25 + r.rand() * 0.35; m.steer = 0; m.pace = 0.55; }
+      r.stats.mistakes++;
+    }
+
+    /* -- catch-up assist (AI only, capped) -- */
+    let catchup = 1;
+    if (O.rubberBand && !r.isPlayer) {
+      const gap = dS(leaderProgress, r.progress);   // negative: behind the leader
+      const behindBy = Math.max(0, -gap);
+      const aheadBy = Math.max(0, gap);
+      catchup = 1 + clamp((behindBy - 20) / 150, 0, 1) * O.catchMax * r.tier.catch
+        - clamp((aheadBy - 45) / 160, 0, 1) * O.leadDrag;
+      r.boostCool -= dt;
+      if (O.catchBoost && behindBy > 110 && r.boostCool <= 0 && st.onTrack && st.grounded && st.boost.time <= 0) {
+        try { v.addBoost(0.65, 0.10, 'catchup'); r.stats.catchBoosts++; } catch (e) { /* ignore */ }
+        r.boostCool = 5.0;
+      }
+    }
+    r.catchup = catchup;
+
+    /* -- aim point -- */
+    const look = clamp((O.aimBase + spd * O.aimGain) * r.tier.look, O.aimMin, O.aimMax);
+    const near = rivalPressure(r);
+    const avoid = chooseAvoid(r, near, dt);
+    const attract = chooseAttract(r, dt);
+    const dodge = hazardDodge(r);
+    const cornerNow = clamp(Math.abs(line.curvatureAt(r.s + 10)) / 0.035, 0, 1);
+    const bias = r.personality.lineOffset * (0.35 + 0.65 * (1 - cornerNow));
+
+    const L = line.at(r.s + look, _l1);
+    const half = L.width * 0.5 - 1.3;
+    let delta = clamp(bias + avoid + attract + dodge + (m.kind === 'wide' ? m.steer * 12 : 0), -6.5, 6.5);
+    const latTarget = clamp(L.offset + delta, -half, half);
+    delta = latTarget - L.offset;
+    r.aim.s = r.s + look; r.aim.lat = latTarget;
+
+    const tx = L.x + L.nx * delta, tz = L.z + L.nz * delta;
+
+    // pure pursuit
+    const relx = tx - st.pos.x, relz = tz - st.pos.z;
+    const fx = tf.forward.x, fz = tf.forward.z;
+    const rx = tf.right.x, rz = tf.right.z;
+    const ahead = relx * fx + relz * fz;
+    const side = relx * rx + relz * rz;
+    const Ld = Math.max(Math.hypot(ahead, side), 1.5);
+    const alpha = Math.atan2(side, Math.max(ahead, 0.35));
+    const kPP = 2 * Math.sin(alpha) / Ld;
+    const steerMax = lerp(P.steerMaxLow, P.steerMaxHigh, smoothstep(0, P.topSpeed * 1.05, spd));
+    let steer = Math.atan(P.wheelBase * kPP) / Math.max(steerMax, 0.05);
+
+    // Stanley cross-track term: kills the slow drift off-line pure pursuit leaves on long corners
+    const nearLat = line.offsetAt(r.s + 4) + delta * 0.55;
+    const cross = nearLat - (r.lateral ?? 0);
+    steer += clamp(Math.atan2(O.crossGain * cross, spd + 5.0) / Math.max(steerMax, 0.05), -0.6, 0.6) * O.stanley;
+    // damp the yaw rate toward what the aim actually needs
+    steer += clamp((kPP * spd - st.angVel.y) * O.yawDamp, -0.25, 0.25);
+    if (m.kind === 'wide') steer += m.steer;
+    if (O.items) { try { steer += O.items.steerBias(r.vehicle); } catch (e) { /* ignore */ } }
+
+    // when badly off-track, forget the racing line: aim at the middle of the road instead
+    let recovering = 0;
+    if (r.offTrackTime > 0.35 || Math.abs(r.lateral ?? 0) > L.width * 0.5 + 0.5) {
+      recovering = clamp(r.offTrackTime * 1.2, 0, 1);
+      let cm = null;
+      try { cm = trk.sample(r.s + clamp(spd * 0.8, 8, 20)); } catch (e) { cm = null; }
+      if (cm) {
+        const bx = cm.pos.x - st.pos.x, bz = cm.pos.z - st.pos.z;
+        const a2 = Math.atan2(bx * rx + bz * rz, Math.max(bx * fx + bz * fz, 0.35));
+        steer = lerp(steer, clamp(Math.atan(P.wheelBase * 2 * Math.sin(a2) / Math.max(Math.hypot(bx, bz), 2)) / Math.max(steerMax, 0.05), -1, 1), recovering * 0.85);
+      }
+    }
+    inp.steer = clamp(steer, -1, 1);
+
+    /* -- speed -- */
+    const preview = clamp(spd * 0.28, 3, 12);
+    let vTarget = line.speedAt(r.s + preview) * r.tier.speed * r.personality.pace * catchup * m.pace;
+    const surf = surfaceInfo(st.surface || 'tarmac');
+    if (surf && surf.top < 1) vTarget = Math.min(vTarget, P.topSpeed * surf.top * 0.98);
+    if (recovering > 0) vTarget = Math.min(vTarget, lerp(vTarget, 9.5, recovering));
+    r.targetSpeed = vTarget;
+    const err = vTarget - spd;
+    if (err > 0.2) { inp.throttle = 1; inp.brake = 0; }
+    else if (err > -0.55) { inp.throttle = clamp(0.5 + err, 0.12, 1); inp.brake = 0; }
+    else { inp.throttle = 0; inp.brake = clamp(-err * 0.5 * r.tier.brake, 0.12, 1); }
+    if (m.kind === 'lift') { inp.throttle = 0; inp.brake = 0; }
+
+    /* -- drift -- */
+    // A drift is only quicker where the corner is tight enough that the drift lock's own
+    // steering curve is not wider than the corner itself — otherwise it just fires the kart
+    // at the inside verge. Tie it to the corner's profile speed, which already knows that.
+    const d = r.drift;
+    const win = clamp(spd * 1.0, 12, 26);
+    const bendAhead = line.bend(r.s + 3, win);
+    const bendNow = line.bend(r.s - 2, Math.max(9, win * 0.6));
+    const skill = clamp(r.tier.drift * O.driftSkill, 0, 1.4);
+    const kMin = 0.0300 * lerp(1.35, 0.85, clamp(r.personality.driftLove * skill, 0, 1));
+    const cornerV = line.speedAt(r.s + clamp(spd * 0.55, 5, 18));
+    const worth = cornerV < O.driftCornerV && Math.abs(bendAhead) > kMin;
+    const wash = Math.abs(cross) > 2.6;                  // the slide is washing us off the line
+    if (d.on) {
+      d.t += dt;
+      const over = Math.abs(bendNow) < kMin * 0.45 && d.t > 0.4;
+      if (over || wash || !st.onTrack || spd < P.driftMinSpeed * 1.05 || d.t > 4.5 || Math.sign(bendNow || d.dir) !== d.dir) {
+        d.on = false; d.cool = 0.45 + r.rand() * 0.3;
+        if (st.drift.tier > 0) r.stats.miniturbos++;
+      }
+    } else if (d.cool > 0) {
+      d.cool -= dt;
+    } else if (worth && spd > P.driftMinSpeed + 3.0 && spd < O.driftMaxSpeed && st.grounded
+      && st.onTrack && Math.abs(cross) < 1.8 && skill > 0.25 && r.rand() < 0.65 + 0.35 * skill) {
+      d.on = true; d.dir = Math.sign(bendAhead) || 1; d.t = 0; r.stats.drifts++;
+    }
+    inp.drift = d.on ? 1 : 0;
+    if (d.on) {
+      if (d.t < 0.26) {
+        // the hop only latches a direction if the stick is already loaded that way
+        inp.steer = clamp(lerp(inp.steer, d.dir * 0.7, 0.75), -1, 1);
+      } else {
+        // invert the drift lock: steerLock = dir * (innerBias + range * inward), so pick the
+        // `inward` that makes the locked angle match what pure pursuit actually asked for.
+        const want = clamp(inp.steer * d.dir, -1, 1);
+        const inward = clamp((want - P.driftInnerBias) / Math.max(P.driftSteerRange, 0.05), -1, 1);
+        inp.steer = d.dir * inward;
+      }
+      inp.throttle = Math.max(inp.throttle, 0.9);
+      inp.brake = 0;
+    }
+
+    /* -- items -- */
+    useItems(r, dt, near);
+
+    if (O.step) v.update(dt, inp);
+  }
+
+  /* ---------------------------------------------------------------- update -- */
+
+  let elapsed = 0;
+  function update(dt, ctx) {
+    dt = clamp(dt || 0, 0, 0.1);
+    elapsed += dt;
+    if (ctx) {
+      if (ctx.field) setField(ctx.field);
+      if (typeof ctx.leaderProgress === 'number') leaderProgress = ctx.leaderProgress;
+      if (ctx.gate) setGate(ctx.gate);
+    }
+    if (!ctx || !ctx.field) {
+      // stand-alone mode: derive progress and places ourselves
+      for (const r of racers) {
+        let nr = null;
+        try { nr = trk.nearest(r.vehicle.state.pos); } catch (e) { /* keep */ }
+        if (nr) {
+          if (r.prevS === undefined) { r.prevS = nr.s; r.progress = nr.s; }
+          else { const d = dS(nr.s, r.prevS); if (Math.abs(d) < len * 0.4) r.progress += d; r.prevS = nr.s; }
+          r.s = nr.s; r.lateral = nr.lateral;
+        }
+      }
+      const order = racers.slice().sort((a, b) => b.progress - a.progress);
+      order.forEach((r, i) => { r.place = i + 1; });
+      leaderProgress = order[0]?.progress ?? 0;
+      field = racers;
+    }
+    for (const r of racers) drive(r, dt);
+    return api;
+  }
+
+  const api = {
+    racers, line, track: trk, tiers: TIERS, pads, boxSlots,
+    update, setField, setGate,
+    get leaderProgress() { return leaderProgress; },
+    setLeaderProgress(p) { leaderProgress = p; },
+    /** Drive one racer without stepping its vehicle (race.js owns the integration order). */
+    control(r, dt) { const keep = O.step; O.step = false; drive(r, dt); O.step = keep; return r.input; },
+    setDifficulty(d) {
+      const t = DIFFICULTY[d] || DIFFICULTY[150];
+      racers.forEach((r, i) => { r.tierIndex = clamp(t[i % t.length] | 0, 0, 3); r.tier = TIERS[r.tierIndex]; });
+      return api;
+    },
+    setItems(sys) { O.items = sys; return api; },
+    telemetry() {
+      return racers.map(r => ({
+        id: r.id, tier: r.tier.id, place: r.place,
+        kmh: +(r.vehicle.state.speed * 3.6).toFixed(1),
+        target: +(r.targetSpeed * 3.6).toFixed(1),
+        drift: r.drift.on, lat: +(r.lateral ?? 0).toFixed(2), catchup: +r.catchup.toFixed(3),
+      }));
+    },
+  };
+  return api;
+}
+
+/* ============================================================ item plumbing == */
+
+/**
+ * Apply an item system's per-racer effects to a real vehicle. The item module deliberately
+ * knows nothing about physics, so somebody has to translate: this is that somebody, and both
+ * the AI field and the player go through it so a spin costs everyone the same.
+ */
+export function applyItemEffects(items, vehicle, dt, inp) {
+  if (!items || !vehicle) return inp;
+  let fx = null;
+  try { fx = items.effects(vehicle); } catch (e) { return inp; }
+  if (!fx) return inp;
+  const st = vehicle.state;
+
+  // boosts: hand them to the physics once, and tell the item system not to double-count
+  if (fx.boostTime > 0 && !fx.boostExternal) {
+    try { vehicle.addBoost(fx.boostTime, fx.boostPower, 'item'); } catch (e) { /* ignore */ }
+    fx.boostExternal = true;
+    fx.boostTime = 0; fx.boostPower = 0;
+  }
+  if (fx.boostTime <= 0) fx.boostExternal = false;
+
+  const stunned = Math.max(fx.spin, fx.slip, fx.squash, fx.stall);
+  if (stunned > 0 && inp) {
+    inp.throttle = 0; inp.brake = 0; inp.drift = 0;
+    inp.steer *= 0.15;
+  }
+  if (stunned > 0) {
+    let mul = 1;
+    try { mul = items.speedMultiplier(vehicle); } catch (e) { mul = 1; }
+    const cap = Math.max(1.2, DEFAULTS.topSpeed * mul);
+    const sp = Math.hypot(st.vel.x, st.vel.z);
+    if (sp > cap) {
+      const k = Math.max(cap / sp, 1 - 6 * dt);
+      st.vel.x *= k; st.vel.z *= k;
+    }
+    if (fx.spin > 0 || fx.slip > 0 || fx.stall > 0) st.angVel.y += (fx.stall > 0 ? 9 : 6.5) * dt;
+  }
+  return inp;
+}
+
+export default createAI;

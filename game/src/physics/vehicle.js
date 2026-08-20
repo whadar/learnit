@@ -281,7 +281,7 @@ export const DEFAULTS = {
   inertia: { pitch: 74, yaw: 52, roll: 44 },
 
   suspRest: 0.26,
-  suspTravel: 0.15,
+  suspTravel: 0.18,
   suspFreq: 2.25,              // Hz -> spring rate
   suspDampBump: 0.52,
   suspDampRebound: 0.78,
@@ -957,7 +957,7 @@ export function createVehicle(world, track, opts = {}) {
       if (!rp || rp === state.pos) continue;
       const dx = rp.x - state.pos.x, dz = rp.z - state.pos.z;
       const dist = Math.hypot(dx, dz);
-      if (dist < 2.2 || dist > P.draftRange) continue;
+      if (dist < 1.4 || dist > P.draftRange) continue;
       const ux = dx / dist, uz = dz / dist;
       const ahead = ux * fwd.x + uz * fwd.z;                   // rival is ahead of us
       let rf = r.forward || (r.getTransform && r.getTransform().forward);

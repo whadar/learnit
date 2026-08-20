@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>bprobe</title>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden}#app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}</style>
+</head><body><div id="app"></div>
+<script type="module">
+  import { boot } from './common.js';
+  import { createBuildings } from '../src/world/buildings.js';
+  boot({ name:'bprobe', modules: async (ctx) => { window.__b = createBuildings(ctx.engine, ctx.world, {quality:1}); },
+    views: { street: { pos:[140,72.7,200], look:[190,75.5,150], fov:62 } } });
+</script></body></html>

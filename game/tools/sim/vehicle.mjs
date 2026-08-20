@@ -309,7 +309,7 @@ async function main() {
     // bad landing (nose down / sideways)
     k.reset({ x: 0, y: flat.heightAt(0, 0), z: 0 }, 0);
     for (let i = 0; i < 8 * FPS; i++) k.update(DT, { throttle: 1, steer: 0 });
-    const v0 = k.speed; k.state.vel.y += 8; k.state.angVel.x += 3.0;
+    const v0 = k.speed; k.state.vel.y += 8; k.state.angVel.x += 7.5; k.state.angVel.y += 2.5;
     let t = 0; while (t < 3) { k.update(DT, { throttle: 1, steer: 0 }); t += DT; if (k.grounded && t > 1.2) break; }
     row('tumbled landing', fmt(k.speed) + ' m/s', 'keep ' + fmt(k.speed / v0 * 100, 1) + '% (should cost)');
     // air steering authority
@@ -348,7 +348,7 @@ async function main() {
       let ox = 0, oz = 0; for (const p of ring) { ox += p[0]; oz += p[1]; } ox /= ring.length; oz /= ring.length;
       let brad = 0; for (const p of ring) brad = Math.max(brad, Math.hypot(p[0] - ox, p[1] - oz));
       const k = createVehicle(world, straightTrack(world, 'tarmac', 800), { collisionOpts: { carveTrack: false } });
-      k.reset({ x: ox - 45, y: world.heightAt(ox - 45, oz), z: oz + brad * 0.45 }, Math.PI / 2);
+      k.reset({ x: ox - 45, y: world.heightAt(ox - 45, oz), z: oz + brad * 0.92 }, Math.PI / 2);
       for (let i = 0; i < 6 * FPS; i++) k.update(DT, { throttle: 1, steer: 0 });
       const vIn = k.speed;
       let t = 0, minV = 99, stuck = 0, prev = { ...k.state.pos };
@@ -359,7 +359,7 @@ async function main() {
         if (moved < 0.02 && k.state.wallImpact > 0.05) stuck += DT;
         prev = { ...k.state.pos }; t += DT;
       }
-      row('wall approach speed', fmt(vIn) + ' m/s');
+      row('wall approach speed (glancing)', fmt(vIn) + ' m/s');
       row('speed during wall contact', minV < 99 ? fmt(minV) + ' m/s' : 'no contact');
       row('time stuck on wall', fmt(stuck) + ' s', 'must be ~0 (slide, never stick)');
       row('speed 4 s later', fmt(k.speed) + ' m/s');
@@ -379,9 +379,70 @@ async function main() {
     row('respawn when upside down', k4.state.respawns ? fmt(ut) + ' s' : 'NEVER');
   }
 
-  /* ---- 6. laps ---- */
+  /* ---- banking ---- */
+  if (only === 'all' || only === 'bank') {
+    head('BANKING (chassis follows the banked road surface)');
+    // find the most banked stretch of the course and drive it
+    let bs = 0, bb = 0;
+    for (let sv = 0; sv < track.length; sv += 4) {
+      const sm = track.sample(sv);
+      if (Math.abs(sm.banking || 0) > Math.abs(bb)) { bb = sm.banking || 0; bs = sv; }
+    }
+    if (Math.abs(bb) < 0.01) { row('max banking on course', 'none', 'track reports no banking'); }
+    else {
+      const k = mk();
+      const drive = makeDriver(track, k, { useDrift: false });
+      const sm0 = track.sample(bs - 90);
+      k.reset(sm0.pos, Math.atan2(sm0.tangent.x, sm0.tangent.z));
+      k.state.vel.x = sm0.tangent.x * 20; k.state.vel.z = sm0.tangent.z * 20;
+      let best = null, t = 0;
+      while (t < 12) {
+        k.update(DT, drive(DT)); t += DT;
+        const d = Math.abs(((k.state.trackS - bs) % track.length + track.length) % track.length);
+        if (d < 4 || d > track.length - 4) { best = { roll: k.state.roll, up: k.getTransform().up.y, v: k.speed, lat: k.state.lateral }; break; }
+      }
+      row('max banking on course', fmt(bb * 180 / Math.PI, 1) + ' deg', 'at s=' + fmt(bs, 0));
+      if (best) {
+        row('chassis roll there', fmt(best.roll * 180 / Math.PI, 1) + ' deg', 'lateral ' + fmt(best.lat, 1) + ' m, ' + fmt(best.v) + ' m/s');
+        row('kart up vs world up', fmt(best.up, 3), 'banked corners tilt the kart, not just the camera');
+      } else row('chassis roll there', 'did not reach it');
+    }
+  }
+
+  /* ---- 6. slipstream ---- */
+  if (only === 'all' || only === 'draft') {
+    head('6. SLIPSTREAM / DRAFT');
+    const flat = flatWorld(world);
+    const st = straightTrack(flat, 'tarmac', 900);
+    const lead = createVehicle(flat, st, {}), chase = createVehicle(flat, st, {});
+    lead.reset({ x: 0, y: flat.heightAt(0, 0), z: 8 }, 0);
+    chase.reset({ x: 0, y: flat.heightAt(0, 0), z: 0 }, 0);
+    chase.setRivals([lead]);
+    // both hold the same throttle: any gain the chaser makes is the tow
+    let t = 0, tBoost = -1, peakDraft = 0, gap = 0;
+    while (t < 14) {
+      lead.update(DT, { throttle: 1, steer: 0 });
+      chase.update(DT, { throttle: 1, steer: 0 });
+      // keep the chaser tucked in behind instead of punting the leader
+      gap = lead.state.pos.z - chase.state.pos.z;
+      if (gap < 3.0) { chase.state.pos.z = lead.state.pos.z - 3.0; if (chase.state.vel.z > lead.state.vel.z) chase.state.vel.z = lead.state.vel.z; }
+      peakDraft = Math.max(peakDraft, chase.state.draft);
+      if (tBoost < 0 && chase.state.boost.source === 'draft') tBoost = t;
+      t += DT;
+    }
+    row('draft charge peak', fmt(peakDraft), 'needs ' + DEFAULTS.draftTime + ' s in the tow');
+    row('tow boost fired at', tBoost > 0 ? fmt(tBoost) + ' s' : 'NEVER');
+    row('leader / chaser speed', fmt(lead.speed) + ' / ' + fmt(chase.speed) + ' m/s', 'gap ' + fmt(gap) + ' m');
+    // control: no rival at all
+    const solo = createVehicle(flat, st, {});
+    solo.reset({ x: 0, y: flat.heightAt(0, 0), z: 0 }, 0);
+    for (let i = 0; i < 14 * FPS; i++) solo.update(DT, { throttle: 1, steer: 0 });
+    row('solo top speed (control)', fmt(solo.speed) + ' m/s', 'tow adds ' + fmt(chase.speed - solo.speed) + ' m/s');
+  }
+
+  /* ---- 7. laps ---- */
   if (only === 'all' || only === 'laps') {
-    head('6. LAPS on ' + (track.fallback ? 'the fallback loop' : 'src/track/track.js') + '  (' + fmt(track.length, 0) + ' m)');
+    head('7. LAPS on ' + (track.fallback ? 'the fallback loop' : 'src/track/track.js') + '  (' + fmt(track.length, 0) + ' m)');
     const k = mk();
     const g = track.startGrid && track.startGrid[0];
     k.reset(g?.pos, g?.rot);

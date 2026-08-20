@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CSM } from 'three/examples/jsm/csm/CSM.js';
-import { clamp } from '../core/mathx.js';
+import { clamp, lerp as lerpN } from '../core/mathx.js';
 
 /**
  * Lighting rig for Kat Racing: cascaded shadow maps, sky IBL and physically flavoured
@@ -143,7 +143,19 @@ export function createLighting(engine, world, sky, opts = {}) {
   const useCSM = opts.shadows !== false;
   const cascades = opts.cascades ?? 3;
   const shadowMapSize = opts.shadowMapSize ?? 2048;
-  const shadowFar = opts.shadowFar ?? 1250;
+  const shadowFar = opts.shadowFar ?? 1000;
+  // three's 'practical' split (lambda 0.5) spends far too much of cascade 0 on empty
+  // distance; at kart height that shows up as stair-stepped eaves. Bias hard toward the
+  // logarithmic split so the first cascade is a tight ~50 m box.
+  const splitLambda = opts.splitLambda ?? 0.86;
+  const customSplits = (amount, near, far, target) => {
+    for (let i = 1; i < amount; i++) {
+      const uni = (near + (far - near) * i / amount) / far;
+      const log = (near * (far / near) ** (i / amount)) / far;
+      target.push(lerpN(uni, log, splitLambda));
+    }
+    target.push(1);
+  };
 
   const groundY = world ? world.minH : 0;
 
@@ -157,7 +169,7 @@ export function createLighting(engine, world, sky, opts = {}) {
     apFalloff:   { value: opts.hazeFalloff ?? 0.0075 },
     apBase:      { value: groundY },
     apSunAmount: { value: 0.55 },
-    apMax:       { value: opts.hazeMax ?? 0.88 },
+    apMax:       { value: opts.hazeMax ?? 0.82 },
   };
   const csmUniforms = {
     CSM_cascades: { value: [] },
@@ -175,7 +187,8 @@ export function createLighting(engine, world, sky, opts = {}) {
         camera: engine.camera,
         cascades,
         maxFar: shadowFar,
-        mode: 'practical',
+        mode: 'custom',
+        customSplitsCallback: customSplits,
         shadowMapSize,
         shadowBias: opts.shadowBias ?? -0.00008,
         lightDirection: lightDir.clone(),
@@ -241,7 +254,7 @@ export function createLighting(engine, world, sky, opts = {}) {
       scene.environment = envMap;
       // The dome already renders in exposed units (sky.uExposure), so the IBL lands at a
       // sane fraction of the sun without any extra normalisation.
-      scene.environmentIntensity = opts.envIntensity ?? 0.70;
+      scene.environmentIntensity = opts.envIntensity ?? 0.45;
       return envMap;
     } catch (e) {
       console.warn('[lighting] environment map generation failed:', e);
@@ -368,6 +381,9 @@ export function createLighting(engine, world, sky, opts = {}) {
   const lastCamPos = new THREE.Vector3(1e9, 1e9, 1e9);
   const lastCamQuat = new THREE.Quaternion(9, 9, 9, 9);
   renderer.shadowMap.enabled = true;
+  // PCFSoftShadowMap is deprecated in this three build and silently downgrades; ask for the
+  // supported filter directly so the console stays clean and the look is predictable.
+  if (renderer.shadowMap.type === THREE.PCFSoftShadowMap) renderer.shadowMap.type = THREE.PCFShadowMap;
   if (opts.lazyShadows !== false) renderer.shadowMap.autoUpdate = false;
   let frame = 0;
 

@@ -555,7 +555,9 @@ export function createCollisionWorld(world, track, opts = {}) {
           vel.z -= nz * vn * (1 + restitution);
           const tx = -nz, tz = nx;
           const vt = vel.x * tx + vel.z * tz;
-          const scrub = friction * (1 - clamp(impact / 26, 0, 0.45));
+          // Glancing blows should slide and keep most of their speed; only a square hit
+          // should really scrub. A flat coefficient makes walls feel like glue.
+          const scrub = 1 - (1 - friction) * (0.25 + 0.75 * clamp(impact / 18, 0, 1));
           vel.x += tx * (vt * scrub - vt);
           vel.z += tz * (vt * scrub - vt);
           if (!best || impact > best.impact) best = { nx, nz, depth, impact, kind: s.kind };

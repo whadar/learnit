@@ -44,9 +44,9 @@ function applyView(name, v) {
     for (let q = 1; q <= 10; q++) {                   // sample the line of sight too
       const f = q / 11;
       gy = Math.max(gy, kart.collision.groundHeight(
-        lerp(c.pos[0], kart.state.pos.x, f), lerp(c.pos[2], kart.state.pos.z, f)) - f * 0.9);
+        lerp(c.pos[0], kart.state.pos.x, f), lerp(c.pos[2], kart.state.pos.z, f)) - f * 0.2);
     }
-    c.pos[1] = Math.max(c.pos[1], gy + 1.25);         // never film from inside the hillside
+    c.pos[1] = Math.max(c.pos[1], gy + 1.5);         // never film from inside the hillside
     Object.assign(v, c);
   }
   engine.camera.position.set(...v.pos);
@@ -239,9 +239,13 @@ function buildKart() {
   nose.rotation.x = Math.PI / 2; nose.position.set(0, -0.06, 1.06); kartRoot.add(nose);
   const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.06, 0.26), dark);
   spoiler.position.set(0, 0.30, -0.86); kartRoot.add(spoiler);
-  for (const sx of [-0.44, 0.44]) {
-    const stay = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.30, 0.06), dark);
-    stay.position.set(sx, 0.14, -0.86); kartRoot.add(stay);
+  for (const sx of [-0.42, 0.42]) {
+    const stay = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.28, 0.045), dark);
+    stay.position.set(sx, 0.15, -0.86); kartRoot.add(stay);
+  }
+  for (const sx of [-0.60, 0.60]) {                      // side pods
+    const pod = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.20, 0.72), paint);
+    pod.position.set(sx, -0.10, 0.02); kartRoot.add(pod);
   }
   const seat = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.42, 0.24), dark);
   seat.position.set(0, 0.20, -0.42); kartRoot.add(seat);
@@ -251,10 +255,13 @@ function buildKart() {
   torso.position.set(0, 0.32, -0.24); torso.rotation.x = 0.24; kartRoot.add(torso);
   catHead = new THREE.Mesh(new THREE.SphereGeometry(0.19, 14, 12), fur);
   catHead.position.set(0, 0.66, -0.16); kartRoot.add(catHead);
-  for (const ex of [-0.10, 0.10]) {
-    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.16, 8), fur);
-    ear.position.set(ex, 0.82, -0.17); kartRoot.add(ear);
+  for (const ex of [-0.115, 0.115]) {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.062, 0.13, 7), fur);
+    ear.position.set(ex, 0.78, -0.17); ear.rotation.z = ex > 0 ? -0.28 : 0.28; kartRoot.add(ear);
   }
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.195, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    new THREE.MeshStandardMaterial({ color: 0x2f6fd0, roughness: 0.3, metalness: 0.2 }));
+  helmet.position.set(0, 0.665, -0.16); kartRoot.add(helmet);
   const wheelBar = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.028, 6, 14), dark);
   wheelBar.position.set(0, 0.30, 0.26); wheelBar.rotation.x = -0.9; kartRoot.add(wheelBar);
 
@@ -274,11 +281,11 @@ function buildKart() {
   }
 
   // cone geometry baked to point along -Z (out of the back of the kart)
-  const flameGeo = new THREE.ConeGeometry(0.26, 1.15, 12, 1, true);
-  flameGeo.translate(0, -0.58, 0);
+  const flameGeo = new THREE.ConeGeometry(0.19, 0.85, 12, 1, true);
+  flameGeo.translate(0, -0.43, 0);
   flameGeo.rotateX(Math.PI / 2);
   boostFlame = new THREE.Mesh(flameGeo, new THREE.MeshBasicMaterial({
-    color: 0x6fd8ff, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false,
+    color: 0x2a7fbf, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false,
     blending: THREE.AdditiveBlending }));
   boostFlame.visible = false;
   engine.scene.add(boostFlame);
@@ -437,6 +444,7 @@ function runScene(scene) {
   runScene.last = scene;
   trail.length = 0;
   autoDrive.hold = 0;
+  scene.begin?.();
   placeAt(scene.start(), scene.speed);
   const dt = 1 / 120;
   let t = 0;
@@ -482,14 +490,9 @@ const SCENES = {
     start: () => SPOTS.corner - 40, speed: 20, minT: 1.0, maxT: 26,
     input: (i, k, t) => { i.drift = (k.drifting || Math.abs(i.steer) > 0.15) ? 1 : 0; i.throttle = Math.max(i.throttle, 0.9); i.brake = 0; return i; },
     until: k => k.driftTier >= 2 && k.state.onTrack && k.grounded,
-    cam: () => {
-      const tf = kart.getTransform(), p = tf.position, f = tf.forward, r = tf.right;
-      const d = kart.state.drift.dir || 1;
-      return {
-        pos: [p.x + f.x * 6.4 + r.x * 5.4 * d, p.y + 2.15, p.z + f.z * 6.4 + r.z * 5.4 * d],
-        look: [p.x - f.x * 0.3, p.y + 0.45, p.z - f.z * 0.3], fov: 46,
-      };
-    },
+    // rear three-quarter from the outside of the slide: the kart's nose points into the
+    // corner while the camera stays behind the line it is actually travelling
+    cam: () => camOf(5.6, 2.0, -2.6 * (kart.state.drift.dir || 1), 1.0, 6.5, 64, 0.55)(),
   },
   // side-on over the roughest stretch: chassis pitch and four different suspension travels
   crest: {
@@ -498,19 +501,25 @@ const SCENES = {
     until: (k, t) => k.grounded && (Math.abs(k.state.pitch) > 0.05 || Math.abs(k.state.roll) > 0.07),
     cam: () => {
       const tf = kart.getTransform(), p = tf.position, r = tf.right;
-      return { pos: [p.x + r.x * 7.4, p.y + 1.75, p.z + r.z * 7.4], look: [p.x, p.y + 0.18, p.z], fov: 38 };
+      return { pos: [p.x + r.x * 7.6, p.y + 2.35, p.z + r.z * 7.6], look: [p.x, p.y + 0.20, p.z], fov: 38 };
     },
   },
   // launched off the biggest crest with a trick armed: wheels hang on full droop
   air: {
-    start: () => SPOTS.crest - 130, speed: 26, minT: 0.5, maxT: 9,
-    input: (i, k, t) => {
-      i.throttle = 1; i.brake = 0; i.steer = clamp(i.steer, -0.35, 0.35);
-      if (t > 0.05 && t < 0.10) kart.addBoost(4.0, 0.42, 'pad');
-      if (!k.grounded && k.state.airTime > 0.10) i.drift = 1;
+    start: () => SPOTS.crest - 190, speed: 26, minT: 0.5, maxT: 14,
+    begin() { this.launched = false; },
+    input(i, k, t) {
+      i.throttle = 1; i.brake = 0; i.steer = clamp(i.steer, -0.30, 0.30);
+      if (t > 0.05 && t < 0.10) k.addBoost(5.0, 0.45, 'pad');
+      // the ramp: a real course has one, this loop does not, so kick the kart at the crest
+      const ds = Math.abs(wrapPi((k.state.trackS - SPOTS.crest) / track.length * Math.PI * 2));
+      if (!this.launched && k.grounded && t > 1.0 && ds < 0.05) {
+        k.state.vel.y += 6.6; this.launched = true;
+      }
+      if (!k.grounded && k.state.airTime > 0.10) i.drift = 1;    // trick
       return i;
     },
-    until: (k) => !k.grounded && k.state.airTime > 0.26,
+    until: (k) => !k.grounded && k.state.airTime > 0.34,
     cam: camOf(6.8, 1.55, 2.9, 1.7, 5.0, 62, 0.2),
   },
   // dropped off the ribbon into the field: dust, and the speed it costs
@@ -553,8 +562,8 @@ function syncVisuals() {
       tf.position.y - f.y * 0.95 - u.y * 0.02,
       tf.position.z - f.z * 0.95 - u.z * 0.02);
     boostFlame.quaternion.set(tf.quaternion.x, tf.quaternion.y, tf.quaternion.z, tf.quaternion.w);
-    boostFlame.scale.set(0.8 + b.power, 0.8 + b.power, 0.9 + b.power * 2.0);
-    boostFlame.material.color.setHex(b.power > 0.3 ? 0xff77e0 : 0x6fd8ff);
+    boostFlame.scale.set(0.75 + b.power * 0.6, 0.75 + b.power * 0.6, 0.7 + b.power * 0.9);
+    boostFlame.material.color.setHex(b.power > 0.3 ? 0xa03878 : 0x2a7fbf);
   }
 
   // dust / smoke ribbon
