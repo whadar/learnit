@@ -207,6 +207,7 @@ varying float vSunE, vSunfade;
 uniform float uMieG, uKnee;
 uniform vec3  uAureole;
 uniform vec3  uGroundHaze;
+uniform vec3  uEnvGround;
 uniform float uHorizonHaze;
 uniform vec3  uHazeTint;
 uniform float uExposure;
@@ -352,9 +353,15 @@ void main() {
   sky += sunCol * 900.0 * disc;
   sky += sunCol * glow * 0.04;
 
-  // --- below the horizon: dusty ground haze so terrain edges never show black ------------
+  // --- below the horizon --------------------------------------------------------------
+#ifdef ENV_PASS
+  // For the IBL the lower hemisphere must be the *ground*, not more sky: a warm terra-rossa
+  // bounce is what lifts north-facing walls and the undersides of eaves.
+  sky = mix( sky, uEnvGround, smoothstep( 0.02, -0.06, direction.y ) );
+#else
   float below = smoothstep( -0.01, -0.22, direction.y );
   sky = mix( sky, uGroundHaze, below );
+#endif
 
   sky *= uExposure;
 
@@ -409,6 +416,7 @@ export function createSky(engine, world, opts = {}) {
     uKnee:        { value: 0.62 },
     uAureole:     { value: new THREE.Color(1.10, 0.99, 0.82) },
     uGroundHaze:  { value: new THREE.Color(0.34, 0.30, 0.25) },
+    uEnvGround:   { value: new THREE.Color(0.30, 0.22, 0.15) },
     uHorizonHaze: { value: 0.30 },
     uHazeTint:    { value: new THREE.Color(0.72, 0.74, 0.76) },
     uExposure:    { value: o.exposure },
@@ -535,6 +543,11 @@ export function createSky(engine, world, opts = {}) {
     palette.skyAmbient.multiplyScalar(1 / Math.max(skyLum, 1e-3));
     palette.groundAmbient.setRGB(0.42, 0.30, 0.20, THREE.LinearSRGBColorSpace);
     palette.hemiIntensity = (opts.hemiIntensity ?? 0.16) * lerp(0.55, 1, smoothstep(-2, 18, elev));
+
+    // Radiance of the sunlit terra-rossa / dry-stubble ground, in the dome's pre-exposure
+    // units, used as the lower hemisphere of the environment map.
+    uniforms.uEnvGround.value.setRGB(0.46, 0.33, 0.22, THREE.LinearSRGBColorSpace)
+      .multiplyScalar((1 / Math.max(ex, 1e-3)) * lerp(0.10, 0.42, smoothstep(0, 32, elev)));
 
     palette.bounceColor.setRGB(0.55, 0.34, 0.22, THREE.LinearSRGBColorSpace)
       .lerp(palette.sunColor, 0.25);

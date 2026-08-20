@@ -233,14 +233,20 @@ function addBox(S, cx, cy, cz, ux, uz, hw, hh, hd, col, us) {
 /* ======================================================================= design ==== */
 
 const PLASTER_TINTS = [
-  [1.00, 0.995, 0.98], [0.98, 0.96, 0.92], [0.96, 0.93, 0.86],
-  [0.99, 0.97, 0.94], [0.94, 0.90, 0.83], [0.97, 0.94, 0.90],
-  [0.93, 0.89, 0.80], [1.00, 0.98, 0.95], [0.90, 0.88, 0.85],
+  [1.00, 0.99, 0.96], [0.99, 0.95, 0.87], [0.97, 0.91, 0.79],
+  [1.00, 0.97, 0.92], [0.94, 0.88, 0.76], [0.98, 0.95, 0.90],
+  [0.92, 0.85, 0.72], [1.00, 0.98, 0.94], [0.88, 0.84, 0.78],
+  [0.99, 0.92, 0.85], [0.96, 0.94, 0.91], [0.91, 0.86, 0.75],
+  [1.00, 0.94, 0.90], [0.86, 0.83, 0.79],
 ];
+// clay pantiles run from fresh orange to sun-bleached brown; a few roofs are re-laid grey.
 const ROOF_TINTS = [
-  [1.00, 0.97, 0.94], [0.92, 0.87, 0.84], [1.08, 1.00, 0.92],
-  [0.86, 0.83, 0.82], [1.02, 0.93, 0.86], [0.96, 0.92, 0.90],
+  [1.00, 0.95, 0.90], [0.86, 0.78, 0.73], [1.12, 1.00, 0.88],
+  [0.76, 0.70, 0.68], [1.05, 0.90, 0.79], [0.94, 0.88, 0.84],
+  [1.08, 0.97, 0.85], [0.82, 0.74, 0.68], [0.90, 0.84, 0.80],
 ];
+// fibre-cement / galvanised sheeting on the farm buildings
+const SHEET_TINTS = [[0.60, 0.64, 0.68], [0.70, 0.71, 0.70], [0.52, 0.56, 0.60], [0.66, 0.66, 0.64]];
 
 function hashStr(s) {
   let h = 2166136261;
@@ -286,10 +292,10 @@ function design(b, world, idx) {
   let storeys = 1, storeyH = 3.15, roofKind = 'hip';
   const r0 = rand(), r1 = rand(), r2 = rand();
   if (kind === 'house') {
-    const twoUp = clamp((area - 70) / 200, 0, 1) * 0.55 + 0.16;
+    const twoUp = clamp((area - 95) / 260, 0, 1) * 0.46 + 0.07;
     storeys = r0 < twoUp ? 2 : 1;
     storeyH = 3.0 + r1 * 0.4;
-    roofKind = r2 < 0.20 ? 'flat' : (r2 < 0.58 ? 'gable' : 'hip');
+    roofKind = r2 < 0.13 ? 'flat' : (r2 < 0.56 ? 'gable' : 'hip');
   } else if (kind === 'shed') {
     storeys = 1; storeyH = 2.5 + r1 * 0.4;
     roofKind = r2 < 0.42 ? 'flat' : 'gable';
@@ -307,7 +313,7 @@ function design(b, world, idx) {
 
   const wallH = storeys * storeyH;
   const pitch = (kind === 'house' ? 19 + rand() * 6 : 15 + rand() * 6) * Math.PI / 180;
-  const ov = kind === 'house' ? 0.48 + rand() * 0.22 : 0.32 + rand() * 0.18;
+  const ov = kind === 'house' ? 0.56 + rand() * 0.22 : 0.34 + rand() * 0.20;
 
   // --- surfacing ----------------------------------------------------------------------
   const mr = rand();
@@ -315,7 +321,9 @@ function design(b, world, idx) {
   if (kind === 'house') wallMat = mr < 0.20 ? 'stone' : (mr < 0.44 ? 'mixed' : 'plaster');
   else if (kind === 'packing' || kind === 'barn') wallMat = mr < 0.12 ? 'stone' : 'plaster';
   const tint = PLASTER_TINTS[(rand() * PLASTER_TINTS.length) | 0];
-  const roofTint = ROOF_TINTS[(rand() * ROOF_TINTS.length) | 0];
+  const sheeted = kind !== 'house' && kind !== 'greenhouse' && rand() < 0.55;
+  const roofTint = sheeted ? SHEET_TINTS[(rand() * SHEET_TINTS.length) | 0]
+                           : ROOF_TINTS[(rand() * ROOF_TINTS.length) | 0];
 
   const rects = (roofKind === 'flat')
     ? [{ cx: obb.cx, cz: obb.cz, ux: obb.ux, uz: obb.uz, w: obb.w, d: obb.d }]
@@ -331,7 +339,7 @@ function design(b, world, idx) {
 
   return {
     id: b.id, ring, area, obb, cx, cz, floorY, groundMin: hMin, hMax,
-    kind, storeys, storeyH, wallH, roofKind, pitch, ov, wallMat, tint, roofTint,
+    kind, storeys, storeyH, wallH, roofKind, pitch, ov, wallMat, tint, roofTint, sheeted,
     rects, entrance: ei, entranceLen: elen, rand,
     seed: hashStr(b.id || String(idx)),
   };
@@ -397,8 +405,19 @@ function addWallBand(out, mat, a, b, y0, y1, holes, col, us, opt) {
       // door frame reveal band + a handle-height rail
       continue;
     }
-    // glass, set back in the reveal
-    out.glass.poly([B(h.s0, h.y0), B(h.s1, h.y0), B(h.s1, h.y1), B(h.s0, h.y1)],
+    // white frame ring + centre mullion, then the glass a little further back
+    const fw = 0.055, gd = d + 0.03;
+    const G = (s, y) => P(s, y, -gd);
+    const fr = opt.frameCol;
+    const bar = (s0, y0b, s1, y1b) => trim.poly([B(s0, y0b), B(s1, y0b), B(s1, y1b), B(s0, y1b)],
+      [[0, 0], [(s1 - s0) / 2, 0], [(s1 - s0) / 2, (y1b - y0b) / 2], [0, (y1b - y0b) / 2]], fr, N);
+    bar(h.s0, h.y0, h.s1, h.y0 + fw);
+    bar(h.s0, h.y1 - fw, h.s1, h.y1);
+    bar(h.s0, h.y0 + fw, h.s0 + fw, h.y1 - fw);
+    bar(h.s1 - fw, h.y0 + fw, h.s1, h.y1 - fw);
+    const mc = (h.s0 + h.s1) * 0.5;
+    bar(mc - fw * 0.5, h.y0 + fw, mc + fw * 0.5, h.y1 - fw);
+    out.glass.poly([G(h.s0 + fw, h.y0 + fw), G(h.s1 - fw, h.y0 + fw), G(h.s1 - fw, h.y1 - fw), G(h.s0 + fw, h.y1 - fw)],
       [[0, 0], [w, 0], [w, hh], [0, hh]], opt.glassCol, N);
     // projecting stone sill
     const sd = 0.075, st = 0.055;
@@ -646,22 +665,24 @@ function buildPropKit() {
     box(0.10, 0.20, 0.10, 0, 0.22, 0.62, GALV),
   ]);
 
+  // local +Y is the wall normal, local +Z points down the wall
   const ac = mergeGeos([
-    box(0.92, 0.66, 0.34, 0, 0.33, 0, GREY),
-    cyl(0.26, 0.05, 12, 0, 0.36, -0.18, [0.28, 0.29, 0.30], 'z'),
-    box(0.96, 0.05, 0.05, 0, 0.66, 0, [0.62, 0.63, 0.63]),
-    box(0.10, 0.10, 0.30, -0.30, 0.05, 0.16, GALV),
-    box(0.10, 0.10, 0.30, 0.30, 0.05, 0.16, GALV),
+    box(0.84, 0.29, 0.58, 0, 0.165, 0, GREY),
+    cyl(0.23, 0.035, 12, 0, 0.325, 0.02, [0.26, 0.27, 0.29]),
+    cyl(0.055, 0.045, 8, 0, 0.335, 0.02, [0.45, 0.46, 0.47]),
+    box(0.86, 0.03, 0.05, 0, 0.31, -0.26, [0.66, 0.67, 0.67]),
+    box(0.05, 0.05, 0.12, -0.36, 0.06, 0.32, GALV),
+    box(0.05, 0.05, 0.12, 0.36, 0.06, 0.32, GALV),
   ]);
 
-  const dishG = new THREE.SphereGeometry(0.44, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.36);
-  dishG.rotateX(Math.PI * 0.72);
-  dishG.translate(0, 0.72, 0);
+  const dishG = new THREE.SphereGeometry(0.40, 14, 7, 0, Math.PI * 2, 0, Math.PI * 0.42);
+  dishG.rotateX(Math.PI - 0.55);            // hollow face toward +Y, tipped up toward +Z
+  dishG.translate(0, 0.50, 0.14);
   const dish = mergeGeos([
-    tintGeo(dishG, 0.88, 0.88, 0.86),
-    box(0.07, 0.72, 0.07, 0, 0.36, 0.10, GREY),
-    cyl(0.05, 0.34, 6, 0, 0.66, -0.30, [0.55, 0.56, 0.56], 'z'),
-    box(0.34, 0.06, 0.34, 0, 0.03, 0.10, GREY),
+    tintGeo(dishG, 0.92, 0.92, 0.90),
+    box(0.055, 0.50, 0.055, 0, 0.25, 0.02, GREY),
+    cyl(0.042, 0.30, 6, 0, 0.34, 0.30, [0.52, 0.53, 0.53], 'z'),
+    box(0.24, 0.045, 0.18, 0, 0.025, 0.02, GREY),
   ]);
 
   const chimney = mergeGeos([
@@ -830,6 +851,7 @@ function buildOne(d, chunk, world, M, place) {
   const soffitCol = [tint[0] * 0.62, tint[1] * 0.61, tint[2] * 0.60];
   const doorCol = [0.30 + d.rand() * 0.25, 0.22 + d.rand() * 0.16, 0.16 + d.rand() * 0.12];
   const glassCol = [1, 1, 1];
+  const frameCol = [1.06, 1.05, 1.03];
   const shutterCol = [0.92 + d.rand() * 0.1, 0.92, 0.90];
   const stoneCol = [0.96 + d.rand() * 0.08, 0.96, 0.95];
 
@@ -866,7 +888,7 @@ function buildOne(d, chunk, world, M, place) {
       if (!f) continue;
       const holes = isGH ? [] : planHoles(f.L, y0, storeyH, s === 0, i === d.entrance, d.rand, kind);
       addWallBand(out, mat, a, b, y0, y1, holes, col, us,
-        isGH ? { plain: true } : { trimCol, soffitCol, doorCol, glassCol, shutterCol });
+        isGH ? { plain: true } : { trimCol, soffitCol, doorCol, glassCol, shutterCol, frameCol });
     }
   }
 
@@ -898,19 +920,27 @@ function buildOne(d, chunk, world, M, place) {
 function addFlatRoof(out, d, wallTopY, trimCol, tint, world) {
   const { ring } = d;
   addCapSlab(out, ring, wallTopY + 0.06, [tint[0] * 0.76, tint[1] * 0.75, tint[2] * 0.73]);
-  const PH = 0.58 + d.rand() * 0.24, PT = 0.20;
+  const PH = 0.92 + d.rand() * 0.34, PT = 0.20;
+  const copeCol = [trimCol[0] * 0.68, trimCol[1] * 0.66, trimCol[2] * 0.62];
   for (let i = 0; i < ring.length; i++) {
     const a = ring[i], b = ring[(i + 1) % ring.length];
     const f = edgeFrame(a, b);
     if (!f) continue;
-    const ex = PT * 0.75;
+    const ex = PT * 0.5;
     const mx = (a[0] + b[0]) * 0.5 - f.ox * PT * 0.5, mz = (a[1] + b[1]) * 0.5 - f.oz * PT * 0.5;
     addBox(out.plaster, mx, wallTopY + PH * 0.5, mz, f.tx, f.tz,
       f.L * 0.5 + ex, PH * 0.5, PT * 0.5, trimCol, 4);
-    // coping band a touch proud of the parapet
-    addBox(out.plaster, mx, wallTopY + PH + 0.035, mz, f.tx, f.tz,
-      f.L * 0.5 + ex + 0.04, 0.035, PT * 0.5 + 0.045,
-      [trimCol[0] * 0.86, trimCol[1] * 0.85, trimCol[2] * 0.83], 2);
+    // grey precast coping, proud of the parapet on both faces
+    addBox(out.plaster, mx, wallTopY + PH + 0.045, mz, f.tx, f.tz,
+      f.L * 0.5 + ex + 0.05, 0.045, PT * 0.5 + 0.055, copeCol, 2);
+  }
+  // corner piers, a little taller than the run between them
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    addBox(out.plaster, a[0], wallTopY + (PH + 0.22) * 0.5, a[1], 1, 0,
+      0.19, (PH + 0.22) * 0.5, 0.19, trimCol, 2);
+    addBox(out.plaster, a[0], wallTopY + PH + 0.28, a[1], 1, 0,
+      0.24, 0.05, 0.24, copeCol, 2);
   }
 }
 
@@ -935,7 +965,7 @@ function addFurniture(d, world, out, place, wallTopY, trimCol, tint) {
   const isHouse = d.kind === 'house';
 
   // ---- solar water heater: nearly every dwelling has one -----------------------------
-  if (d.kind !== 'greenhouse' && (isHouse ? r() < 0.90 : r() < 0.45)) {
+  if (d.kind !== 'greenhouse' && (isHouse ? r() < 0.94 : r() < 0.5)) {
     if (flat) {
       const px = d.cx + (r() - 0.5) * Math.max(main.w - 2.8, 0) * 0.5;
       const pz = d.cz + (r() - 0.5) * Math.max(main.d - 2.8, 0) * 0.5;
@@ -952,7 +982,7 @@ function addFurniture(d, world, out, place, wallTopY, trimCol, tint) {
       const uOff = (r() - 0.5) * Math.max(main.w - 2.6, 0) * 0.55;
       const px = main.cx + main.ux * uOff + vx * vOff;
       const pz = main.cz + main.uz * uOff + vz * vOff;
-      const nrm = [-vx * sgn * Math.sin(d.pitch), c, -vz * sgn * Math.sin(d.pitch)];
+      const nrm = [vx * sgn * Math.sin(d.pitch), c, vz * sgn * Math.sin(d.pitch)];
       place('solarPitched', px, y, pz, nrm, [vx * sgn, -tp * c, vz * sgn]);
     }
   }
@@ -974,10 +1004,11 @@ function addFurniture(d, world, out, place, wallTopY, trimCol, tint) {
     const y = flat ? wallTopY + 0.10 : wallTopY + 0.22 + Math.tan(d.pitch) * (main.d / 2) - 0.35;
     place('chimney', px, y, pz, [0, 1, 0], [0, 0, 1]);
   }
-  if (d.kind !== 'greenhouse' && r() < 0.3) {
-    const uOff = (r() - 0.5) * main.w * 0.6;
-    const y = flat ? wallTopY + 0.10 : wallTopY + 0.10;
-    place('vent', main.cx + main.ux * uOff, y + 0.2, main.cz + main.uz * uOff, [0, 1, 0], [0, 0, 1]);
+  if (flat && r() < 0.45) {
+    const uOff = (r() - 0.5) * main.w * 0.6, vOff = (r() - 0.5) * main.d * 0.5;
+    const vx2 = -main.uz, vz2 = main.ux;
+    place('vent', main.cx + main.ux * uOff + vx2 * vOff, wallTopY + 0.10,
+      main.cz + main.uz * uOff + vz2 * vOff, [0, 1, 0], [0, 0, 1]);
   }
 
   // ---- satellite dish on the parapet or the gable wall ---------------------------------
@@ -986,8 +1017,9 @@ function addFurniture(d, world, out, place, wallTopY, trimCol, tint) {
     const f = edgeFrame(e, e2);
     if (f) {
       const s = f.L * (0.2 + r() * 0.6);
-      place('dish', e[0] + f.tx * s + f.ox * 0.35, wallTopY - 0.6,
-        e[1] + f.tz * s + f.oz * 0.35, [0, 1, 0], [f.ox, 0, f.oz]);
+      const y = d.floorY + d.wallH - 0.85 - r() * 0.6;
+      place('dish', e[0] + f.tx * s + f.ox * 0.05, y, e[1] + f.tz * s + f.oz * 0.05,
+        [f.ox, 0, f.oz], [0, 1, 0]);
     }
   }
 

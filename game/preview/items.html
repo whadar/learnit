@@ -39,13 +39,15 @@ async function loadTrack(world) {
 }
 
 /* A plain road ribbon so the items have tarmac to sit on until trackMesh.js lands. */
-function roadRibbon(trk) {
+function roadRibbon(trk, world) {
   const N = 520, pos = [], uv = [], idx = [];
   for (let i = 0; i <= N; i++) {
     const s = i / N * trk.length, sm = trk.sample(s);
     const hw = (sm.width ?? 12) * 0.5;
     for (const k of [-1, 1]) {
-      pos.push(sm.pos.x + sm.normal.x * hw * k, sm.pos.y + 0.06, sm.pos.z + sm.normal.z * hw * k);
+      const x = sm.pos.x + sm.normal.x * hw * k, z = sm.pos.z + sm.normal.z * hw * k;
+      const ty = (world?.heightAt?.(x, z) ?? sm.pos.y);
+      pos.push(x, Math.max(sm.pos.y, ty) + 0.12, z);
       uv.push(k * 0.5 + 0.5, s * 0.12);
     }
     if (i < N) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
@@ -64,7 +66,8 @@ function roadRibbon(trk) {
   c.fillStyle = '#e8e4d8'; c.fillRect(0, 0, 7, 256); c.fillRect(249, 0, 7, 256);
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: t, roughness: 0.94, metalness: 0.0 }));
+  const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    map: t, roughness: 0.94, metalness: 0.0, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
   mesh.receiveShadow = true;
   return mesh;
 }
@@ -143,14 +146,14 @@ const SCENES = {
     frames: 84, fov: 40,
     setup() {
       const b = items.boxes[3];
-      karts.forEach((k, i) => placeKart(k, b.s - 34 - i * 7, [-3.2, 0, 3.2, -1.6, 1.6, 0][i], 21));
+      karts.forEach((k, i) => placeKart(k, b.s - 26 - i * 6.5, [-3.2, 0, 3.2, -1.6, 1.6][i], 21));
       hero = karts[0];
     },
     camera() {
-      const b = items.boxes[3], sm = track.sample(b.s - 26);
+      const b = items.boxes[3], sm = track.sample(b.s - 13);
       return {
-        pos: [sm.pos.x - sm.tangent.x * 12 + sm.normal.x * 2.5, sm.pos.y + 4.4, sm.pos.z - sm.tangent.z * 12 + sm.normal.z * 2.5],
-        look: [b.pos.x, b.pos.y - 0.2, b.pos.z], fov: 40,
+        pos: [sm.pos.x - sm.tangent.x * 7.0 + sm.normal.x * 1.2, sm.pos.y + 2.6, sm.pos.z - sm.tangent.z * 7.0 + sm.normal.z * 1.2],
+        look: [b.pos.x, b.pos.y + 0.1, b.pos.z], fov: 40,
       };
     },
   },
@@ -158,7 +161,7 @@ const SCENES = {
     frames: 128, fov: 34,
     setup() {
       const b = items.boxes[3];
-      karts.forEach((k, i) => placeKart(k, b.s - 40 - i * 9, [0, -3.2, 3.2, -1.6, 1.6, 0][i], 21));
+      karts.forEach((k, i) => placeKart(k, b.s - 40 - i * 9, [0, -3.2, 3.2, -1.6, 1.6][i], 21));
       hero = karts[0];
     },
     camera() {
@@ -174,7 +177,7 @@ const SCENES = {
     frames: 150, fov: 42,
     setup() {
       const s0 = items.boxes[6].s + 40;
-      karts.forEach((k, i) => placeKart(k, s0 + [0, -16, -30, -44, -58, -72][i], [-1.0, 2.6, -2.8, 1.4, -3.4, 3.0][i], 22));
+      karts.forEach((k, i) => placeKart(k, s0 + [0, -16, -30, -44, -58][i], [-1.0, 2.6, -2.8, 1.4, -3.4][i], 22));
       hero = karts[2];
       items.setItem(karts[2], 'sabra');
       items.setItem(karts[3], 'hummus');
@@ -197,7 +200,7 @@ const SCENES = {
     frames: 96, fov: 30,
     setup() {
       const s0 = items.boxes[9].s;
-      karts.forEach((k, i) => placeKart(k, s0 - i * 11, [0, 3.0, -3.2, 2.0, -2.2, 1.0][i], 19));
+      karts.forEach((k, i) => placeKart(k, s0 - i * 11, [0, 3.0, -3.2, 2.0, -2.2][i], 19));
       hero = karts[0];
       items.setItem(karts[0], 'jaffa3');
       items.setItem(karts[1], 'pan');
@@ -219,7 +222,7 @@ const SCENES = {
     frames: 168, fov: 38,
     setup() {
       const s0 = items.boxes[1].s + 30;
-      karts.forEach((k, i) => placeKart(k, s0 - i * 26, [0.5, -2.6, 2.4, -1.4, 3.0, -3.0][i], 22));
+      karts.forEach((k, i) => placeKart(k, s0 - i * 26, [0.5, -2.6, 2.4, -1.4, 3.0][i], 22));
       hero = karts[0];
       items.setItem(karts[4], 'catnap');
       at(0.05, () => items.useItem(karts[4], false));
@@ -245,8 +248,8 @@ function buildDisplay() {
   ids.forEach((id, i) => {
     const row = Math.floor(i / cols), col = i % cols, inRow = Math.min(cols, ids.length - row * cols);
     const holder = new THREE.Group();
-    const m = createItemMesh(id);
-    m.position.y = 0.55;
+    const m = iconOf(id, 0.95);
+    m.position.y = 0.72;
     holder.add(m);
     // plinth
     const plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.60, 0.14, 20),
@@ -257,7 +260,7 @@ function buildDisplay() {
       new THREE.MeshStandardMaterial({ color: ITEMS[id].color, emissive: ITEMS[id].color, emissiveIntensity: 0.8, roughness: 0.3 }));
     ring.rotation.x = -Math.PI / 2; ring.position.y = 0.08;
     holder.add(ring);
-    holder.position.set((col - (inRow - 1) / 2) * gap, -row * 1.5, 0);
+    holder.position.set((col - (inRow - 1) / 2) * gap, -row * 1.62, 0);
     holder.userData = { id, m, phase: i * 0.7 };
     g.add(holder);
   });
@@ -286,21 +289,38 @@ function buildHud() {
   hudHolder = new THREE.Group();
   hudScene.add(hudHolder);
   hudFace = null;
+  for (const id of ITEM_IDS) {          // pre-build: the roulette must not compile meshes mid-frame
+    const icon = iconOf(id);
+    icon.visible = false;
+    hudIcons.set(id, icon);
+    hudHolder.add(icon);
+  }
 }
 
-function setHudItem(id) {
-  if (hudFace === id) return;
-  hudFace = id;
-  hudHolder.clear();
-  if (!id) return;
+/** Normalise an item mesh into a 1.5-unit icon, centred, with its authored icon tilt. */
+function iconOf(id, span = 1.5) {
+  const holder = new THREE.Group();
   const m = createItemMesh(id);
   const box = new THREE.Box3().setFromObject(m);
   const size = box.getSize(new THREE.Vector3());
-  const k = 1.5 / Math.max(size.x, size.y, size.z, 0.001);
+  const k = span / Math.max(size.x, size.y, size.z, 0.001);
   m.scale.multiplyScalar(k);
-  const c = box.getCenter(new THREE.Vector3()).multiplyScalar(k);
-  m.position.sub(c);
-  hudHolder.add(m);
+  m.position.sub(box.getCenter(new THREE.Vector3()).multiplyScalar(k));
+  holder.add(m);
+  holder.rotation.x = m.userData?.iconTilt ?? 0;
+  holder.userData = { id, inner: m };
+  return holder;
+}
+
+const hudIcons = new Map();
+function setHudItem(id) {
+  if (hudFace === id) return;
+  hudFace = id;
+  for (const [k, o] of hudIcons) o.visible = (k === id);
+  if (!id || hudIcons.has(id)) return;
+  const icon = iconOf(id);
+  hudIcons.set(id, icon);
+  hudHolder.add(icon);
 }
 
 function renderHud() {
@@ -367,9 +387,9 @@ const game = await boot({
   modules: async (c) => {
     ctx = c; scene = c.scene; engine = c.engine;
     track = await loadTrack(c.world);
-    scene.add(roadRibbon(track));
+    scene.add(roadRibbon(track, c.world));
     items = createItemSystem(c.world, track, { scene, seed: 90210 });
-    karts = await makeKarts(6);
+    karts = await makeKarts(5);
     hero = karts[0];
     buildHud();
 
@@ -414,7 +434,7 @@ const game = await boot({
           for (const h of display.children) {
             const u = h.userData;
             u.m.rotation.y += d * 26;
-            u.m.position.y = 0.62 + Math.sin(simTime * 30 + u.phase) * 0.06;
+            u.m.position.y = 0.78 + Math.sin(simTime * 30 + u.phase) * 0.06;
           }
         }
         updateHudText();

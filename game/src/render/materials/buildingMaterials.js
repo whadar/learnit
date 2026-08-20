@@ -66,15 +66,15 @@ function plasterMaps(size) {
     const m = mott[i] - 0.5, t = trowel[i] - 0.5, g = grain[i] - 0.5, f = fine[i] - 0.5;
     h[i] = f * 0.62 + g * 0.42 + t * 0.16;
     // patchy staining: old lime wash over cement render
-    const stain = smoothstep(0.56, 0.78, mott[i]) * 0.055;
-    const v = 1 + m * 0.055 + t * 0.045 + g * 0.028 - stain;
-    col[i * 4] = clamp(241 * v, 0, 255);
-    col[i * 4 + 1] = clamp(235 * (v - stain * 0.25), 0, 255);
-    col[i * 4 + 2] = clamp(219 * (v - stain * 0.7), 0, 255);
+    const stain = smoothstep(0.52, 0.80, mott[i]) * 0.085;
+    const v = 1 + m * 0.070 + t * 0.055 + g * 0.030 - stain;
+    col[i * 4] = clamp(233 * v, 0, 255);
+    col[i * 4 + 1] = clamp(225 * (v - stain * 0.30), 0, 255);
+    col[i * 4 + 2] = clamp(206 * (v - stain * 0.85), 0, 255);
     col[i * 4 + 3] = 255;
     rgh[i] = clamp(0.83 + m * 0.10 + g * 0.05, 0.45, 0.99);
   }
-  return { map: tex(col, size, true), normalMap: normalTex(h, size, 2.1), roughnessMap: ormTex(size, rgh) };
+  return { map: tex(col, size, true), normalMap: normalTex(h, size, 1.35), roughnessMap: ormTex(size, rgh) };
 }
 
 /* --------------------------------------------------------------- jerusalem stone -- */
@@ -178,23 +178,23 @@ function pantileMaps(size) {
         const t = cf / 0.60;
         hh -= Math.sin(Math.PI * t) * 0.10;
       }
-      const seam = smoothstep(0.045, 0.0, Math.min(cf, 1 - cf)) * 0.34;   // dark groove between tiles
+      const seam = smoothstep(0.055, 0.0, Math.min(cf, 1 - cf)) * 0.52;   // dark groove between tiles
       hh -= seam;
-      const lap = smoothstep(0.16, 0.0, rf);             // head lap of the tile above
-      hh += lap * 0.30;
-      hh -= smoothstep(0.10, 0.20, rf) * smoothstep(0.30, 0.19, rf) * 0.22;  // shadow line under the lap
+      const lap = smoothstep(0.13, 0.0, rf);             // head lap of the tile above
+      hh += lap * 0.42;
+      hh -= smoothstep(0.13, 0.22, rf) * smoothstep(0.34, 0.21, rf) * 0.40;  // shadow line under the lap
       hh += (grit[i] - 0.5) * 0.10;
       h[i] = hh;
       // --- colour ---------------------------------------------------------------
       const hue = jit2;
-      let r = lerp(196, 168, hue) + (jit - 0.5) * 26;
-      let g = lerp(94, 72, hue) + (jit - 0.5) * 16;
-      let b = lerp(58, 48, hue) + (jit - 0.5) * 12;
-      const sun = clamp(0.66 + hh * 0.42, 0.45, 1.18);   // baked curvature shading
+      let r = lerp(203, 150, hue) + (jit - 0.5) * 40;
+      let g = lerp(101, 66, hue) + (jit - 0.5) * 24;
+      let b = lerp(66, 46, hue) + (jit - 0.5) * 18;
+      const sun = clamp(0.50 + hh * 0.60, 0.30, 1.20);   // baked curvature shading
       r *= sun; g *= sun; b *= sun;
       const lm = smoothstep(0.60, 0.86, lichen[i] * 0.72 + wear[i] * 0.36);
       r = lerp(r, 150, lm * 0.55); g = lerp(g, 149, lm * 0.55); b = lerp(b, 128, lm * 0.55);
-      const dirt = smoothstep(0.10, 0.0, rf) * 0.22;     // grime collects in the lap
+      const dirt = smoothstep(0.13, 0.0, rf) * 0.34;     // grime collects in the lap
       r *= 1 - dirt; g *= 1 - dirt * 0.92; b *= 1 - dirt * 0.85;
       col[i * 4] = clamp(r, 0, 255);
       col[i * 4 + 1] = clamp(g, 0, 255);
@@ -203,7 +203,7 @@ function pantileMaps(size) {
       rgh[i] = clamp(0.80 - hh * 0.14 + lm * 0.10 + (grit[i] - 0.5) * 0.08, 0.42, 0.98);
     }
   }
-  return { map: tex(col, size, true), normalMap: normalTex(h, size, 2.6), roughnessMap: ormTex(size, rgh) };
+  return { map: tex(col, size, true), normalMap: normalTex(h, size, 2.9), roughnessMap: ormTex(size, rgh) };
 }
 
 /* --------------------------------------------------------------------- shutters --- */
@@ -288,8 +288,8 @@ export function createBuildingMaterials(opts = {}) {
   // Interior-dark window glass. Kept opaque: the sky reflection off a low-roughness surface
   // plus a near-black base reads exactly like a shaded room, and costs no sorting.
   const glass = new THREE.MeshStandardMaterial({
-    name: 'bld-glass', color: 0x0d1519, vertexColors: true,
-    roughness: 0.075, metalness: 0.10, envMapIntensity: 2.1,
+    name: 'bld-glass', color: 0x1b2830, vertexColors: true,
+    roughness: 0.055, metalness: 0.18, envMapIntensity: 3.0,
   });
 
   // Painted metal / galvanised steel for solar heaters, tanks, A/C, railings.

@@ -62,7 +62,7 @@ export function resolveTrack(world, track, opts = {}) {
 export function buildRacingLine(track, opts = {}) {
   const O = Object.assign({
     ds: 3.0,               // centre-line sampling step
-    margin: 1.75,          // metres of tarmac kept between the line and the edge
+    margin: 1.95,          // metres of tarmac kept between the line and the edge
     minHalf: 0.8,
     iterations: 900,       // Gauss-Seidel sweeps of the min-curvature relaxation
     relax: 0.42,
@@ -326,8 +326,10 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
     aimBase: 4.6, aimGain: 0.56, aimMin: 6.0, aimMax: 21.0,
     stanley: 0.42, crossGain: 0.85, yawDamp: 0.055,
     driftSkill: 1.0,       // global multiplier on how willing the field is to drift
-    driftMaxSpeed: 16.5,   // m/s: above this a slide costs more grip than the mini-turbo pays
-    driftCornerV: 15.0,    // only corners the profile takes below this are worth a drift
+    driftSteerMin: 0.24,   // sustained steering that counts as "this is a corner"
+    driftHold: 0.22,       // seconds it must be held before hopping
+    driftMinSpeed: 8.0,    // m/s below which a hop is pointless
+    driftCornerV: 11.0,    // only true hairpins: above this the slide costs more than the boost pays
     rubberBand: true,
     catchMax: 0.060,           // +6.0 % target speed when far behind …
     leadDrag: 0.028,           // … and -2.8 % when running away with it
@@ -394,9 +396,9 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
       input: { throttle: 0, brake: 0, steer: 0, drift: 0, item: 0, look: 0 },
       s: 0, lateral: 0, progress: 0, place: i + 1, targetSpeed: 0, speedScale: 1, catchup: 1,
       avoid: 0, attract: 0, mistake: { t: 2 + rand() * 6, kind: null, left: 0, steer: 0, pace: 1 },
-      drift: { on: false, dir: 0, t: 0, cool: 0, want: 0 },
+      drift: { on: false, dir: 0, t: 0, cool: 0, hold: 0, dirHold: 0 },
       hold: 0, useTimer: 0, boostCool: 0, react: 0, aim: { s: 0, lat: 0 },
-      offTrackTime: 0, stats: { drifts: 0, miniturbos: 0, items: 0, mistakes: 0, catchBoosts: 0 },
+      offTrackTime: 0, stats: { drifts: 0, miniturbos: 0, items: 0, mistakes: 0, catchBoosts: 0, maxBehind: 0 },
     });
   }
 
@@ -629,9 +631,11 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
     /* -- catch-up assist (AI only, capped) -- */
     let catchup = 1;
     if (O.rubberBand && !r.isPlayer) {
-      const gap = dS(leaderProgress, r.progress);   // negative: behind the leader
-      const behindBy = Math.max(0, -gap);
-      const aheadBy = Math.max(0, gap);
+      // progress is monotonic metres of race distance, so this is a plain difference
+      const gap = leaderProgress - r.progress;      // positive: we are behind the leader
+      const behindBy = Math.max(0, gap);
+      if (behindBy > r.stats.maxBehind) r.stats.maxBehind = behindBy;
+      const aheadBy = Math.max(0, -gap);
       catchup = 1 + clamp((behindBy - 20) / 150, 0, 1) * O.catchMax * r.tier.catch
         - clamp((aheadBy - 45) / 160, 0, 1) * O.leadDrag;
       r.boostCool -= dt;
@@ -709,45 +713,40 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
     if (m.kind === 'lift') { inp.throttle = 0; inp.brake = 0; }
 
     /* -- drift -- */
-    // A drift is only quicker where the corner is tight enough that the drift lock's own
-    // steering curve is not wider than the corner itself — otherwise it just fires the kart
-    // at the inside verge. Tie it to the corner's profile speed, which already knows that.
+    // Commit to a slide only once the steering has genuinely held one way for a moment: hopping
+    // on a transient correction points the slide out of the corner instead of through it. The
+    // corner's own profile speed decides whether a mini-turbo is worth the lost grip at all.
     const d = r.drift;
-    const win = clamp(spd * 1.0, 12, 26);
-    const bendAhead = line.bend(r.s + 3, win);
-    const bendNow = line.bend(r.s - 2, Math.max(9, win * 0.6));
     const skill = clamp(r.tier.drift * O.driftSkill, 0, 1.4);
-    const kMin = 0.0300 * lerp(1.35, 0.85, clamp(r.personality.driftLove * skill, 0, 1));
-    const cornerV = line.speedAt(r.s + clamp(spd * 0.55, 5, 18));
-    const worth = cornerV < O.driftCornerV && Math.abs(bendAhead) > kMin;
-    const wash = Math.abs(cross) > 2.6;                  // the slide is washing us off the line
+    const cornerV = line.speedAt(r.s + clamp(spd * 0.6, 5, 20));
+    const sgn = Math.sign(inp.steer) || 0;
+    const loaded = Math.abs(inp.steer) > O.driftSteerMin && spd > O.driftMinSpeed
+      && Math.abs(cross) < 2.0 && st.onTrack && st.grounded;
+    if (loaded && (d.dirHold === sgn || d.hold === 0)) { d.hold += dt; d.dirHold = sgn; }
+    else { d.hold = 0; d.dirHold = 0; }
+
     if (d.on) {
       d.t += dt;
-      const over = Math.abs(bendNow) < kMin * 0.45 && d.t > 0.4;
-      if (over || wash || !st.onTrack || spd < P.driftMinSpeed * 1.05 || d.t > 4.5 || Math.sign(bendNow || d.dir) !== d.dir) {
-        d.on = false; d.cool = 0.45 + r.rand() * 0.3;
+      const lost = !st.onTrack || Math.abs(cross) > 3.0 || spd < 8;
+      const straight = Math.abs(inp.steer) < O.driftSteerMin * 0.5 && d.t > 0.5;
+      if (lost || straight || d.t > 5.0 || (sgn !== 0 && sgn !== d.dir && d.t > 0.5)) {
+        d.on = false; d.cool = 0.35 + r.rand() * 0.25;
         if (st.drift.tier > 0) r.stats.miniturbos++;
       }
     } else if (d.cool > 0) {
       d.cool -= dt;
-    } else if (worth && spd > P.driftMinSpeed + 3.0 && spd < O.driftMaxSpeed && st.grounded
-      && st.onTrack && Math.abs(cross) < 1.8 && skill > 0.25 && r.rand() < 0.65 + 0.35 * skill) {
-      d.on = true; d.dir = Math.sign(bendAhead) || 1; d.t = 0; r.stats.drifts++;
+    } else if (d.hold > O.driftHold && skill > 0.25 && cornerV < O.driftCornerV
+      && spd < cornerV * 1.6
+      && r.rand() < 0.6 + 0.4 * skill) {
+      d.on = true; d.dir = d.dirHold || 1; d.t = 0; r.stats.drifts++;
     }
     inp.drift = d.on ? 1 : 0;
-    if (d.on) {
-      if (d.t < 0.26) {
-        // the hop only latches a direction if the stick is already loaded that way
-        inp.steer = clamp(lerp(inp.steer, d.dir * 0.7, 0.75), -1, 1);
-      } else {
-        // invert the drift lock: steerLock = dir * (innerBias + range * inward), so pick the
-        // `inward` that makes the locked angle match what pure pursuit actually asked for.
-        const want = clamp(inp.steer * d.dir, -1, 1);
-        const inward = clamp((want - P.driftInnerBias) / Math.max(P.driftSteerRange, 0.05), -1, 1);
-        inp.steer = d.dir * inward;
-      }
-      inp.throttle = Math.max(inp.throttle, 0.9);
-      inp.brake = 0;
+    if (st.drift.active) {
+      // invert the kart's drift lock — steerLock = dir * (innerBias + range * inward) — so the
+      // slide holds the line the controller asked for instead of the tightest one available.
+      const dd = st.drift.dir || d.dir || 1;
+      const want = clamp(inp.steer * dd, -1, 1);
+      inp.steer = dd * clamp((want - P.driftInnerBias) / Math.max(P.driftSteerRange, 0.05), -1, 1);
     }
 
     /* -- items -- */

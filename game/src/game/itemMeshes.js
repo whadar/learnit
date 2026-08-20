@@ -87,10 +87,32 @@ function knobbly(radius, detail, amp, seed) {
   return g;
 }
 
-function merge(list) {
-  // tiny local merge so we do not depend on examples/jsm
-  const geos = list.map(([g, m]) => { const c = g.clone(); c.applyMatrix4(m); return c; });
-  return geos;
+/** Merge [geometry, matrix] pairs into one indexed BufferGeometry (position/normal/uv only). */
+export function mergeGeometries(list) {
+  const pos = [], nor = [], uvs = [], idx = [];
+  const nm = new THREE.Matrix3();
+  for (const [g0, m] of list) {
+    const g = g0.index ? g0 : g0.toNonIndexed();
+    const p = g.attributes.position, n = g.attributes.normal, u = g.attributes.uv;
+    const base = pos.length / 3;
+    nm.getNormalMatrix(m);
+    const v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i).applyMatrix4(m);
+      pos.push(v.x, v.y, v.z);
+      if (n) { v.fromBufferAttribute(n, i).applyMatrix3(nm).normalize(); nor.push(v.x, v.y, v.z); }
+      else nor.push(0, 1, 0);
+      uvs.push(u ? u.getX(i) : 0, u ? u.getY(i) : 0);
+    }
+    if (g.index) for (let i = 0; i < g.index.count; i++) idx.push(base + g.index.getX(i));
+    else for (let i = 0; i < p.count; i++) idx.push(base + i);
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  out.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  out.setIndex(idx);
+  return out;
 }
 
 /* ---------------------------------------------------------------- textures */
@@ -335,7 +357,7 @@ export function makeSabra() {
 export function makeJaffa(scale = 1) {
   const g = new THREE.Group(); g.name = 'item:jaffa';
   g.add(mesh(new THREE.SphereGeometry(0.28, 20, 16), std('jaffa-skin', {
-    color: 0xef8b1f, roughness: 0.66, bumpMap: citrusPeel(), bumpScale: 0.9,
+    color: 0xef8b1f, roughness: 0.54, bumpMap: citrusPeel(), bumpScale: 0.42,
     emissive: 0x50210a, emissiveIntensity: 0.35,
   })));
   g.add(mesh(new THREE.CylinderGeometry(0.022, 0.03, 0.07, 8),
@@ -374,7 +396,7 @@ export function makePan() {
   g.add(mesh(new THREE.TorusGeometry(0.42, 0.028, 7, 30), iron, { pos: [0, 0.125, 0], rot: [Math.PI / 2, 0, 0] }));
   // sauce
   g.add(mesh(new THREE.CircleGeometry(0.385, 26), std('pan-sauce', {
-    color: 0xffffff, map: shakshukaTop(), roughness: 0.35, emissive: 0x3a0a04, emissiveIntensity: 0.35,
+    color: 0xffffff, map: shakshukaTop(), roughness: 0.32, emissive: 0x6b1207, emissiveIntensity: 0.55,
   }), { rot: [-Math.PI / 2, 0, 0], pos: [0, 0.075, 0] }));
   // eggs
   const white = std('egg-white', { color: 0xfaf4e4, roughness: 0.4 });
@@ -395,7 +417,7 @@ export function makePan() {
     { pos: [0, 0.145, -0.62], rot: [1.36, 0, 0] });
   g.add(handle);
   g.add(mesh(new THREE.TorusGeometry(0.05, 0.016, 6, 12), iron, { pos: [0, 0.235, -0.85], rot: [0, Math.PI / 2, 0] }));
-  g.userData = { id: 'pan', radius: 0.5, spin: [0, 1.2, 0] };
+  g.userData = { id: 'pan', radius: 0.5, spin: [0, 1.2, 0], iconTilt: -0.62 };
   return g;
 }
 
@@ -403,34 +425,45 @@ export function makePan() {
 export function makeFalafel(scale = 1) {
   const g = new THREE.Group(); g.name = 'item:falafel';
   const crust = tex('falafel-crust', 128, (c, S) => {
-    c.fillStyle = '#8b6a2e'; c.fillRect(0, 0, S, S);
+    c.fillStyle = '#6f4d1f'; c.fillRect(0, 0, S, S);
     const r = rng(19);
-    for (let i = 0; i < 900; i++) {
+    for (let i = 0; i < 1100; i++) {
       const v = r();
-      c.fillStyle = v > 0.82 ? `rgba(96,132,48,${0.4 + r() * 0.5})`
-        : `rgba(${120 + r() * 90 | 0},${86 + r() * 60 | 0},${34 + r() * 30 | 0},${0.25 + r() * 0.5})`;
-      c.beginPath(); c.arc(r() * S, r() * S, 1 + r() * 3.2, 0, TAU); c.fill();
+      c.fillStyle = v > 0.80 ? `rgba(${70 + r() * 45 | 0},${112 + r() * 40 | 0},${38 + r() * 25 | 0},${0.45 + r() * 0.5})`
+        : `rgba(${105 + r() * 90 | 0},${68 + r() * 55 | 0},${24 + r() * 26 | 0},${0.28 + r() * 0.55})`;
+      c.beginPath(); c.arc(r() * S, r() * S, 1 + r() * 3.4, 0, TAU); c.fill();
+    }
+    for (let i = 0; i < 60; i++) {          // sesame
+      c.fillStyle = 'rgba(240,226,190,.75)';
+      c.beginPath(); c.ellipse(r() * S, r() * S, 2.2, 1.4, r() * 3, 0, TAU); c.fill();
     }
   });
-  g.add(mesh(knobbly(0.24, 2, 0.16, 4), std('falafel-body', {
-    color: 0xffffff, map: crust, roughness: 0.85, emissive: 0x2a1000, emissiveIntensity: 0.35,
+  g.add(mesh(knobbly(0.24, 2, 0.17, 4), std('falafel-body', {
+    color: 0xffffff, map: crust, roughness: 0.82, emissive: 0x2e1204, emissiveIntensity: 0.30,
   })));
-  // flames
+  // a lick of heat, not a bonfire
   const flame = mat('flame', () => new THREE.MeshBasicMaterial({
-    color: 0xffb03a, transparent: true, opacity: 0.72, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    color: 0xff8a24, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending,
+    depthWrite: false, side: THREE.DoubleSide,
+  }));
+  const inner = mat('flame-core', () => new THREE.MeshBasicMaterial({
+    color: 0xffc85a, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending,
+    depthWrite: false, side: THREE.DoubleSide,
   }));
   const fr = rng(8);
   for (let i = 0; i < 5; i++) {
-    const a = i / 5 * TAU;
-    const h = 0.20 + fr() * 0.18;
-    g.add(mesh(new THREE.ConeGeometry(0.075, h, 7, 1, true), flame, {
-      pos: [Math.cos(a) * 0.13, 0.19 + h * 0.4, Math.sin(a) * 0.13],
-      rot: [Math.cos(a) * 0.28, 0, -Math.sin(a) * 0.28], shadow: false,
+    const a = i / 5 * TAU + 0.3;
+    const h = 0.13 + fr() * 0.10;
+    g.add(mesh(new THREE.ConeGeometry(0.055, h, 6, 1, true), flame, {
+      pos: [Math.cos(a) * 0.15, 0.16 + h * 0.4, Math.sin(a) * 0.15],
+      rot: [Math.cos(a) * 0.35, 0, -Math.sin(a) * 0.35], shadow: false,
     }));
   }
-  g.add(mesh(new THREE.ConeGeometry(0.11, 0.34, 8, 1, true), mat('flame-core', () => new THREE.MeshBasicMaterial({
-    color: 0xfff0b0, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-  })), { pos: [0, 0.28, 0], shadow: false }));
+  g.add(mesh(new THREE.ConeGeometry(0.085, 0.22, 8, 1, true), inner, { pos: [0, 0.24, 0], shadow: false }));
+  g.add(mesh(new THREE.CircleGeometry(0.34, 16), mat('heat-ring', () => new THREE.MeshBasicMaterial({
+    map: glowSprite(), color: 0xff9c3a, transparent: true, opacity: 0.30,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  })), { pos: [0, -0.22, 0], rot: [-Math.PI / 2, 0, 0], shadow: false }));
   g.scale.setScalar(scale);
   g.userData = { id: 'falafel', radius: 0.3 * scale, spin: [0.4, 2.6, 0] };
   return g;
@@ -452,29 +485,29 @@ export function makeFalafelTriple() {
 export function makeHummus() {
   const g = new THREE.Group(); g.name = 'item:hummus';
   const pts = [];
-  for (let i = 0; i <= 8; i++) {
-    const t = i / 8;
-    pts.push(new THREE.Vector2(lerp(0.10, 0.36, Math.pow(t, 0.7)), lerp(0, 0.17, t)));
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10;
+    pts.push(new THREE.Vector2(lerp(0.12, 0.40, Math.pow(t, 0.65)), lerp(0, 0.30, t)));
   }
-  pts.push(new THREE.Vector2(0.375, 0.185), new THREE.Vector2(0.355, 0.185));
-  g.add(mesh(new THREE.LatheGeometry(pts, 24), std('bowl', {
-    color: 0xf2f0ea, roughness: 0.35, metalness: 0.0, side: THREE.DoubleSide,
-  })));
-  g.add(mesh(new THREE.TorusGeometry(0.30, 0.014, 6, 24), std('bowl-band', { color: 0x2f6fd0, roughness: 0.4 }),
-    { pos: [0, 0.115, 0], rot: [Math.PI / 2, 0, 0] }));
-  g.add(mesh(new THREE.CircleGeometry(0.335, 26), std('hummus-top', {
-    color: 0xffffff, map: hummusTop(), roughness: 0.28, metalness: 0.02,
-  }), { rot: [-Math.PI / 2, 0, 0], pos: [0, 0.155, 0] }));
-  const pea = std('chickpea', { color: 0xd9c88d, roughness: 0.5 });
-  for (const [x, z] of [[0.06, 0.05], [-0.07, 0.02], [0.01, -0.09]]) {
-    g.add(mesh(new THREE.SphereGeometry(0.036, 10, 8), pea, { pos: [x, 0.172, z], scale: [1, 0.82, 1] }));
+  pts.push(new THREE.Vector2(0.415, 0.325), new THREE.Vector2(0.385, 0.322));
+  g.add(mesh(new THREE.LatheGeometry(pts, 26), std('bowl', {
+    color: 0xf4f2ec, roughness: 0.30, metalness: 0.0, side: THREE.DoubleSide,
+  }), { pos: [0, -0.14, 0] }));
+  g.add(mesh(new THREE.TorusGeometry(0.335, 0.017, 6, 26), std('bowl-band', { color: 0x2f6fd0, roughness: 0.35 }),
+    { pos: [0, 0.02, 0], rot: [Math.PI / 2, 0, 0] }));
+  g.add(mesh(new THREE.CircleGeometry(0.365, 28), std('hummus-top', {
+    color: 0xffffff, map: hummusTop(), roughness: 0.24, metalness: 0.03,
+  }), { rot: [-Math.PI / 2, 0, 0], pos: [0, 0.135, 0] }));
+  const pea = std('chickpea', { color: 0xdcc98c, roughness: 0.45 });
+  for (const [x, z] of [[0.08, 0.06], [-0.09, 0.03], [0.01, -0.11], [-0.03, 0.12]]) {
+    g.add(mesh(new THREE.SphereGeometry(0.042, 10, 8), pea, { pos: [x, 0.155, z], scale: [1, 0.8, 1] }));
   }
-  // pita wedge
+  // a wedge of pita standing in the dip
   const wedge = new THREE.Shape();
-  wedge.moveTo(0, 0); wedge.lineTo(0.26, 0.10); wedge.lineTo(0.24, 0.30); wedge.lineTo(-0.02, 0.24);
-  const pg = new THREE.ExtrudeGeometry(wedge, { depth: 0.035, bevelEnabled: true, bevelSize: 0.012, bevelThickness: 0.012, bevelSegments: 1 });
-  g.add(mesh(pg, std('pita', { color: 0xe8cf9a, roughness: 0.9 }), { pos: [0.16, 0.13, 0.06], rot: [0.2, -0.5, 0.5] }));
-  g.userData = { id: 'hummus', radius: 0.42, spin: [0, 1.4, 0] };
+  wedge.moveTo(0, 0); wedge.lineTo(0.30, 0.09); wedge.lineTo(0.26, 0.36); wedge.lineTo(-0.03, 0.27);
+  const pg = new THREE.ExtrudeGeometry(wedge, { depth: 0.045, bevelEnabled: true, bevelSize: 0.016, bevelThickness: 0.014, bevelSegments: 1 });
+  g.add(mesh(pg, std('pita', { color: 0xe9d3a1, roughness: 0.88 }), { pos: [0.13, 0.10, 0.10], rot: [0.32, -0.5, 0.42] }));
+  g.userData = { id: 'hummus', radius: 0.45, spin: [0, 1.4, 0], iconTilt: -0.34 };
   return g;
 }
 
@@ -563,40 +596,47 @@ export function makePardes() {
 export function makeKhamsin(height = 3.4, scale = 1) {
   const g = new THREE.Group(); g.name = 'item:khamsin';
   const m = mat('khamsin-shell', () => new THREE.MeshBasicMaterial({
-    color: 0xe0bd88, map: dustSwirl(), transparent: true, opacity: 0.42,
-    depthWrite: false, side: THREE.DoubleSide, blending: THREE.NormalBlending,
+    color: 0xdfba82, map: dustSwirl(), transparent: true, opacity: 0.34,
+    depthWrite: false, side: THREE.DoubleSide,
   }));
   const shells = [];
-  for (let i = 0; i < 5; i++) {
-    const t = i / 4;
-    const rTop = lerp(0.35, 1.15, t), rBot = lerp(0.18, 0.55, t);
-    const cone = mesh(new THREE.CylinderGeometry(rTop, rBot, height * lerp(0.72, 1.0, t), 20, 1, true), m,
-      { pos: [0, height * 0.5, 0], shadow: false });
-    cone.material.needsUpdate = true;
-    cone.userData.spin = (i % 2 ? -1 : 1) * (1.6 + i * 0.5);
+  // a stack of short, offset cones reads as a twisting column instead of one solid funnel
+  const SEG = 6;
+  for (let i = 0; i < SEG; i++) {
+    const t0 = i / SEG, t1 = (i + 1) / SEG;
+    const rBot = lerp(0.16, 1.05, t0 * t0 * 0.55 + t0 * 0.45);
+    const rTop = lerp(0.16, 1.05, t1 * t1 * 0.55 + t1 * 0.45);
+    const h = height / SEG;
+    const cone = mesh(new THREE.CylinderGeometry(rTop * 1.06, rBot, h * 1.25, 16, 1, true), m,
+      { pos: [Math.sin(t0 * 7) * 0.10, h * (i + 0.5), Math.cos(t0 * 7) * 0.10], shadow: false });
+    cone.rotation.y = t0 * 3.4;
+    cone.userData.spin = (2.4 - i * 0.22) * (i % 2 ? 1 : -1);
     shells.push(cone);
     g.add(cone);
   }
-  // grit
+  // grit spiralling up the column
   const gr = rng(15);
-  const grit = new THREE.InstancedMesh(new THREE.BoxGeometry(0.07, 0.05, 0.03),
-    std('grit', { color: 0x9c7a4c, roughness: 0.95 }), 26);
+  const N = 34;
+  const grit = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 0.055, 0.035),
+    std('grit', { color: 0x9c7a4c, roughness: 0.95 }), N);
   const m4 = new THREE.Matrix4();
   const gritData = [];
-  for (let i = 0; i < 26; i++) {
-    const a = gr() * TAU, y = gr() * height, rad = lerp(0.25, 1.1, y / height) * (0.7 + gr() * 0.5);
-    gritData.push({ a, y, rad, sp: 2 + gr() * 3 });
+  for (let i = 0; i < N; i++) {
+    const y = (i / N) * height * 0.98 + gr() * 0.1;
+    const a = y * 2.6 + gr() * 0.8;
+    const rad = lerp(0.20, 1.15, y / height) * (0.85 + gr() * 0.35);
+    gritData.push({ a, y, rad, sp: 2.4 + gr() * 2.6 });
     m4.makeTranslation(Math.cos(a) * rad, y, Math.sin(a) * rad);
     grit.setMatrixAt(i, m4);
   }
   grit.instanceMatrix.needsUpdate = true;
   g.add(grit);
-  // base dust ring
-  g.add(mesh(new THREE.CircleGeometry(1.25, 22), mat('khamsin-base', () => new THREE.MeshBasicMaterial({
-    color: 0xd9b374, map: dustSwirl(), transparent: true, opacity: 0.34, depthWrite: false,
-  })), { rot: [-Math.PI / 2, 0, 0], pos: [0, 0.04, 0], shadow: false }));
+  // ground dust
+  g.add(mesh(new THREE.CircleGeometry(1.5, 24), mat('khamsin-base', () => new THREE.MeshBasicMaterial({
+    map: glowSprite(), color: 0xcfa568, transparent: true, opacity: 0.42, depthWrite: false,
+  })), { rot: [-Math.PI / 2, 0, 0], pos: [0, 0.05, 0], shadow: false }));
   g.scale.setScalar(scale);
-  g.userData = { id: 'khamsin', radius: 1.2 * scale, shells, grit, gritData, height };
+  g.userData = { id: 'khamsin', radius: 1.2 * scale, shells, grit, gritData, height, spin: [0, 0, 0] };
   return g;
 }
 
@@ -613,11 +653,12 @@ export function makeHamsa() {
   s.quadraticCurveTo(-0.21, 0.36, -0.20, 0.22);
   // three fingers
   const finger = (x, top) => {
-    s.lineTo(x - 0.075, 0.18);
-    s.quadraticCurveTo(x - 0.085, top, x, top + 0.02);
-    s.quadraticCurveTo(x + 0.085, top, x + 0.075, 0.18);
+    s.lineTo(x - 0.062, 0.18);
+    s.quadraticCurveTo(x - 0.072, top, x, top + 0.03);
+    s.quadraticCurveTo(x + 0.072, top, x + 0.062, 0.16);
+    s.quadraticCurveTo(x + 0.075, 0.13, x + 0.088, 0.155);
   };
-  finger(-0.10, 0.44); finger(0.0, 0.50); finger(0.10, 0.44);
+  finger(-0.115, 0.46); finger(0.0, 0.545); finger(0.115, 0.46);
   s.lineTo(0.20, 0.22);
   // right thumb
   s.quadraticCurveTo(0.21, 0.36, 0.30, 0.36);
@@ -636,12 +677,17 @@ export function makeHamsa() {
   g.add(mesh(rim, std('hamsa-gold', { color: 0xe8bf5a, roughness: 0.24, metalness: 0.95, emissive: 0x3a2c05, emissiveIntensity: 0.4 }),
     { scale: [1.0, 1.0, 0.85] }));
   // eye
-  g.add(mesh(new THREE.SphereGeometry(0.10, 14, 10), std('eye-white', { color: 0xf7f4ea, roughness: 0.25 }),
-    { pos: [0, 0.0, 0.055], scale: [1.25, 0.8, 0.45] }));
-  g.add(mesh(new THREE.SphereGeometry(0.052, 12, 9), std('eye-iris', { color: 0x1552a8, roughness: 0.2, emissive: 0x0a2c60, emissiveIntensity: 0.6 }),
-    { pos: [0, 0.0, 0.082], scale: [1, 1, 0.5] }));
-  g.add(mesh(new THREE.SphereGeometry(0.024, 10, 8), std('eye-pupil', { color: 0x14161c, roughness: 0.3 }),
-    { pos: [0, 0.0, 0.095], scale: [1, 1, 0.5] }));
+  for (const sgn of [1, -1]) {                       // both faces get an eye
+    const z = sgn * 0.062;
+    g.add(mesh(new THREE.SphereGeometry(0.15, 16, 11), std('eye-rim', { color: 0xe8bf5a, roughness: 0.25, metalness: 0.9 }),
+      { pos: [0, 0.02, z * 0.92], scale: [1.35, 0.95, 0.24] }));
+    g.add(mesh(new THREE.SphereGeometry(0.132, 16, 11), std('eye-white', { color: 0xfbf8ef, roughness: 0.22 }),
+      { pos: [0, 0.02, z], scale: [1.3, 0.9, 0.30] }));
+    g.add(mesh(new THREE.SphereGeometry(0.070, 13, 10), std('eye-iris', { color: 0x1552a8, roughness: 0.18, emissive: 0x0d3a7a, emissiveIntensity: 0.8 }),
+      { pos: [0, 0.02, z * 1.22], scale: [1, 1, 0.42] }));
+    g.add(mesh(new THREE.SphereGeometry(0.034, 10, 8), std('eye-pupil', { color: 0x101318, roughness: 0.28 }),
+      { pos: [0, 0.02, z * 1.34], scale: [1, 1, 0.42] }));
+  }
   // halo
   const halo = new THREE.Sprite(mat('halo', () => new THREE.SpriteMaterial({
     map: glowSprite(), color: 0x9fe4ff, transparent: true, opacity: 0.55,
@@ -649,7 +695,7 @@ export function makeHamsa() {
   })));
   halo.scale.setScalar(2.1);
   g.add(halo);
-  g.userData = { id: 'hamsa', radius: 0.5, spin: [0, 2.4, 0], halo };
+  g.userData = { id: 'hamsa', radius: 0.5, spin: [0, 2.4, 0], halo, iconTilt: 0 };
   return g;
 }
 
@@ -749,36 +795,51 @@ export function makeCatnap() {
 /** Hoopoe (duchifat) — Israel's national bird: crest, stripes, dagger beak. Rank recovery. */
 export function makeDuchifat() {
   const g = new THREE.Group(); g.name = 'item:duchifat';
-  const body = std('hoopoe-body', { color: 0xd8a05e, roughness: 0.72 });
-  const dark = std('hoopoe-dark', { color: 0x241f1c, roughness: 0.68 });
-  const stripe = std('hoopoe-stripe', { color: 0xffffff, map: stripeFeather(), roughness: 0.7, side: THREE.DoubleSide });
-  g.add(mesh(new THREE.SphereGeometry(0.20, 16, 12), body, { pos: [0, 0, 0], scale: [0.95, 0.9, 1.55] }));
-  g.add(mesh(new THREE.SphereGeometry(0.115, 14, 10), body, { pos: [0, 0.12, 0.28], scale: [1, 1, 1.05] }));
-  g.add(mesh(new THREE.ConeGeometry(0.028, 0.34, 8), dark, { pos: [0, 0.09, 0.50], rot: [Math.PI / 2 + 0.12, 0, 0] }));
-  // eye
-  for (const s of [-1, 1]) {
-    g.add(mesh(new THREE.SphereGeometry(0.026, 8, 6), std('bird-eye', { color: 0x14100c, roughness: 0.25 }), { pos: [s * 0.075, 0.16, 0.32] }));
+  const body = std('hoopoe-body', { color: 0xe0a464, roughness: 0.68 });
+  const dark = std('hoopoe-dark', { color: 0x201b18, roughness: 0.62 });
+  const stripe = std('hoopoe-stripe', { color: 0xffffff, map: stripeFeather(), roughness: 0.66, side: THREE.DoubleSide });
+  // body + striped back
+  g.add(mesh(new THREE.SphereGeometry(0.23, 18, 13), body, { pos: [0, 0, -0.02], scale: [0.98, 0.92, 1.55] }));
+  g.add(mesh(new THREE.SphereGeometry(0.225, 16, 12, 0, TAU, 0, 1.25), stripe,
+    { pos: [0, 0.03, -0.16], rot: [0.25, 0, 0], scale: [0.95, 0.55, 1.15] }));
+  // head + long dagger beak
+  g.add(mesh(new THREE.SphereGeometry(0.135, 15, 11), body, { pos: [0, 0.15, 0.30], scale: [1, 1, 1.05] }));
+  g.add(mesh(new THREE.ConeGeometry(0.033, 0.40, 8), dark, { pos: [0, 0.10, 0.56], rot: [Math.PI / 2 + 0.16, 0, 0] }));
+  for (const s2 of [-1, 1]) {
+    g.add(mesh(new THREE.SphereGeometry(0.031, 9, 7), std('bird-eye', { color: 0x14100c, roughness: 0.22 }), { pos: [s2 * 0.085, 0.19, 0.36] }));
+    g.add(mesh(new THREE.SphereGeometry(0.012, 6, 5), std('bird-eye-hi', { color: 0xffffff, roughness: 0.2 }), { pos: [s2 * 0.098, 0.215, 0.385] }));
   }
-  // crest
-  for (let i = 0; i < 7; i++) {
-    const t = i / 6, a = lerp(-0.55, 0.55, t);
-    const h = 0.20 - Math.abs(t - 0.5) * 0.12;
+  // the crest: the whole point of a hoopoe
+  for (let i = 0; i < 9; i++) {
+    const t = i / 8, a = lerp(-0.62, 0.62, t);
+    const h = 0.30 - Math.abs(t - 0.5) * 0.15;
     const f = new THREE.Group();
-    f.add(mesh(new THREE.BoxGeometry(0.035, h, 0.012), std('crest', { color: 0xe4894a, roughness: 0.7 }), { pos: [0, h * 0.5, 0] }));
-    f.add(mesh(new THREE.BoxGeometry(0.037, 0.035, 0.014), dark, { pos: [0, h - 0.014, 0] }));
-    f.position.set(0, 0.21, 0.26 - t * 0.02);
-    f.rotation.set(-0.25 + a * 0.2, 0, a * 0.9);
+    f.add(mesh(new THREE.BoxGeometry(0.042, h, 0.016), std('crest', { color: 0xe8853c, roughness: 0.62 }), { pos: [0, h * 0.5, 0] }));
+    f.add(mesh(new THREE.BoxGeometry(0.046, 0.052, 0.019), dark, { pos: [0, h - 0.02, 0] }));
+    f.position.set(0, 0.24, 0.30 - t * 0.03);
+    f.rotation.set(-0.30 + Math.abs(a) * 0.25, 0, a * 1.0);
     g.add(f);
   }
-  // wings + tail
-  for (const s of [-1, 1]) {
-    const w = mesh(new THREE.PlaneGeometry(0.46, 0.26), stripe, { pos: [s * 0.27, 0.03, -0.03], rot: [0.35 * s, 0, s * 0.35] });
-    w.rotation.set(-0.4, 0, s * 0.55);
-    w.position.set(s * 0.26, 0.06, -0.02);
+  // wings held out in a glide, with the black-and-white banding
+  for (const s2 of [-1, 1]) {
+    const w = new THREE.Group();
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0.12); shape.quadraticCurveTo(0.34, 0.20, 0.62, 0.04);
+    shape.quadraticCurveTo(0.34, -0.08, 0, -0.12); shape.lineTo(0, 0.12);
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.022, bevelEnabled: false, curveSegments: 6 });
+    geo.rotateX(-Math.PI / 2);
+    w.add(mesh(geo, stripe));
+    w.position.set(s2 * 0.15, 0.07, -0.05);
+    w.rotation.set(0.0, s2 > 0 ? -0.30 : Math.PI + 0.30, s2 * 0.22);
     g.add(w);
   }
-  g.add(mesh(new THREE.PlaneGeometry(0.24, 0.40), stripe, { pos: [0, 0.0, -0.36], rot: [-0.35, 0, 0] }));
-  g.userData = { id: 'duchifat', radius: 0.45, spin: [0, 0, 0] };
+  // tail
+  const tail = new THREE.Shape();
+  tail.moveTo(-0.13, 0); tail.lineTo(0.13, 0); tail.lineTo(0.17, -0.44); tail.lineTo(-0.17, -0.44);
+  const tg = new THREE.ExtrudeGeometry(tail, { depth: 0.02, bevelEnabled: false });
+  tg.rotateX(-Math.PI / 2 - 0.2);
+  g.add(mesh(tg, stripe, { pos: [0, -0.02, -0.30] }));
+  g.userData = { id: 'duchifat', radius: 0.45, spin: [0, 0, 0], iconTilt: -0.18 };
   return g;
 }
 
@@ -846,60 +907,65 @@ export function createItemBoxMesh(opts = {}) {
   const g = new THREE.Group();
   g.name = 'itembox';
 
-  const shellMat = new THREE.MeshPhysicalMaterial({
-    color: 0xbfe6ff, roughness: 0.06, metalness: 0.0,
-    transparent: true, opacity: 0.34, side: THREE.DoubleSide,
-    iridescence: 1.0, iridescenceIOR: 1.9, iridescenceThicknessRange: [120, 720],
+  // One material set for every box on the course: 12 boxes cost 12 x 6 draws, not 12 x 22.
+  const shellMat = mat('box-shell', () => new THREE.MeshPhysicalMaterial({
+    color: 0x9fd8ff, roughness: 0.05, metalness: 0.0,
+    transparent: true, opacity: 0.42, side: THREE.DoubleSide,
+    iridescence: 1.0, iridescenceIOR: 1.9, iridescenceThicknessRange: [140, 640],
     clearcoat: 1.0, clearcoatRoughness: 0.04, envMapIntensity: 1.6,
-    emissive: 0x2a5f8a, emissiveIntensity: 0.35, depthWrite: false,
-  });
-  const shell = mesh(roundedBoxGeometry(size, 0.20, 4), shellMat, { shadow: false });
+    emissive: 0x2f6fa8, emissiveIntensity: 0.55, depthWrite: false,
+  }));
+  const shell = mesh(mat('box-shell-geo', () => roundedBoxGeometry(size, 0.20, 4)), shellMat, { shadow: false });
   g.add(shell);
 
-  // inner faint core cube to catch light
-  const innerMat = new THREE.MeshBasicMaterial({
-    color: 0xffd27a, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  g.add(mesh(roundedBoxGeometry(size * 0.86, 0.22, 3), innerMat, { shadow: false }));
+  const innerMat = mat('box-inner', () => new THREE.MeshBasicMaterial({
+    color: 0xffcf7a, transparent: true, opacity: 0.20, blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+  g.add(mesh(mat('box-inner-geo', () => roundedBoxGeometry(size * 0.80, 0.24, 3)), innerMat, { shadow: false }));
 
-  // gold edge frame — the silhouette that survives motion blur and software rendering
-  const gold = std('box-gold', { color: 0xf0c766, roughness: 0.22, metalness: 0.92, emissive: 0x533c08, emissiveIntensity: 0.55 });
-  const t = size * 0.055, h = size * 0.5 - t * 0.5;
-  const bar = new THREE.BoxGeometry(size - t * 1.6, t, t);
-  for (const axis of [0, 1, 2]) {
-    for (const a of [-1, 1]) for (const b of [-1, 1]) {
-      const m = new THREE.Mesh(bar, gold);
-      if (axis === 0) m.position.set(0, a * h, b * h);
-      if (axis === 1) { m.position.set(a * h, 0, b * h); m.rotation.z = Math.PI / 2; }
-      if (axis === 2) { m.position.set(a * h, b * h, 0); m.rotation.y = Math.PI / 2; }
-      m.castShadow = true;
-      g.add(m);
+  // gold edge frame + corner studs, merged into a single draw
+  const gold = std('box-gold', { color: 0xf3cb6c, roughness: 0.20, metalness: 0.92, emissive: 0x5a4408, emissiveIntensity: 0.7 });
+  const frameGeo = mat('box-frame-geo', () => {
+    const t = size * 0.062, h = size * 0.5 - t * 0.5;
+    const bar = new THREE.BoxGeometry(size - t * 1.5, t, t);
+    const stud = new THREE.SphereGeometry(t * 0.92, 8, 6);
+    const parts = [], m4 = new THREE.Matrix4(), e = new THREE.Euler();
+    for (const axis of [0, 1, 2]) for (const a of [-1, 1]) for (const b of [-1, 1]) {
+      if (axis === 0) m4.compose(new THREE.Vector3(0, a * h, b * h), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1));
+      if (axis === 1) m4.compose(new THREE.Vector3(a * h, 0, b * h), new THREE.Quaternion().setFromEuler(e.set(0, 0, Math.PI / 2)), new THREE.Vector3(1, 1, 1));
+      if (axis === 2) m4.compose(new THREE.Vector3(a * h, b * h, 0), new THREE.Quaternion().setFromEuler(e.set(0, Math.PI / 2, 0)), new THREE.Vector3(1, 1, 1));
+      parts.push([bar, m4.clone()]);
     }
-  }
-  // corner studs
-  const stud = new THREE.SphereGeometry(t * 0.85, 8, 6);
-  for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
-    g.add(mesh(stud, gold, { pos: [sx * h, sy * h, sz * h] }));
-  }
-
-  // motif on each face
-  const motifMat = new THREE.MeshBasicMaterial({
-    map: boxMotif(), transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending,
-    depthWrite: false, color: 0xffe6a6, side: THREE.DoubleSide,
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+      parts.push([stud, new THREE.Matrix4().makeTranslation(sx * h, sy * h, sz * h)]);
+    }
+    return mergeGeometries(parts);
   });
-  const plane = new THREE.PlaneGeometry(size * 0.66, size * 0.66);
-  const d = size * 0.502;
-  const faces = [
-    [[0, 0, d], [0, 0, 0]], [[0, 0, -d], [0, Math.PI, 0]],
-    [[d, 0, 0], [0, Math.PI / 2, 0]], [[-d, 0, 0], [0, -Math.PI / 2, 0]],
-    [[0, d, 0], [-Math.PI / 2, 0, 0]], [[0, -d, 0], [Math.PI / 2, 0, 0]],
-  ];
-  for (const [p, r] of faces) g.add(mesh(plane, motifMat, { pos: p, rot: r, shadow: false }));
+  g.add(mesh(frameGeo, gold));
 
-  // glowing seed
-  const core = mesh(new THREE.OctahedronGeometry(size * 0.20, 0), mat('box-core', () => new THREE.MeshBasicMaterial({
-    color: 0xffe8b0, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
-  })), { shadow: false });
+  // etched pomegranate motif on all six faces, one draw
+  const motifMat = mat('box-motif-mat', () => new THREE.MeshBasicMaterial({
+    map: boxMotif(), transparent: true, opacity: 0.85, depthWrite: false,
+    color: 0xffdc93, side: THREE.DoubleSide,
+  }));
+  const motifGeo = mat('box-motif-geo', () => {
+    const plane = new THREE.PlaneGeometry(size * 0.62, size * 0.62);
+    const d = size * 0.504, e = new THREE.Euler(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
+    const faces = [
+      [[0, 0, d], [0, 0, 0]], [[0, 0, -d], [0, Math.PI, 0]],
+      [[d, 0, 0], [0, Math.PI / 2, 0]], [[-d, 0, 0], [0, -Math.PI / 2, 0]],
+      [[0, d, 0], [-Math.PI / 2, 0, 0]], [[0, -d, 0], [Math.PI / 2, 0, 0]],
+    ];
+    return mergeGeometries(faces.map(([p, r]) => [plane,
+      new THREE.Matrix4().compose(new THREE.Vector3(...p), q.setFromEuler(e.set(...r)), one)]));
+  });
+  g.add(mesh(motifGeo, motifMat, { shadow: false }));
+
+  // glowing seed in the middle
+  const core = mesh(mat('box-core-geo', () => new THREE.OctahedronGeometry(size * 0.19, 0)),
+    mat('box-core', () => new THREE.MeshBasicMaterial({
+      color: 0xffeec0, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false,
+    })), { shadow: false });
   g.add(core);
 
   const halo = new THREE.Sprite(new THREE.SpriteMaterial({

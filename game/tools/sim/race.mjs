@@ -139,7 +139,9 @@ async function runRace(world, track, opts = {}) {
   race.on('position', () => events.overtakes++);
   race.start(true);
 
-  const stuck = race.racers.map(() => ({ last: 0, t: 0, worst: 0 }));
+  const stuck = race.racers.map(r => ({ last: r.progress, t: 0, worst: 0, at: 0 }));
+  const offLog = [];
+  const wasOff = race.racers.map(() => false);
   let t = 0, guard = 0;
   const limit = opts.limit ?? 420;
   while (t < limit && race.state.phase !== 'results' && guard++ < limit * FPS + 10) {
@@ -149,15 +151,19 @@ async function runRace(world, track, opts = {}) {
       race.racers.forEach((r, i) => {
         if (r.finished) return;
         const s = stuck[i];
+        if (!s.init) { s.init = true; s.last = r.progress; }
         if (r.progress - s.last > 1.0) { s.last = r.progress; s.t = 0; }
-        else { s.t += DT; if (s.t > s.worst) s.worst = s.t; }
+        else { s.t += DT; if (s.t > s.worst) { s.worst = s.t; s.at = t; } }
+        const off = r.vehicle.state.onTrack === false;
+        if (off && !wasOff[i]) offLog.push({ name: r.name, lap: r.lap + 1, t, s: r.s, kmh: r.vehicle.state.speed * 3.6, lat: r.lateral });
+        wasOff[i] = off;
       });
     }
   }
-  return { race, events, stuck, wall: t, items };
+  return { race, events, stuck, offLog, wall: t, items };
 }
 
-function reportRace({ race, events, stuck }) {
+function reportRace({ race, events, stuck, offLog }) {
   const results = race.results;
   const racers = race.racers;
   console.log(B('\nRACE — 12 karts, ' + race.laps + ' laps, ' + race.length.toFixed(0) + ' m'));
@@ -217,6 +223,18 @@ function reportRace({ race, events, stuck }) {
   console.log('  AI mistakes / catch-up boosts    ' + num(dr.reduce((a, d) => a + (d.mistakes || 0), 0), 0, 8) + ' /' +
     num(dr.reduce((a, d) => a + (d.catchBoosts || 0), 0), 0, 6));
   console.log('  items used                       ' + num(dr.reduce((a, d) => a + (d.items || 0), 0), 0, 8));
+  console.log('  biggest gap to the leader        ' + num(Math.max(...dr.map(d => d.maxBehind || 0)), 0, 8) + ' m');
+  if (process.env.SIM_DIAG) {
+    const byLap = {};
+    for (const o of offLog) byLap[o.lap] = (byLap[o.lap] || 0) + 1;
+    console.log('  off-track by lap                 ' + JSON.stringify(byLap));
+    const hot = {};
+    for (const o of offLog) { const k = Math.round(o.s / 100) * 100; hot[k] = (hot[k] || 0) + 1; }
+    console.log('  off-track by track position (m)  ' + JSON.stringify(hot));
+    console.log('  first 12 excursions:');
+    for (const o of offLog.slice(0, 12)) console.log(`    t=${o.t.toFixed(1)}s ${pad(o.name, 8)} lap ${o.lap} s=${o.s.toFixed(0)}m ${o.kmh.toFixed(0)} km/h lat ${o.lat.toFixed(1)}`);
+    console.log('  worst stall at t=' + stuck.map(s => s.at.toFixed(0)).join(','));
+  }
   console.log('  ghost frames (player line)       ' + num(race.ghost.frames.length, 0, 8) + '   ' + race.ghost.duration.toFixed(1) + ' s');
 
   console.log(B('\nPER-TIER PACE'));
@@ -233,12 +251,12 @@ function reportRace({ race, events, stuck }) {
 }
 
 /* ------------------------------------------------------------------ solo --- */
-async function runSolo(world, track, tierIdx = 3, laps = 6) {
+async function runSolo(world, track, tierIdx = 3, laps = 6, extra = {}) {
   const collision = createCollisionWorld(world, track, {});
-  const line = buildRacingLine(track, {});
-  const ai = createAI(world, track, (i, o) => createVehicle(world, track, { ...o, collision }), {
+  const line = extra.line || buildRacingLine(track, {});
+  const ai = createAI(world, track, (i, o) => createVehicle(world, track, { ...o, collision }), Object.assign({
     count: 1, line, tiers: [tierIdx], seed: 999, rubberBand: false, step: true,
-  });
+  }, extra));
   const r = ai.racers[0];
   const slot = track.startGrid?.[0];
   if (slot) r.vehicle.reset(slot.pos, slot.rot);
@@ -280,6 +298,21 @@ if (only === 'solo' || only === 'all') {
   console.log('  off-track                        ' + num(s.offTime, 2, 8) + ' s of ' + s.t.toFixed(0) + ' s');
   console.log('  respawns                         ' + num(s.respawns, 0, 8));
   console.log('  drifts / mini-turbos             ' + num(s.stats.drifts, 0, 8) + ' /' + num(s.stats.miniturbos, 0, 6));
+}
+
+if (only === 'drift' || only === 'all') {
+  console.log(B('\nDRIFT BENCH (a deliberately tight loop: does the mini-turbo pay?)'));
+  const tight = makeFallbackTrack(world, { seed: 7, radius: +(process.env.SIM_TIGHT || 105), width: 13.5, samples: 320 });
+  const tl = buildRacingLine(tight, {});
+  console.log('  tight loop                       ' + num(tight.length, 0, 8) + ' m   min radius ' +
+    num(tl.stats.minRadius, 1, 6) + ' m   slowest corner ' + num(tl.stats.minSpeed * 3.6, 1, 6) + ' km/h');
+  for (const skill of [0, 1]) {
+    const s = await runSolo(world, tight, 3, 4, { driftSkill: skill, line: tl });
+    const mean = s.times.reduce((a, b) => a + b, 0) / Math.max(s.times.length, 1);
+    console.log('  drift ' + (skill ? 'ON ' : 'OFF') + '                        mean lap ' + num(mean, 2, 7) +
+      ' s   best ' + num(Math.min(...s.times), 2, 6) + ' s   drifts ' + s.stats.drifts + '  mini-turbos ' + s.stats.miniturbos +
+      '  off ' + num(s.offTime, 1, 5) + ' s');
+  }
 }
 
 if (only === 'tiers') {
