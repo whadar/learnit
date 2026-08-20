@@ -13,9 +13,15 @@
  *
  *  2. The driver — every opponent runs the player's `createVehicle()` physics and is steered
  *     with a pure-pursuit controller plus a Stanley cross-track term, throttled from the
- *     speed profile, and drifts through anything tight enough to charge a mini-turbo. It
- *     hunts boost pads and item boxes, uses items with some sense, dodges hazards, and
- *     overtakes by shifting its line offset rather than driving through a rival.
+ *     speed profile, and drifts through hairpins to charge mini-turbos. It hunts boost pads
+ *     and item boxes, uses items with some sense, dodges hazards, and overtakes by shifting
+ *     its line offset rather than driving through a rival.
+ *
+ *     Measured, not assumed (`node tools/sim/race.mjs grip | drift`): the kart sustains about
+ *     1.2 g of lateral grip on tarmac, which sets the speed profile's budget; and a slide holds
+ *     only 55-75 % of its entry speed, so a drift only pays where the corner is slower than the
+ *     slide anyway. Hence `driftCornerV`: the field drifts hairpins and grips everything else,
+ *     which is what a quick driver does in this physics.
  *
  *  3. Personality — four difficulty tiers times per-racer traits (pace, aggression,
  *     consistency, mistake rate, preferred line offset) so a twelve-kart field argues with
@@ -27,7 +33,7 @@
  *
  * No Three.js import: this file runs unchanged in the browser and in tools/sim/race.mjs.
  */
-import { clamp, lerp, smoothstep, damp, wrapPi, rng, TAU } from '../core/mathx.js';
+import { clamp, lerp, smoothstep, damp, wrapPi, rng } from '../core/mathx.js';
 import { createVehicle, makeFallbackTrack, DEFAULTS } from '../physics/vehicle.js';
 import { surfaceInfo } from '../physics/collision.js';
 
@@ -325,6 +331,8 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
     // steering gains (tuned in tools/sim/race.mjs)
     aimBase: 4.6, aimGain: 0.56, aimMin: 6.0, aimMax: 21.0,
     stanley: 0.42, crossGain: 0.85, yawDamp: 0.055,
+    padDetour: 3.4,        // metres off the racing line the AI will go for a boost pad
+    boxDetour: 3.0,        // … or for an item box
     driftSkill: 1.0,       // global multiplier on how willing the field is to drift
     driftSteerMin: 0.24,   // sustained steering that counts as "this is a corner"
     driftHold: 0.22,       // seconds it must be held before hopping
@@ -477,15 +485,15 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
       const score = weight * (1 - detour / maxDetour) * (1 - clamp(d / reach, 0, 1) * 0.4);
       if (score > bestScore) { bestScore = score; want = clamp(lat - baseLat, -maxDetour, maxDetour); }
     };
-    for (const p of pads) consider(p.s, p.lateral, 1.0, 3.4);
+    for (const p of pads) consider(p.s, p.lateral, 1.0, O.padDetour);
     if (O.items) {
       let hud = null;
       try { hud = O.items.hud(r.vehicle); } catch (e) { hud = null; }
       if (hud && !hud.item && !hud.spinning) {
-        for (const b of O.items.boxes) { if (b.active) consider(b.s, b.lateral ?? 0, 0.9, 3.0); }
+        for (const b of O.items.boxes) { if (b.active) consider(b.s, b.lateral ?? 0, 0.9, O.boxDetour); }
       }
     }
-    r.attract = damp(r.attract, clamp(want, -3.4, 3.4), 2.2, dt);
+    r.attract = damp(r.attract, clamp(want, -6, 6), 2.2, dt);
     return r.attract;
   }
 
@@ -759,10 +767,8 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
 
   /* ---------------------------------------------------------------- update -- */
 
-  let elapsed = 0;
   function update(dt, ctx) {
     dt = clamp(dt || 0, 0, 0.1);
-    elapsed += dt;
     if (ctx) {
       if (ctx.field) setField(ctx.field);
       if (typeof ctx.leaderProgress === 'number') leaderProgress = ctx.leaderProgress;

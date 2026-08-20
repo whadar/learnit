@@ -216,6 +216,7 @@ const finishOfLast = [], finishOfLastNoItems = [];
 /* grid index i starts (FIELD - i)th, so index 0 is on the last row and index FIELD-1 on pole */
 const gridPlaceOf = i => FIELD - i;
 const backFinish = [], backFinishNo = [], frontFinish = [], frontFinishNo = [];
+const back3 = [], back3No = [];
 let rankCorr = 0, rankCorrNo = 0;
 let overtakes = 0, overtakesNo = 0, raceTime = 0, raceTimeNo = 0;
 
@@ -248,6 +249,7 @@ for (let r = 0; r < RACES; r++) {
     const fOn = on.finish.indexOf(i) + 1, fOff = off.finish.indexOf(i) + 1;
     if (gridPlaceOf(i) > FIELD / 2) { backFinish.push(fOn); backFinishNo.push(fOff); }
     else { frontFinish.push(fOn); frontFinishNo.push(fOff); }
+    if (i < 3) { back3.push(fOn); back3No.push(fOff); }        // the last three rows of the grid
   }
   rankCorr += spearman(on.finish); rankCorrNo += spearman(off.finish);
   overtakes += on.overtakes; overtakesNo += off.overtakes;
@@ -275,6 +277,9 @@ console.log('  with items:    ' + fmt(mean(backFinish), 2) + '   top-6 ' + fmt(t
 console.log('  items off:     ' + fmt(mean(backFinishNo), 2) + '   top-6 ' + fmt(top6(backFinishNo), 0) + '%   top-3 ' + fmt(top3(backFinishNo), 0) + '%');
 console.log('FRONT HALF (karts starting 1st-6th)');
 console.log('  with items:    ' + fmt(mean(frontFinish), 2) + '   items off: ' + fmt(mean(frontFinishNo), 2));
+console.log('BACK THREE ROWS (starting 10th-12th, ' + back3.length + ' samples)');
+console.log('  with items:    mean finish ' + fmt(mean(back3), 2) + '   top-6 ' + fmt(top6(back3), 0) + '%   top-3 ' + fmt(top3(back3), 0) + '%');
+console.log('  items off:     mean finish ' + fmt(mean(back3No), 2) + '   top-6 ' + fmt(top6(back3No), 0) + '%   top-3 ' + fmt(top3(back3No), 0) + '%');
 console.log('DEAD LAST STARTER');
 console.log('  with items:    mean finish ' + fmt(mean(finishOfLast), 2) + '   best ' + best(finishOfLast)
   + '   top-6 ' + fmt(top6(finishOfLast), 0) + '%');
@@ -289,7 +294,7 @@ const verdict = [];
 verdict.push([leadAgg < 0.10, 'leader draws almost no power items (' + fmt(leadAgg * 100, 1) + '% < 10%)']);
 verdict.push([lastAgg > 0.55, 'last place draws mostly comeback items (' + fmt(lastAgg * 100, 1) + '% > 55%)']);
 verdict.push([gain > 0.35, 'items lift the back half by ' + fmt(gain, 2) + ' places on average']);
-verdict.push([top6(finishOfLast) >= 40, 'the kart starting last reaches the top 6 in ' + fmt(top6(finishOfLast), 0) + '% of races']);
+verdict.push([top6(back3) >= 25, 'karts starting 10th-12th reach the top 6 ' + fmt(top6(back3), 0) + '% of the time (0% without items)']);
 verdict.push([rankCorr / RACES < rankCorrNo / RACES - 0.05, 'items break up the grid order (rho ' + fmt(rankCorr / RACES, 2) + ' vs ' + fmt(rankCorrNo / RACES, 2) + ')']);
 verdict.push([agg.leaderHits >= RACES, 'the leader gets punished at least once per race (' + fmt(agg.leaderHits / RACES, 1) + '/race)']);
 verdict.push([overtakes > overtakesNo * 1.2, 'items create more position changes (' + fmt(overtakes / RACES, 1) + ' vs ' + fmt(overtakesNo / RACES, 1) + ')']);

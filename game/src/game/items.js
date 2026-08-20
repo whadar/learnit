@@ -657,7 +657,7 @@ export function createItemSystem(world, track, opts = {}) {
       item: 'catnap', kind: 'hunter', owner: rec, grace: 0.4,
       pos: start, s: n.s, lateral: n.lateral, dir: 1,
       speed: ITEMS.catnap.speed, life: ITEMS.catnap.life, radius: ITEMS.catnap.radius,
-      hit: 'stall', hover: 6.0, scale: 1.7, trailWidth: 0.2, phase: 'cruise',
+      hit: 'stall', hover: 3.6, scale: 1.7, trail: false, phase: 'cruise',
     });
   }
 
@@ -770,13 +770,13 @@ export function createItemSystem(world, track, opts = {}) {
         p.pos.z = sm.pos.z + sm.normal.z * p.lateral;
         p.pos.y = sm.pos.y + p.hover;
         const d = Math.hypot(p.pos.x - leader.pos.x, p.pos.z - leader.pos.z);
-        if (d < 6 || (gap < 3 && gap > -30)) { p.phase = 'strike'; p.strikeT = 0; }
+        if (d < 11 || (gap < 3 && gap > -30)) { p.phase = 'strike'; p.strikeT = 0; }
       } else {
         p.strikeT += dt;
         p.pos.x = damp(p.pos.x, leader.pos.x, 6, dt);
         p.pos.z = damp(p.pos.z, leader.pos.z, 6, dt);
         p.pos.y = damp(p.pos.y, leader.pos.y + 1.2, 3.2, dt);
-        if (p.strikeT > 0.9) {
+        if (p.strikeT > 1.3) {
           applyHit(leader, 'stall', p.owner, 'catnap', p.pos);
           for (const o of list) {
             if (o === leader) continue;
@@ -792,7 +792,7 @@ export function createItemSystem(world, track, opts = {}) {
     if (p.kind === 'devil') {
       p.s += p.speed * dt;
       p.wander += dt * 1.6;
-      p.lateral = clamp(Math.sin(p.wander) * 4.2, -6, 6);
+      p.lateral = clamp(Math.sin(p.wander) * 3.0, -4.5, 4.5);
       const sm = sample(p.s);
       p.pos.x = sm.pos.x + sm.normal.x * p.lateral;
       p.pos.z = sm.pos.z + sm.normal.z * p.lateral;

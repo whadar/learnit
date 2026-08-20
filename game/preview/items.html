@@ -193,7 +193,7 @@ const SCENES = {
       items.setItem(karts[1], 'pardes');
       items.setItem(karts[2], 'sabra');
       at(0.05, () => items.useItem(karts[0], false));    // the leader hangs its pan out behind
-      at(0.10, () => items.useItem(karts[3], true));     // hummus goes down on the racing line
+      at(2.15, () => items.useItem(karts[3], true));     // hummus goes down on the racing line
       at(0.70, () => items.useItem(karts[1], true));     // crate bursts into rolling oranges
       at(1.65, () => items.useItem(karts[4], false));    // khamsin devil sets off up the road
       at(1.95, () => items.useItem(karts[2], false));    // sabra launches at the kart ahead
@@ -204,7 +204,7 @@ const SCENES = {
     frames: 96, fov: 38,
     setup() {
       const s0 = items.boxes[9].s;
-      karts.forEach((k, i) => placeKart(k, s0 + [0, 9, 17, 25, 33][i], [0, 3.4, -3.6, 1.6, -1.8][i], 19));
+      karts.forEach((k, i) => placeKart(k, s0 + [0, 16, 26, 8, 34][i], [0, 3.4, -3.6, -3.2, 1.8][i], 19));
       hero = karts[0];
       items.setItem(karts[0], 'jaffa3');
       items.setItem(karts[1], 'pan');
@@ -214,10 +214,10 @@ const SCENES = {
       at(0.30, () => items.useItem(karts[2], false));
       at(0.50, () => items.useItem(karts[3], false));
     },
-    camera() { return camAt(hero, 6.2, 3.4, 2.4, 14, 38); },
+    camera() { return camAt(hero, 7.6, 1.4, 2.6, 15, 38); },
   },
   catnap: {
-    frames: 268, fov: 42,
+    frames: 215, fov: 42,
     setup() {
       const s0 = items.boxes[1].s + 30;
       karts.forEach((k, i) => placeKart(k, s0 - i * 22, [0.5, -2.6, 2.4, -1.4, 3.0][i], 22));
@@ -323,8 +323,8 @@ function renderHud() {
   const w = Math.round(Math.min(size.x, size.y) * 0.24), pad = Math.round(size.x * 0.016);
   const st = items.hud(hero);
   setHudItem(st.spinning ? st.rouletteFace : st.item);
-  hudHolder.rotation.y += 0.03;
-  hudHolder.rotation.x = Math.sin(performance.now() * 0.001) * 0.12;
+  hudHolder.rotation.y = Math.sin(simTime * 1.6) * 0.45;
+  hudHolder.rotation.x = Math.sin(simTime * 2.3) * 0.10;
   hudHolder.scale.setScalar(st.spinning ? 0.86 : 1);
   r.autoClear = false;
   r.setScissorTest(true);

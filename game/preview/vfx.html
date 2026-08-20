@@ -1,0 +1,519 @@
+<!doctype html><html><head><meta charset="utf-8"><title>vfx preview</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070d;overflow:hidden;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace}
+  #app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}
+  #hud{position:fixed;left:12px;top:12px;padding:8px 11px;border-radius:8px;
+       background:rgba(6,10,16,.55);color:#dbe6f2;border:1px solid rgba(255,255,255,.09);
+       white-space:pre;letter-spacing:.2px;text-shadow:0 1px 2px rgba(0,0,0,.85);pointer-events:none}
+  #hud b{color:#ffd166}#hud .g{color:#7fe3a1}#hud .m{color:#8fb7ff}
+</style>
+</head><body><div id="app"></div><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { boot } from './common.js';
+import { clamp, lerp, smoothstep, rng } from '../src/core/mathx.js';
+import { createVFX } from '../src/render/particles.js';
+
+const hud = document.getElementById('hud');
+const PLAIN = location.search.includes('plain');
+const FIXED_DT = 1 / 60;
+
+/* Other agents are rewriting sky/terrain/lighting right now, so every one of them is
+   optional: if it will not import or throws, we light and ground the scene ourselves. */
+async function tryMod(path, fn, label) {
+  try { const m = await import(/* @vite-ignore */ path); return fn(m); }
+  catch (e) { console.warn('[vfx preview] ' + label + ' unavailable: ' + e.message); return null; }
+}
+
+let world, vfx, actors = [], road, dirt, sunDir = new THREE.Vector3(-0.42, 0.5, 0.76).normalize();
+let simTime = 0, viewName = 'drift';
+
+/* ------------------------------------------------------------------- paths ---- */
+/** Smoothed centreline over the real road geometry: sample(s) -> {x,y,z,tx,tz}. */
+function makePath(points, w) {
+  const pts = [];
+  for (const p of points) pts.push({ x: p[0], z: p[1] });
+  const seg = [], cum = [0];
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+    total += d; cum.push(total); seg.push(d);
+  }
+  // resample at 1 m and low-pass the elevation so the road reads as a graded surface
+  const N = Math.max(8, Math.floor(total));
+  const raw = [];
+  for (let i = 0; i <= N; i++) {
+    const s = i / N * total;
+    let k = 1; while (k < cum.length - 1 && cum[k] < s) k++;
+    const t = (s - cum[k - 1]) / Math.max(cum[k] - cum[k - 1], 1e-4);
+    const x = lerp(pts[k - 1].x, pts[k].x, t), z = lerp(pts[k - 1].z, pts[k].z, t);
+    raw.push({ x, z, y: w.heightAt(x, z) });
+  }
+  const R = 9;
+  const smooth = raw.map((p, i) => {
+    let sum = 0, n = 0;
+    for (let j = -R; j <= R; j++) { const q = raw[clamp(i + j, 0, raw.length - 1)]; sum += q.y; n++; }
+    return { x: p.x, z: p.z, y: sum / n };
+  });
+  return {
+    length: total, points: smooth,
+    sample(s) {
+      const f = clamp(s / total, 0, 0.9999) * (smooth.length - 1);
+      const i = Math.floor(f), t = f - i;
+      const a = smooth[i], b = smooth[Math.min(i + 1, smooth.length - 1)];
+      const x = lerp(a.x, b.x, t), y = lerp(a.y, b.y, t), z = lerp(a.z, b.z, t);
+      const c = smooth[clamp(i - 3, 0, smooth.length - 1)], d = smooth[clamp(i + 3, 0, smooth.length - 1)];
+      const tx = d.x - c.x, tz = d.z - c.z, l = Math.hypot(tx, tz) || 1;
+      return { x, y, z, tx: tx / l, tz: tz / l };
+    },
+  };
+}
+
+function pickPath(w, classes, minLen) {
+  let best = null, bestLen = minLen;
+  for (const r of w.roads || []) {
+    if (!classes.includes(r.cls)) continue;
+    for (const path of r.paths || []) {
+      if (path.length < 3) continue;
+      let L = 0;
+      for (let i = 1; i < path.length; i++) L += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+      const mid = path[path.length >> 1];
+      if (L > bestLen && Math.hypot(mid[0], mid[1]) < 700) { bestLen = L; best = path; }
+    }
+  }
+  return best ? makePath(best, w) : null;
+}
+
+/* -------------------------------------------------------------- road mesh ---- */
+function buildRoad(path, { width = 7.5, colorA = 0x53535c, colorB = 0x494952, kerb = false, lift = 0.09, edge = true }) {
+  const across = 9, along = Math.max(24, Math.round(path.length));
+  const pos = [], col = [], uv = [], idx = [];
+  const c0 = new THREE.Color(colorA), c1 = new THREE.Color(colorB), cw = new THREE.Color(0xe9e4d6);
+  const tmp = new THREE.Color();
+  for (let i = 0; i <= along; i++) {
+    const s = i / along * path.length, sm = path.sample(s);
+    const nx = -sm.tz, nz = sm.tx;
+    for (let j = 0; j < across; j++) {
+      const u = (j / (across - 1)) * 2 - 1;
+      const off = u * width * 0.5;
+      const x = sm.x + nx * off, z = sm.z + nz * off;
+      const crown = (1 - u * u) * 0.06;
+      pos.push(x, sm.y + lift + crown, z);
+      uv.push(u * 0.5 + 0.5, s * 0.15);
+      const a = Math.abs(u);
+      const grain = 0.93 + 0.14 * (Math.sin(x * 3.1 + z * 2.7) * 0.5 + 0.5) + 0.05 * Math.sin(x * 11.3 - z * 7.1);
+      if (edge && a > 0.87 && a < 0.95) tmp.copy(cw).multiplyScalar(grain);
+      else {
+        const polish = 1 - 0.09 * Math.exp(-((a - 0.34) ** 2) / 0.02);
+        tmp.copy(c0).lerp(c1, (j % 3) * 0.12 + 0.3 * (Math.sin(x * 0.7 + z * 0.9) * 0.5 + 0.5)).multiplyScalar(grain * polish);
+      }
+      col.push(tmp.r, tmp.g, tmp.b);
+    }
+  }
+  for (let i = 0; i < along; i++) for (let j = 0; j < across - 1; j++) {
+    const a = i * across + j, b = a + across;
+    idx.push(a, b, a + 1, a + 1, b, b + 1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 }));
+  m.receiveShadow = true;
+  m.name = 'preview.road';
+  return m;
+}
+
+/* ------------------------------------------------------------ fallback art ---- */
+function buildGround(w, centre) {
+  const size = 420, seg = 168;
+  const geo = new THREE.PlaneGeometry(size, size, seg, seg);
+  geo.rotateX(-Math.PI / 2);
+  const p = geo.attributes.position, col = new Float32Array(p.count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i) + centre.x, z = p.getZ(i) + centre.z;
+    p.setX(i, x); p.setZ(i, z);
+    p.setY(i, w.heightAt(x, z));
+    const n = Math.sin(x * 0.031) * Math.cos(z * 0.027) * 0.5 + 0.5;
+    const n2 = Math.sin(x * 0.21 + z * 0.13) * 0.5 + 0.5;
+    const wheat = new THREE.Color(0xd9c98f), dry = new THREE.Color(0xc9b489), olive = new THREE.Color(0x93a061);
+    c.copy(dry).lerp(wheat, n).lerp(olive, smoothstep(0.55, 0.95, n2) * 0.55);
+    const mott = 0.92 + 0.16 * (Math.sin(x * 1.7) * Math.sin(z * 1.3) * 0.5 + 0.5);
+    col[i * 3] = c.r * mott; col[i * 3 + 1] = c.g * mott; col[i * 3 + 2] = c.b * mott;
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.98 }));
+  m.receiveShadow = true;
+  m.name = 'preview.ground';
+  return m;
+}
+
+/* ------------------------------------------------------------------ karts ---- */
+function buildKart(tint = 0xe0483a) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.34, 1.75),
+    new THREE.MeshStandardMaterial({ color: tint, roughness: 0.42, metalness: 0.15 }));
+  body.position.y = 0.05; body.castShadow = true;
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.22, 0.55),
+    new THREE.MeshStandardMaterial({ color: tint, roughness: 0.42 }));
+  nose.position.set(0, 0.0, 1.02); nose.castShadow = true;
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.5, 0.12),
+    new THREE.MeshStandardMaterial({ color: 0x2b2b30, roughness: 0.8 }));
+  seat.position.set(0, 0.36, -0.5);
+  const driver = new THREE.Group();
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.28, 4, 10),
+    new THREE.MeshStandardMaterial({ color: 0xf0e2c8, roughness: 0.75 }));
+  torso.position.set(0, 0.52, -0.22); torso.castShadow = true;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 14, 12),
+    new THREE.MeshStandardMaterial({ color: 0xf3e6cf, roughness: 0.7 }));
+  head.position.set(0, 0.92, -0.16); head.castShadow = true;
+  const earG = new THREE.ConeGeometry(0.085, 0.17, 8);
+  const earM = new THREE.MeshStandardMaterial({ color: 0xe8d6b8, roughness: 0.7 });
+  const earL = new THREE.Mesh(earG, earM), earR = new THREE.Mesh(earG, earM);
+  earL.position.set(-0.12, 1.06, -0.16); earR.position.set(0.12, 1.06, -0.16);
+  driver.add(torso, head, earL, earR);
+  const wheelG = new THREE.CylinderGeometry(0.30, 0.30, 0.24, 14);
+  wheelG.rotateZ(Math.PI / 2);
+  const wheelM = new THREE.MeshStandardMaterial({ color: 0x1b1b1f, roughness: 0.9 });
+  const wheels = [];
+  for (const [x, z] of [[-0.62, 0.66], [0.62, 0.66], [-0.66, -0.72], [0.66, -0.72]]) {
+    const wm = new THREE.Mesh(wheelG, wheelM);
+    wm.position.set(x, -0.06, z); wm.castShadow = true;
+    wheels.push(wm); g.add(wm);
+  }
+  const exhaustM = new THREE.MeshStandardMaterial({ color: 0x8d8f95, roughness: 0.35, metalness: 0.7 });
+  for (const x of [-0.3, 0.3]) {
+    const e = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.09, 0.3, 8), exhaustM);
+    e.rotation.x = Math.PI / 2; e.position.set(x, 0.05, -0.95);
+    g.add(e);
+  }
+  g.add(body, nose, seat, driver);
+  g.userData.wheels = wheels;
+  return g;
+}
+
+/* ------------------------------------------------------------------ actor ---- */
+/** A scripted kart: follows a path, feeds state to its VFX rig. */
+function makeActor(opts) {
+  const mesh = buildKart(opts.tint);
+  const a = {
+    mesh, rig: null, ...opts,
+    s: opts.s0 ?? 0, pos: new THREE.Vector3(), quat: new THREE.Quaternion(),
+    velocity: new THREE.Vector3(), speed: 0,
+    drifting: false, driftTier: 0, driftCharge: 0, boosting: false, grounded: true,
+    surface: opts.surface || 'tarmac', phase: 0,
+  };
+  // the rig reads these straight off the actor (vehicle-handle shape)
+  Object.defineProperty(a, 'position', { get: () => a.pos });
+  Object.defineProperty(a, 'quaternion', { get: () => a.quat });
+  return a;
+}
+
+const _yaxis = new THREE.Vector3(0, 1, 0);
+function stepActor(a, dt, t) {
+  const path = a.path;
+  const spd = a.targetSpeed ?? 22;
+  a.s = (a.s + spd * dt) % path.length;
+  const sm = path.sample(a.s);
+  const lat = a.lateral ?? 0;
+  const nx = -sm.tz, nz = sm.tx;
+  a.pos.set(sm.x + nx * lat, sm.y + 0.36, sm.z + nz * lat);
+  const heading = Math.atan2(sm.tx, sm.tz);
+  const yawOff = a.driftYaw ?? 0;
+  a.quat.setFromAxisAngle(_yaxis, heading + yawOff);
+  a.velocity.set(sm.tx * spd, 0, sm.tz * spd);
+  a.speed = spd;
+  a.mesh.position.copy(a.pos);
+  a.mesh.quaternion.copy(a.quat);
+  a.mesh.position.y -= 0.06;
+  // spin the wheels so a still frame still reads as motion
+  for (const w of a.mesh.userData.wheels) w.rotation.x -= spd * dt / 0.3;
+  if (a.roll) a.mesh.rotation.z = Math.sin(t * 3 + a.phase) * 0.02 - (a.driftYaw || 0) * 0.12;
+}
+
+/* ------------------------------------------------------------------- views ---- */
+const VIEWS = {};
+
+function configure(name) {
+  viewName = name;
+  vfx.clear();
+  for (const a of actors) {                    // park every actor so idle rigs emit nothing
+    a.mesh.visible = false; a.drifting = false; a.boosting = false;
+    a.driftTier = 0; a.speed = 0; a.velocity.set(0, 0, 0); a.mesh.rotation.set(0, 0, 0);
+  }
+  vfx.speedLines.intensity = 0;
+  const V = SCENES[name];
+  V.setup();
+  // build the effect up to a steady state before the harness starts counting frames
+  const warm = V.warm ?? 110;
+  for (let i = 0; i < warm; i++) simulate(FIXED_DT);
+}
+
+let SCENES = {};
+
+function simulate(dt) {
+  simTime += dt;
+  const V = SCENES[viewName];
+  for (const a of actors) if (a.mesh.visible) { stepActor(a, dt, simTime); }
+  V?.tick?.(dt, simTime);
+  vfx.update(dt, simTime);
+}
+
+/* -------------------------------------------------------------------- boot ---- */
+const game = await boot({
+  name: 'vfx', sky: false, terrain: false,
+  views: { drift: { pos: [0, 2, 8], look: [0, 1, 0], fov: 52 } },
+  modules: async (ctx) => {
+    const engine = ctx.engine;
+    const g = window.__game;                 // `game` is still in TDZ inside this callback
+    world = ctx.world;
+    engine.renderer.toneMappingExposure = 1.06;
+
+    /* --- world dressing (all optional) ------------------------------------------- */
+    let sky = null, lit = null, terrain = null;
+    if (!PLAIN) {
+      sky = await tryMod('../src/world/sky.js', m => m.createSky(engine, world, { preset: 'afternoon' }), 'sky.js');
+      terrain = await tryMod('../src/world/terrain.js', m => m.createTerrain(engine, world), 'terrain.js');
+      // lighting.js is mid-rewrite (its CSM injection currently fails to compile under
+      // SwiftShader and takes every MeshStandardMaterial in the scene down with it), so it
+      // is opt-in here: ?lit=1. Otherwise this page lights itself.
+      if (location.search.includes('lit')) {
+        lit = await tryMod('../src/render/lighting.js', m => m.createLighting(engine, world, sky), 'lighting.js');
+      }
+    }
+    if (sky?.sunDirection) sunDir.copy(sky.sunDirection).normalize();
+    else if (lit?.sun?.position) sunDir.copy(lit.sun.position).normalize();
+
+    if (!engine.scene.children.some(c => c.isDirectionalLight)) {
+      engine.scene.background = new THREE.Color(0xa8c8de);
+      const sun = new THREE.DirectionalLight(0xffeccd, 3.1);
+      sun.position.copy(sunDir).multiplyScalar(600);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(1024, 1024);
+      const c = sun.shadow.camera;
+      c.left = -26; c.right = 26; c.top = 26; c.bottom = -26; c.near = 1; c.far = 1400;
+      sun.shadow.bias = -0.0008; sun.shadow.normalBias = 0.05;
+      engine.scene.add(sun, sun.target);
+      engine.scene.add(new THREE.HemisphereLight(0xcfe2f5, 0x7d6b45, 1.0));
+      engine.scene.fog = new THREE.Fog(0xa8c8de, 120, 620);
+      g.sun = sun;
+    }
+
+    /* --- the stretch of Amikam we film on ---------------------------------------- */
+    road = pickPath(world, ['residential', 'secondary', 'tertiary', 'unclassified', 'service'], 120)
+        || pickPath(world, ['track'], 80);
+    dirt = pickPath(world, ['track'], 90) || road;
+    const centre = road.sample(road.length * 0.5);
+    const CENTRE = new THREE.Vector3(centre.x, centre.y, centre.z);
+
+    if (!terrain) engine.scene.add(buildGround(world, CENTRE));
+    engine.scene.add(buildRoad(road, { width: 7.6, colorA: 0x55555e, colorB: 0x4a4a53, lift: terrain ? 0.14 : 0.09 }));
+    engine.scene.add(buildRoad(dirt, { width: 5.2, colorA: 0xc4ad84, colorB: 0xb49b74, edge: false, lift: terrain ? 0.13 : 0.08 }));
+
+    /* --- the VFX system, which is what this page is about ------------------------ */
+    const vfxEngine = {
+      get scene() { return engine.scene; }, get camera() { return engine.camera; },
+      get renderer() { return engine.renderer; }, get frame() { return engine.frame; },
+      add() { /* we drive update() with a fixed step for reproducible screenshots */ },
+    };
+    vfx = createVFX(vfxEngine, world, {
+      seed: 2024, quality: 1, soft: false, ambience: true,
+      sunDirection: [sunDir.x, sunDir.y, sunDir.z],
+    });
+    window.vfx = vfx;
+
+    /* --- actors ------------------------------------------------------------------ */
+    const tints = [0xe0483a, 0x3d7fd6, 0xf0b429, 0x59b364];
+    for (let i = 0; i < 4; i++) {
+      const a = makeActor({ path: road, tint: tints[i], s0: road.length * (0.3 + i * 0.02), phase: i });
+      a.rig = vfx.attach(a, { seed: 40 + i * 7, trailWidth: 0.34, driveSpeedLines: false });
+      a.mesh.visible = false;
+      engine.scene.add(a.mesh);
+      actors.push(a);
+    }
+
+    SCENES = buildScenes(road, dirt, engine);
+    for (const k of Object.keys(SCENES)) VIEWS[k] = SCENES[k].view();
+    g.views = VIEWS;
+
+    // fixed-step driver: screenshots depend on frame count, never on wall-clock jitter
+    engine.add({ update: () => { simulate(FIXED_DT); drawHud(); } });
+
+    // wrap setView so each view re-stages the scene and pre-warms the effect
+    const baseSetView = g.setView.bind(g);
+    g.setView = (n) => {
+      if (!SCENES[n]) throw new Error('unknown view: ' + n);
+      configure(n);
+      g.views = VIEWS;                        // boot() overwrites views right before its first call
+      baseSetView(n);
+      drawHud();
+    };
+  },
+});
+
+/* ------------------------------------------------------------------ scenes ---- */
+function buildScenes(road, dirt, engine) {
+  const at = (path, s, lat = 0, dy = 0) => {
+    const p = path.sample(((s % path.length) + path.length) % path.length);
+    return new THREE.Vector3(p.x - p.tz * lat, p.y + dy, p.z + p.tx * lat);
+  };
+  const look = (path, s, lat = 0, dy = 1.0) => at(path, s, lat, dy);
+  const S = road.length * 0.5, D = dirt.length * 0.5;
+
+  const scenes = {
+    /* 1 — drifting on tarmac: tyre smoke ramping with slip, blue charge sparks */
+    drift: {
+      warm: 130,
+      setup() {
+        const a = actors[0];
+        a.mesh.visible = true; a.path = road; a.s = S - 6; a.lateral = -1.2;
+        a.targetSpeed = 24; a.surface = 'tarmac'; a.roll = true;
+        a.driftYaw = 0.44; a.drifting = true; a.driftTier = 1; a.driftCharge = 0.4;
+        a.boosting = false; a.grounded = true;
+      },
+      tick(dt, t) {
+        const a = actors[0];
+        a.driftTier = t % 3.2 < 1.1 ? 1 : t % 3.2 < 2.2 ? 2 : 3;
+        a.driftYaw = 0.40 + Math.sin(t * 1.7) * 0.07;
+      },
+      view() {
+        const c = at(road, S + 7.5, 3.4, 1.45);
+        return { pos: [c.x, c.y, c.z], look: [...look(road, S - 3, -1.2, 0.9).toArray()], fov: 50 };
+      },
+    },
+
+    /* 2 — the three mini-turbo charge tiers side by side */
+    tiers: {
+      warm: 90,
+      setup() {
+        for (let i = 0; i < 3; i++) {
+          const a = actors[i];
+          a.mesh.visible = true; a.path = road; a.s = S + 2 - i * 7.5;
+          a.lateral = -2.2 + i * 2.2; a.targetSpeed = 20; a.surface = 'tarmac';
+          a.driftYaw = 0.42; a.drifting = true; a.driftTier = i + 1; a.driftCharge = 0.3 + i * 0.3;
+          a.boosting = false; a.roll = true;
+        }
+      },
+      tick(dt, t) { for (let i = 0; i < 3; i++) actors[i].driftYaw = 0.40 + Math.sin(t * 2 + i) * 0.05; },
+      view() {
+        const c = at(road, S + 13, 5.0, 1.35);
+        return { pos: [c.x, c.y, c.z], look: [...look(road, S - 4, -0.4, 0.85).toArray()], fov: 46 };
+      },
+    },
+
+    /* 3 — dust plume off the limestone farm track */
+    dust: {
+      warm: 150,
+      setup() {
+        const a = actors[3];
+        a.mesh.visible = true; a.path = dirt; a.s = D - 4; a.lateral = 0.4;
+        a.targetSpeed = 26; a.surface = 'dirt_track'; a.roll = true;
+        a.driftYaw = 0.30; a.drifting = true; a.driftTier = 2; a.boosting = false;
+      },
+      tick(dt, t) { actors[3].driftYaw = 0.26 + Math.sin(t * 1.3) * 0.08; },
+      view() {
+        const c = at(dirt, D + 9, 5.6, 1.5);
+        return { pos: [c.x, c.y, c.z], look: [...look(dirt, D + 1, 1.0, 1.2).toArray()], fov: 48 };
+      },
+    },
+
+    /* 4 — a lap's worth of tyre marks laid into the tarmac, fading with age */
+    marks: {
+      warm: 420,
+      setup() {
+        const a = actors[1];
+        a.mesh.visible = true; a.path = road; a.s = S - 34; a.lateral = 0;
+        a.targetSpeed = 21; a.surface = 'tarmac'; a.roll = true;
+        a.drifting = true; a.driftTier = 1; a.driftYaw = 0.35; a.boosting = false;
+      },
+      tick(dt, t) {
+        const a = actors[1];
+        a.lateral = Math.sin(t * 0.55) * 2.1;                 // weave, so the marks curve
+        a.driftYaw = 0.34 * Math.cos(t * 0.55);
+      },
+      view() {
+        const c = at(road, S + 11, 1.4, 1.9);
+        return { pos: [c.x, c.y, c.z], look: [...look(road, S - 12, 0, 0.35).toArray()], fov: 52 };
+      },
+    },
+
+    /* 5 — item hit: shock ring, star burst, squash puff, sparks */
+    impact: {
+      warm: 60,
+      setup() {
+        const a = actors[2];
+        a.mesh.visible = true; a.path = road; a.s = S - 5; a.lateral = 0.2;
+        a.targetSpeed = 15; a.surface = 'tarmac'; a.roll = true;
+        a.drifting = false; a.driftTier = 0; a.boosting = false; a.driftYaw = 0.1;
+        this._next = 0; this._n = 0;
+      },
+      tick(dt, t) {
+        // fire on a short cycle so any captured frame lands mid-burst
+        if (t >= this._next) {
+          const a = actors[2];
+          const p = a.pos.clone(); p.y += 0.35;
+          const kind = (this._n % 3 === 0) ? 'explosion' : (this._n % 3 === 1) ? 'impact' : 'spinOut';
+          vfx.emit(kind, { pos: p, dir: new THREE.Vector3(0, 1, 0.15) });
+          vfx.emit('starBurst', { pos: p.clone().setY(p.y + 0.7), dir: new THREE.Vector3(0, 1, 0), count: 10, scale: 1.3 });
+          if (vfx.decals) vfx.decals.stamp('scorch', { pos: p, size: 3.2, alpha: 0.55, life: 8 });
+          this._next = t + 0.42; this._n++;
+        }
+        const a = actors[2];
+        a.mesh.rotation.y += dt * 5.5;                        // spun out
+      },
+      view() {
+        const c = at(road, S + 5.5, 3.0, 1.35);
+        return { pos: [c.x, c.y, c.z], look: [...look(road, S - 4.2, 0.2, 0.95).toArray()], fov: 50 };
+      },
+    },
+
+    /* 6 — boost: exhaust flame, trail ribbon, rush lines, guard-rail sparks */
+    boost: {
+      warm: 120,
+      setup() {
+        const a = actors[0];
+        a.mesh.visible = true; a.path = road; a.s = S - 8; a.lateral = -0.6;
+        a.targetSpeed = 34; a.surface = 'tarmac'; a.roll = true;
+        a.drifting = false; a.driftTier = 0; a.driftYaw = 0.05; a.boosting = true;
+        this._next = 0;
+      },
+      tick(dt, t) {
+        const a = actors[0];
+        a.boosting = true;
+        vfx.speedLines.intensity = 0.85;
+        if (t >= this._next) {                                 // rail scrape sparks
+          const p = a.pos.clone().addScaledVector(new THREE.Vector3(1, 0, 0).applyQuaternion(a.quat), 1.35);
+          p.y -= 0.1;
+          vfx.emit('railSparks', { pos: p, dir: new THREE.Vector3(0, 0.4, -1).applyQuaternion(a.quat) });
+          this._next = t + 0.3;
+        }
+      },
+      view() {
+        const c = at(road, S + 6.5, -0.9, 1.25);
+        return { pos: [c.x, c.y, c.z], look: [...look(road, S - 3, -0.6, 0.8).toArray()], fov: 55 };
+      },
+    },
+  };
+  void engine;
+  return scenes;
+}
+
+/* --------------------------------------------------------------------- hud ---- */
+function drawHud() {
+  if (!vfx) return;
+  const s = vfx.stats();
+  const a = actors.find(x => x.mesh.visible);
+  hud.innerHTML =
+    `<b>vfx</b>  view <b>${viewName}</b>   t=${simTime.toFixed(1)}s\n` +
+    `alpha <span class="g">${s.alpha.alive}</span>/${s.alpha.capacity}   ` +
+    `add <span class="g">${s.add.alive}</span>/${s.add.capacity}   ` +
+    `decals <span class="g">${s.decals ? s.decals.alive : 0}</span>/${s.decals ? s.decals.capacity : 0}\n` +
+    `emitted ${s.emitted}   quality ${s.quality.toFixed(2)}   rush ${vfx.speedLines.intensity.toFixed(2)}\n` +
+    (a ? `kart <span class="m">${a.surface}</span> ${(a.speed * 3.6).toFixed(0)} km/h  ` +
+      `slip ${a.rig.state.slip.toFixed(2)}  tier ${a.driftTier}  ${a.boosting ? 'BOOST' : a.drifting ? 'drift' : ''}` : '');
+}
+</script></body></html>

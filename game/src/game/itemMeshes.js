@@ -633,6 +633,16 @@ export function makeKhamsin(height = 3.4, scale = 1) {
     shells.push(cone);
     g.add(cone);
   }
+  // an opaque inner funnel: transparent shells alone vanish against a bright sky
+  const core = mesh(new THREE.CylinderGeometry(0.72, 0.10, height * 0.98, 18, 1, true),
+    mat('khamsin-core', () => new THREE.MeshStandardMaterial({
+      color: 0xc08f4a, map: dustSwirl(), roughness: 0.98, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.92, emissive: 0x2a1c08, emissiveIntensity: 0.4,
+    })), { pos: [0, height * 0.49, 0], shadow: false });
+  core.userData.spin = 3.1;
+  shells.push(core);
+  g.add(core);
+
   // grit spiralling up the column
   const gr = rng(15);
   const N = 46;
@@ -828,7 +838,7 @@ export function makeDuchifat() {
   // the crest, fanned across the head and tipped in black
   for (let i = 0; i < 9; i++) {
     const t = i / 8, a = lerp(-0.75, 0.75, t);
-    const h = 0.36 - Math.abs(t - 0.5) * 0.16;
+    const h = 0.46 - Math.abs(t - 0.5) * 0.20;
     const f = new THREE.Group();
     f.add(mesh(new THREE.BoxGeometry(0.045, h, 0.018), std('crest', { color: 0xe8853c, roughness: 0.62 }), { pos: [0, h * 0.5, 0] }));
     f.add(mesh(new THREE.BoxGeometry(0.049, 0.06, 0.021), dark, { pos: [0, h - 0.025, 0] }));
@@ -859,7 +869,7 @@ export function makeDuchifat() {
   const tg = new THREE.ExtrudeGeometry(tail, { depth: 0.022, bevelEnabled: false });
   tg.rotateX(-Math.PI / 2 + 0.22);
   g.add(mesh(tg, stripe, { pos: [0, 0.02, -0.28] }));
-  g.userData = { id: 'duchifat', radius: 0.45, spin: [0, 0, 0], iconTilt: 0.30, iconYaw: -0.7 };
+  g.userData = { id: 'duchifat', radius: 0.45, spin: [0, 0, 0], iconTilt: 0.18, iconYaw: -1.25 };
   return g;
 }
 

@@ -5,7 +5,10 @@
  *   node tools/sim/race.mjs             # the full race + the racing-line report
  *   node tools/sim/race.mjs line        # racing line / speed profile only
  *   node tools/sim/race.mjs solo        # one Ace alone: lap-time consistency
- *   node tools/sim/race.mjs tiers       # 8 laps per difficulty tier
+ *   node tools/sim/race.mjs tiers       # 4 laps per difficulty tier
+ *   node tools/sim/race.mjs drift       # does the mini-turbo pay on a tight loop?
+ *   node tools/sim/race.mjs checks      # wrong-way / shortcut / ghost / camera checks
+ *   node tools/sim/race.mjs grip        # skidpad: where the line's grip budget comes from
  *   SIM_ITEMS=1 node tools/sim/race.mjs # with the item game switched on
  */
 import fs from 'node:fs';
@@ -302,7 +305,7 @@ if (only === 'solo' || only === 'all') {
 
 if (only === 'drift' || only === 'all') {
   console.log(B('\nDRIFT BENCH (a deliberately tight loop: does the mini-turbo pay?)'));
-  const tight = makeFallbackTrack(world, { seed: 7, radius: +(process.env.SIM_TIGHT || 105), width: 13.5, samples: 320 });
+  const tight = makeFallbackTrack(world, { seed: 7, radius: +(process.env.SIM_TIGHT || 85), width: 13.5, samples: 320 });
   const tl = buildRacingLine(tight, {});
   console.log('  tight loop                       ' + num(tight.length, 0, 8) + ' m   min radius ' +
     num(tl.stats.minRadius, 1, 6) + ' m   slowest corner ' + num(tl.stats.minSpeed * 3.6, 1, 6) + ' km/h');
@@ -322,6 +325,27 @@ if (only === 'tiers') {
     const mean = s.times.reduce((a, b) => a + b, 0) / Math.max(s.times.length, 1);
     console.log('  ' + pad(TIERS[i].name, 16) + 'mean ' + num(mean, 2, 7) + ' s   best ' + num(Math.min(...s.times), 2, 7) +
       ' s   spread ' + num(Math.max(...s.times) - Math.min(...s.times), 2, 6) + ' s   off ' + num(s.offTime, 1, 5) + ' s');
+  }
+}
+
+if (only === 'grip') {
+  // where buildRacingLine()'s latGrip comes from: hold a steady steer at a held speed and read
+  // back the lateral acceleration the kart actually sustains on tarmac
+  console.log(B('\nSKIDPAD (steady-state lateral grip)'));
+  for (const steer of [0.3, 0.45, 0.6]) {
+    for (const target of [12, 16, 20, 24]) {
+      const v = createVehicle(world, track, { seed: 3 });
+      const g = track.startGrid?.[0];
+      if (g) v.reset(g.pos, g.rot);
+      let t = 0, sum = 0, n = 0, peak = 0;
+      while (t < 12) {
+        const st = v.state;
+        v.update(DT, { throttle: st.forwardSpeed < target ? 1 : 0, brake: st.forwardSpeed > target + 1.5 ? 0.4 : 0, steer, drift: 0 });
+        t += DT;
+        if (t > 5 && st.grounded && st.onTrack) { const a = Math.abs(st.angVel.y) * st.speed; sum += a; n++; peak = Math.max(peak, a); }
+      }
+      if (n > 30) console.log(`  steer ${steer.toFixed(2)}  hold ${String(target).padStart(2)} m/s   aLat mean ${num(sum / n, 2, 6)}  peak ${num(peak, 2, 6)} m/s²  (${(sum / n / 9.81).toFixed(2)} g)`);
+    }
   }
 }
 

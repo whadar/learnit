@@ -1,0 +1,116 @@
+<!doctype html><html><head><meta charset="utf-8"><title>vegetation preview</title>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden}#app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}</style>
+</head><body><div id="app"></div>
+<script>
+// Neutralise Vite's HMR socket: parallel agents save shared modules constantly, and a
+// full reload halfway through a multi-view software render throws the whole shoot away.
+(function () {
+  const OW = window.WebSocket;
+  const dead = () => ({ readyState: 3, send() {}, close() {}, addEventListener() {}, removeEventListener() {} });
+  window.WebSocket = function (url, protocols) {
+    const p = Array.isArray(protocols) ? protocols.join() : String(protocols || '');
+    if (p.includes('vite-hmr')) return dead();
+    return new OW(url, protocols);
+  };
+  window.WebSocket.prototype = OW.prototype;
+})();
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  import { boot } from './common.js';
+  import { createVegetation } from '../src/world/vegetation.js';
+
+  const views = {};
+
+  boot({
+    name: 'vegetation',
+    sky: false,        // built here: the shared rig is mid-refactor next door, and foliage
+    terrain: true,     // has to be judged under a known, stable exposure
+    modules: async (ctx) => {
+      const { engine, world } = ctx;
+      const Q = new URLSearchParams(location.search);
+
+      // --- atmosphere ------------------------------------------------------------------
+      // Late-afternoon Israeli summer sun: high-ish, warm, from the west-north-west, which is
+      // what makes back-lit canopies and long trunk shadows readable.
+      const sunDir = new THREE.Vector3().setFromSphericalCoords(
+        1, THREE.MathUtils.degToRad(90 - 38), THREE.MathUtils.degToRad(118));
+      const sun = new THREE.DirectionalLight(0xfff0d2, 3.1);
+      sun.position.copy(sunDir).multiplyScalar(600);
+      sun.castShadow = Q.get('shadows') !== '0';
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.normalBias = 0.07;
+      sun.shadow.bias = -0.00012;
+      const sc = sun.shadow.camera;
+      sc.left = -70; sc.right = 70; sc.top = 70; sc.bottom = -70; sc.near = 1; sc.far = 1400;
+      sc.updateProjectionMatrix();
+      engine.scene.add(sun, sun.target);
+      engine.scene.add(new THREE.HemisphereLight(0xa7c8ea, 0x9a8a62, 0.85));
+      engine.scene.fog = new THREE.FogExp2(0xc2c9c4, 0.00040);
+      engine.renderer.toneMappingExposure = 0.95;
+      engine.lighting = { sun };                 // what vegetation.js reads for its back-light
+      ctx.sun = sun;
+
+      {   // simple gradient dome so the horizon reads without the full sky system
+        const cv = document.createElement('canvas'); cv.width = 4; cv.height = 256;
+        const c2 = cv.getContext('2d');
+        const g = c2.createLinearGradient(0, 0, 0, 256);
+        g.addColorStop(0.0, '#5688c4'); g.addColorStop(0.55, '#a2bfd6'); g.addColorStop(1.0, '#d3d6ce');
+        c2.fillStyle = g; c2.fillRect(0, 0, 4, 256);
+        const tex = new THREE.CanvasTexture(cv);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const dome = new THREE.Mesh(new THREE.SphereGeometry(6000, 32, 16),
+          new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false }));
+        dome.renderOrder = -100;
+        engine.scene.add(dome);
+      }
+
+      // keep the shadow box on whatever the camera is looking at
+      const _d = new THREE.Vector3();
+      engine.add({
+        update() {
+          const p = engine.camera.position;
+          engine.camera.getWorldDirection(_d);
+          const fx = p.x + _d.x * 26, fz = p.z + _d.z * 26;
+          sun.target.position.set(fx, world.heightAt(fx, fz), fz);
+          sun.position.copy(sun.target.position).addScaledVector(sunDir, 500);
+          sun.target.updateMatrixWorld(); sun.updateMatrixWorld();
+        },
+      });
+
+      // --- the thing under review --------------------------------------------------------
+      const t0 = performance.now();
+      const veg = ctx.veg = createVegetation(engine, world, { quality: Q.has('q') ? +Q.get('q') : 1 });
+      window.__veg = veg;
+      console.log('[vegetation] built in', (performance.now() - t0).toFixed(0), 'ms');
+      console.log('[vegetation] sites', JSON.stringify((veg.sites || []).slice(0, 20)));
+      engine.add({ update() {
+        if (window.__logged) return; window.__logged = 1;
+        console.log('[vegetation] stats', JSON.stringify(veg.stats()));
+      } });
+
+      const h = (x, z) => world.heightAt(x, z);
+      Object.assign(views, {
+        // kart-height inside the Jerusalem-pine plantation on the western ridge
+        forest:    { pos: [-503, h(-503, 44) + 1.6, 44], look: [-596, h(-596, 108) + 6.5, 108], fov: 62 },
+        // eye level along an olive row on the terraces east of the moshav
+        grove:     { pos: [641, h(641, 118) + 1.6, 118], look: [688, h(688, 62) + 3.0, 62], fov: 60 },
+        // trellised vineyard, kart height down the rows
+        vineyard:  { pos: [648, h(648, 60) + 1.6, 60], look: [690, h(690, 8) + 3, 8], fov: 60 },
+        // dry stubble and thistles, kart height, looking back at the village ridge
+        field:     { pos: [372, h(372, 322) + 1.7, 322], look: [188, h(188, 214) + 26, 214], fov: 62 },
+        // wide establishing shot: the forested hills have to read as forest
+        establish: { pos: [-980, h(-980, 470) + 250, 470], look: [-380, h(-380, 40) + 40, 40], fov: 46 },
+        // from above — canopies must read from the air as well as from the seat
+        aerial:    { pos: [-470, h(-470, 150) + 145, 150], look: [-590, h(-590, 60) + 8, 60], fov: 52 },
+        // close on one pine: bark, needle plates, back-lit canopy
+        canopy:    { pos: [-548, h(-548, 96) + 2.2, 96], look: [-561, h(-561, 84) + 9, 84], fov: 55 },
+      });
+      if (Q.has('at')) {
+        const [x, z, lx, lz, dy] = Q.get('at').split(',').map(Number);
+        views.at = { pos: [x, h(x, z) + (dy || 1.6), z], look: [lx, h(lx, lz) + 2, lz], fov: 60 };
+      }
+    },
+    views,
+  });
+</script></body></html>

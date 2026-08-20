@@ -68,9 +68,9 @@ function plasterMaps(size) {
     // patchy staining: old lime wash over cement render
     const stain = smoothstep(0.52, 0.80, mott[i]) * 0.085;
     const v = 1 + m * 0.070 + t * 0.055 + g * 0.030 - stain;
-    col[i * 4] = clamp(233 * v, 0, 255);
-    col[i * 4 + 1] = clamp(225 * (v - stain * 0.30), 0, 255);
-    col[i * 4 + 2] = clamp(206 * (v - stain * 0.85), 0, 255);
+    col[i * 4] = clamp(241 * v, 0, 255);
+    col[i * 4 + 1] = clamp(230 * (v - stain * 0.30), 0, 255);
+    col[i * 4 + 2] = clamp(202 * (v - stain * 0.85), 0, 255);
     col[i * 4 + 3] = 255;
     rgh[i] = clamp(0.83 + m * 0.10 + g * 0.05, 0.45, 0.99);
   }
@@ -91,7 +91,7 @@ function stoneMaps(size) {
     const n = 4 + (rand() < 0.45 ? 0 : 1);
     const w = [];
     let tot = 0;
-    for (let k = 0; k < n; k++) { const ww = 0.55 + rand() * 1.05; w.push(ww); tot += ww; }
+    for (let k = 0; k < n; k++) { const ww = 0.64 + rand() * 0.72; w.push(ww); tot += ww; }
     const bs = [0];
     let acc = 0;
     for (let k = 0; k < n; k++) { acc += w[k] / tot * size; bs.push(acc); }
@@ -134,7 +134,7 @@ function stoneMaps(size) {
       r *= 1 - gm * 1.05; g *= 1 - gm; b *= 1 - gm * 0.8;
       const jm = 1 - face;                                        // mortar joint: cool grey, in shade
       r = lerp(r, 128, jm * 0.92); g = lerp(g, 114, jm * 0.92); b = lerp(b, 92, jm * 0.92);
-      const ao = lerp(0.52, 1, face);
+      const ao = lerp(0.66, 1, face);
       col[i * 4] = clamp(r * ao, 0, 255);
       col[i * 4 + 1] = clamp(g * ao, 0, 255);
       col[i * 4 + 2] = clamp(b * ao, 0, 255);
@@ -142,7 +142,7 @@ function stoneMaps(size) {
       rgh[i] = clamp(lerp(0.94, 0.74 + ch * 0.09, face), 0.4, 1);
     }
   }
-  return { map: tex(col, size, true), normalMap: normalTex(h, size, 3.0), roughnessMap: ormTex(size, rgh) };
+  return { map: tex(col, size, true), normalMap: normalTex(h, size, 2.3), roughnessMap: ormTex(size, rgh) };
 }
 
 /* -------------------------------------------------------------------- pantiles ---- */

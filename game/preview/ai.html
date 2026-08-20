@@ -49,12 +49,24 @@ boot({
     /* --------------------------------------------------------------- ribbons - */
     const S = (s) => track.sample(((s % track.length) + track.length) % track.length);
 
-    // The terrain mesh is LOD'd (up to 24 m triangles in the distance), so its rendered surface
-    // sits above world.heightAt() on any crest. Clearing the local maximum keeps these preview
-    // ribbons visible from the overview camera without floating in the close-up shots.
-    const groundMax = (x, z, r = 7) => Math.max(
-      world.heightAt(x, z), world.heightAt(x + r, z), world.heightAt(x - r, z),
-      world.heightAt(x, z + r), world.heightAt(x, z - r));
+    // Draw the road where the karts actually drive: the collision world flattens the hillside
+    // toward the course, so its ground height — not the raw heightfield — is the surface the
+    // wheels ride on. (The real track mesh will carve the terrain to match; this is a stand-in.)
+    const col = race.collision;
+    // The physics ground is the collision world's (it flattens the hillside toward the course);
+    // the *rendered* terrain is not carved yet, so where the raw hillside sits above it the road
+    // would be buried. Lifting road and karts by the same excess keeps them on the visible slope.
+    const excess = (x, z) => {
+      let g = null;
+      try { g = col.groundHeight(x, z); } catch (e) { g = null; }
+      return (g == null || !Number.isFinite(g)) ? 0 : Math.max(0, world.heightAt(x, z) - g);
+    };
+    const groundY = (x, z) => {
+      let g = -1e9;
+      try { g = col.groundHeight(x, z); } catch (e) { g = -1e9; }
+      const t = world.heightAt(x, z);
+      return Math.max(Number.isFinite(g) ? g : -1e9, t);
+    };
 
     function ribbon(width, yLift, mat, offsetFn) {
       const N = 520;
@@ -72,7 +84,7 @@ boot({
           const vx = cx + sm.normal.x * sgn * w * 0.5, vz = cz + sm.normal.z * sgn * w * 0.5;
           pos[j] = vx;
           // the ribbon has to clear the raw hillside: the course height is smoothed, the terrain is not
-          pos[j + 1] = Math.max(sm.pos.y, groundMax(vx, vz)) + yLift;
+          pos[j + 1] = groundY(vx, vz) + yLift;
           pos[j + 2] = vz;
           uv[(i * 2 + k) * 2] = k;
           uv[(i * 2 + k) * 2 + 1] = s / 6;
@@ -96,11 +108,11 @@ boot({
 
     // road surface
     const roadMat = new THREE.MeshStandardMaterial({ color: 0x3b3c40, roughness: 0.93, metalness: 0.0, side: THREE.DoubleSide });
-    scene.add(ribbon(s => S(s).width, 0.22, roadMat));
+    scene.add(ribbon(s => S(s).width, 0.06, roadMat));
     // white edge lines
     const lineMat = new THREE.MeshStandardMaterial({ color: 0xe6e3da, roughness: 0.8, side: THREE.DoubleSide });
     for (const side of [-1, 1]) {
-      scene.add(ribbon(0.26, 0.28, lineMat, s => side * (S(s).width * 0.5 - 0.30)));
+      scene.add(ribbon(0.26, 0.10, lineMat, s => side * (S(s).width * 0.5 - 0.30)));
     }
 
     // the racing line, coloured by its target speed
@@ -120,7 +132,7 @@ boot({
           const sgn = k ? 1 : -1, j = (i * 2 + k) * 3;
           const vx = L.x + L.nx * sgn * 0.42, vz = L.z + L.nz * sgn * 0.42;
           pos[j] = vx;
-          pos[j + 1] = Math.max(L.y, groundMax(vx, vz)) + 0.34;
+          pos[j + 1] = groundY(vx, vz) + 0.12;
           pos[j + 2] = vz;
           col[j] = c.r; col[j + 1] = c.g; col[j + 2] = c.b;
         }
@@ -148,7 +160,7 @@ boot({
       const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8 }));
       m.rotation.x = -Math.PI / 2;
       m.rotation.z = -Math.atan2(sm.tangent.x, sm.tangent.z);
-      m.position.set(sm.pos.x, Math.max(sm.pos.y, groundMax(sm.pos.x, sm.pos.z)) + 0.30, sm.pos.z);
+      m.position.set(sm.pos.x, groundY(sm.pos.x, sm.pos.z) + 0.11, sm.pos.z);
       scene.add(m);
     }
 
@@ -160,7 +172,7 @@ boot({
       m.rotation.x = -Math.PI / 2;
       const n = track.nearest(pos), sm = S(n.s);
       m.rotation.z = -Math.atan2(sm.tangent.x, sm.tangent.z);
-      m.position.set(pos.x, Math.max(pos.y ?? sm.pos.y, groundMax(pos.x, pos.z)) + 0.32, pos.z);
+      m.position.set(pos.x, groundY(pos.x, pos.z) + 0.13, pos.z);
       scene.add(m);
     }
 
@@ -180,11 +192,13 @@ boot({
       scene.add(obj);
       visuals.push({ r, obj, vis: racerVis });
     }
+    // chassis centre -> wheels-on-ground: comHeight + suspension rest travel
+    const KART_DROP = (race.racers[0].vehicle.params.comHeight ?? 0.2) + (race.racers[0].vehicle.params.suspRest ?? 0.26);
     const q = new THREE.Quaternion();
     function syncKarts(dt) {
       for (const v of visuals) {
         const tf = v.r.vehicle.getTransform();
-        v.obj.position.set(tf.position.x, tf.position.y - 0.28, tf.position.z);
+        v.obj.position.set(tf.position.x, tf.position.y - KART_DROP + excess(tf.position.x, tf.position.z), tf.position.z);
         q.set(tf.quaternion.x, tf.quaternion.y, tf.quaternion.z, tf.quaternion.w);
         v.obj.quaternion.copy(q);
         const st = v.r.vehicle.state;
@@ -206,7 +220,7 @@ boot({
       const n = Math.min(f.length, 4000);
       for (let i = 0; i < n; i++) {
         const g = f[f.length - n + i];
-        ghostPos[i * 3] = g.x; ghostPos[i * 3 + 1] = g.y + 0.6; ghostPos[i * 3 + 2] = g.z;
+        ghostPos[i * 3] = g.x; ghostPos[i * 3 + 1] = g.y + 0.35 + excess(g.x, g.z); ghostPos[i * 3 + 2] = g.z;
       }
       ghostGeo.attributes.position.needsUpdate = true;
       ghostGeo.setDrawRange(0, n);
@@ -220,12 +234,41 @@ boot({
     while (warmed < 26 && performance.now() - t0 < 20000) { race.update(DT); warmed += DT; }
     syncKarts(DT); syncGhost();
 
+    // The field keeps racing while the harness settles frames, so the follow cameras are
+    // recomputed every frame: whatever setView() is asked for, it frames the current action.
+    function refreshViews() {
+      const lead = race.standings[0];
+      if (!lead) return;
+      const t = lead.vehicle.getTransform();
+      const lift = excess(t.position.x, t.position.z);
+      const sm = S(lead.s), back = S(lead.s - 30);
+      const bl = excess(back.pos.x, back.pos.z), sl = excess(sm.pos.x, sm.pos.z);
+      views.pack = {
+        pos: [back.pos.x - back.tangent.x * 10 + back.normal.x * 3.4, back.pos.y + bl + 5.4, back.pos.z - back.tangent.z * 10 + back.normal.z * 3.4],
+        look: [sm.pos.x, sm.pos.y + sl + 1.0, sm.pos.z], fov: 52,
+      };
+      views.trackside = {
+        pos: [sm.pos.x + sm.normal.x * 12 - sm.tangent.x * 15, sm.pos.y + sl + 2.9, sm.pos.z + sm.normal.z * 12 - sm.tangent.z * 15],
+        look: [sm.pos.x, sm.pos.y + sl + 0.7, sm.pos.z], fov: 42,
+      };
+      views.chase = {
+        pos: [t.position.x - t.forward.x * 7.2, t.position.y + lift + 2.9, t.position.z - t.forward.z * 7.2],
+        look: [t.position.x + t.forward.x * 11, t.position.y + lift + 1.0, t.position.z + t.forward.z * 11],
+        fov: 58,
+      };
+      views.circuit = {
+        pos: [back.pos.x + back.normal.x * 58 - back.tangent.x * 34, back.pos.y + bl + 74, back.pos.z + back.normal.z * 58 - back.tangent.z * 34],
+        look: [sm.pos.x, sm.pos.y + sl, sm.pos.z], fov: 55,
+      };
+    }
+
     engine.add({
       update(dt) {
         const step = Math.min(dt, 1 / 30);
         race.update(step);
         syncKarts(step);
         syncGhost();
+        refreshViews();
       },
     });
 
@@ -248,15 +291,12 @@ boot({
     Object.assign(views, {
       // 1. the whole circuit from above: racing line vs centreline
       circuit: (() => {
-        let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, ys = 0, n = 0;
-        for (let i = 0; i < 240; i++) {
-          const sm = S(i / 240 * track.length);
-          x0 = Math.min(x0, sm.pos.x); x1 = Math.max(x1, sm.pos.x);
-          z0 = Math.min(z0, sm.pos.z); z1 = Math.max(z1, sm.pos.z);
-          ys += sm.pos.y; n++;
-        }
-        const cxm = (x0 + x1) / 2, czm = (z0 + z1) / 2, span = Math.max(x1 - x0, z1 - z0);
-        return { pos: [cxm - span * 0.28, ys / n + span * 0.62, czm + span * 0.72], look: [cxm, ys / n, czm], fov: 52 };
+        // a helicopter shot over the pack, high enough to read the line, low enough to read karts
+        const sm = S(packS - 60);
+        return {
+          pos: [sm.pos.x + sm.normal.x * 60 - sm.tangent.x * 40, sm.pos.y + 78, sm.pos.z + sm.normal.z * 60 - sm.tangent.z * 40],
+          look: [smPack.pos.x, smPack.pos.y, smPack.pos.z], fov: 55,
+        };
       })(),
       // 2. the optimised line through the tightest corner, out-in-out
       apex: {

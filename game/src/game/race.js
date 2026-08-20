@@ -17,22 +17,14 @@
  * `state` is a live object (phase, clock, countdown, lap, flags) so the HUD can read it every
  * frame without allocating. No Three.js import: this runs headless in tools/sim/race.mjs.
  */
-import { clamp, lerp, smoothstep, damp, wrapPi, rng } from '../core/mathx.js';
+import { clamp, lerp, smoothstep } from '../core/mathx.js';
 import { createVehicle, makeFallbackTrack, DEFAULTS } from '../physics/vehicle.js';
 import { createCollisionWorld } from '../physics/collision.js';
-import { createAI, buildRacingLine, resolveTrack, applyItemEffects, TIERS, DIFFICULTY } from './ai.js';
+import { createAI, buildRacingLine, resolveTrack, applyItemEffects, DIFFICULTY } from './ai.js';
 
 const PHASES = ['idle', 'intro', 'countdown', 'racing', 'finished', 'results'];
 
 const FALLBACK_NAMES = ['Mitzi', 'Shuki', 'Yaffa', 'Kobi', 'Layla', 'Shelly', 'Dror', 'Tamar', 'Boaz', 'Nofar', 'Pinchas', 'Zohar'];
-
-/** Roster is optional — a stripped build or the headless sim can run without the models. */
-function loadRoster() {
-  try {
-    // eslint-disable-next-line no-undef
-    return null;   // filled by setRoster(); see createRace(opts.roster)
-  } catch (e) { return null; }
-}
 
 const fmtTime = t => {
   if (!Number.isFinite(t)) return '--:--.---';
@@ -70,8 +62,6 @@ export function createRace(world, track, opts = {}) {
   const len = trk.length;
   const laps = O.laps ?? trk.laps ?? 3;
   const line = O.line || buildRacingLine(trk, O.lineOpts || {});
-  const rand = rng(O.seed >>> 0);
-  const dS = (a, b) => { let d = a - b; while (d > len * 0.5) d -= len; while (d < -len * 0.5) d += len; return d; };
   const mod = v => ((v % len) + len) % len;
 
   /* ---------------------------------------------------------- checkpoints -- */
@@ -129,17 +119,14 @@ export function createRace(world, track, opts = {}) {
     }
     return g;
   }
+  /** The track may only publish an eight-car grid; a twelve-kart field extends it backwards. */
   function gridSlot(i) {
     if (grid.length >= O.field) return grid[i];
-    // extend an eight-slot grid backwards for a twelve-kart field
-    const base = grid[grid.length - 1] || { pos: { x: 0, y: 0, z: 0 }, rot: 0 };
-    const back = i - grid.length;
-    const s = startS - 6 - Math.floor(i / 2) * 7;
     try {
-      const sm = trk.sample(s);
+      const sm = trk.sample(startS - 6 - Math.floor(i / 2) * 7);
       const side = (i % 2 ? 1 : -1) * 2.7;
       return { pos: { x: sm.pos.x + sm.normal.x * side, y: sm.pos.y, z: sm.pos.z + sm.normal.z * side }, rot: Math.atan2(sm.tangent.x, sm.tangent.z) };
-    } catch (e) { void back; return base; }
+    } catch (e) { return grid[grid.length - 1] || { pos: { x: 0, y: 0, z: 0 }, rot: 0 }; }
   }
 
   const vehicles = [];
@@ -441,6 +428,7 @@ export function createRace(world, track, opts = {}) {
 
   /* --------------------------------------------------------------- update -- */
   const zeroInput = { throttle: 0, brake: 0, steer: 0, drift: 0, item: 0, look: 0 };
+  const holdInput = { throttle: 0, brake: 0.35, steer: 0, drift: 0, item: 0, look: 0 };
   let itemPressed = false;
 
   function update(dt) {
@@ -451,8 +439,9 @@ export function createRace(world, track, opts = {}) {
 
     if (state.phase === 'intro') {
       if (state.phaseTime >= O.introTime) setPhase('countdown');
-      // karts idle on the grid; still step the physics so they settle onto their suspension
-      for (const r of racers) r.vehicle.update(dt, zeroInput);
+      // karts idle on the grid: step the physics so they settle onto their suspension, on the
+      // brakes so a sloping grid does not roll the field into the first corner before the lights
+      for (const r of racers) r.vehicle.update(dt, holdInput);
       return api;
     }
 
@@ -479,7 +468,6 @@ export function createRace(world, track, opts = {}) {
     ai.setGate({ racing: nowRacing, tMinus: state.countdown, go: state.go });
 
     for (const r of racers) {
-      const st = r.vehicle.state;
       let inp;
       if (r.isPlayer && (humanSeen || typeof O.input === 'function')) {
         inp = readPlayerInput() || zeroInput;
@@ -492,7 +480,7 @@ export function createRace(world, track, opts = {}) {
         if (state.phase === 'countdown') {
           const gated = { throttle: inp.throttle, brake: 0, steer: 0, drift: 0, item: 0, look: 0 };
           // holding the throttle on the grid revs but never moves the kart
-          r.vehicle.update(dt, { throttle: 0, brake: 0.2, steer: 0, drift: 0, item: 0, look: 0 });
+          r.vehicle.update(dt, holdInput);
           void gated;
           continue;
         }
@@ -658,7 +646,6 @@ export function createRace(world, track, opts = {}) {
       }));
     },
   };
-  void loadRoster;
   return api;
 }
 
