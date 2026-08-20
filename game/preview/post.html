@@ -1,0 +1,200 @@
+<!doctype html><html><head><meta charset="utf-8"><title>post preview</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070d;overflow:hidden;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace}
+  #app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}
+  #hud{position:fixed;left:12px;top:12px;padding:8px 11px;border-radius:8px;
+       background:rgba(6,10,16,.55);color:#dbe6f2;border:1px solid rgba(255,255,255,.09);
+       white-space:pre;letter-spacing:.2px;text-shadow:0 1px 2px rgba(0,0,0,.85);pointer-events:none}
+  #hud b{color:#ffd166}#hud .g{color:#7fe3a1}#hud .m{color:#8fb7ff}#hud .r{color:#ff8f7a}
+</style>
+</head><body><div id="app"></div><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { boot } from './common.js';
+import { clamp } from '../src/core/mathx.js';
+import { createPostFX } from '../src/render/post.js';
+
+/* ------------------------------------------------------------------------------------ *
+ * preview/post.html — the post-processing A/B page.
+ *
+ *   ?off      raw forward render, renderer ACES only  (the "before" of every pair)
+ *   ?q=N      quality tier 0..3 (default 2)
+ *   ?nolut    post stack on but the grade LUT bypassed
+ *
+ * Camera shots are *deterministic*: each named view rewinds the camera by exactly WARM
+ * frames of travel and then walks it forward at a fixed 1/60 s step, so the harness's warm
+ * period lands the camera on the intended framing with a real, repeatable frame-to-frame
+ * velocity for the reprojection motion blur to chew on.
+ * ------------------------------------------------------------------------------------ */
+
+const Q = new URLSearchParams(location.search);
+const POST   = !Q.has('off');
+const TIER   = Q.has('q') ? +Q.get('q') : 2;
+const NOLUT  = Q.has('nolut');
+const WARM   = +(Q.get('warm') || 45);
+const FIXED  = 1 / 60;
+
+const hud = document.getElementById('hud');
+let fx = null, track = null, racers = [], world = null, engine = null;
+let shot = null, shotName = '', frame = 0;
+
+/** Optional sibling modules: never let one of them take the whole page down. */
+async function tryMod(path, fn, label) {
+  try { const m = await import(/* @vite-ignore */ path); return fn(m); }
+  catch (e) { console.warn('[post preview] ' + label + ' unavailable: ' + e.message); return null; }
+}
+
+const V = (a) => new THREE.Vector3(a[0], a[1], a[2]);
+
+// --------------------------------------------------------------------------------- shots
+/**
+ * A shot is { fov, kmh, boost, speed, at(travel) -> { pos, look } }.
+ * `travel` is metres already driven; `speed` is metres/second of camera travel.
+ */
+function makeShots(w) {
+  const h = (x, z) => w.heightAt(x, z);
+  const S = {};
+
+  const still = (name, pos, look, fov, kmh = 0, boost = 0) => {
+    S[name] = { fov, kmh, boost, speed: 0, at: () => ({ pos: V(pos), look: V(look) }) };
+  };
+
+  // Kart-eye on the residential lane: AO contact, plaster in sun, far houses in the DoF roll.
+  still('lane', [244, 84.2, -64], [202, 84.6, -92], 62, 18);
+  // Establishing shot over the moshav. Deliberately not a 700 m telephoto: at that range
+  // the aerial-perspective haze owns the frame and there is nothing left for a grade to do.
+  still('vista', [46, 168, 236], [232, 88, -66], 46, 0);
+  // Straight into the afternoon sun, from the open wheat field east of the moshav — inside
+  // the village this camera ends up standing in somebody's living room.
+  still('sun', [402, h(402, 306) + 1.8, 306], [-40, h(-40, 250) + 104, 250], 58, 0);
+  // Olive grove, low: AO under the canopies, saturation on the foliage.
+  still('grove', [641, h(641, 118) + 1.7, 118], [688, h(688, 62) + 3.0, 62], 60, 0);
+
+  if (track) {
+    const ride = (name, s0, back, fov, kmh, boost, speed) => {
+      S[name] = {
+        fov, kmh, boost, speed,
+        at(travel) {
+          const s = s0 + travel;
+          const c = track.sample(s - back);
+          const a = track.sample(s + 15);
+          const up = 1.15 + back * 0.16;
+          return {
+            pos: new THREE.Vector3(c.pos.x, c.pos.y + up, c.pos.z),
+            look: new THREE.Vector3(a.pos.x, a.pos.y + 1.35, a.pos.z),
+            kartS: s,
+          };
+        },
+      };
+    };
+    // Anchor the driving shots to the part of the circuit that runs through the houses —
+    // a boost shot framed on the inside of the pine wood proves nothing.
+    const L = track.length;
+    let best = 0, bestD = Infinity;
+    for (let s = 0; s < L; s += 4) {
+      const p = track.sample(s);
+      const d = (p.pos.x - 216) ** 2 + (p.pos.z + 72) ** 2;
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    ride('chase', best - 60, 7.2, 58, 94, 0.0, 26);         // cruising: speed reads as blur
+    ride('boost', best + 30, 6.4, 66, 132, 1.0, 36);        // mushroom: rush lines + punch
+    ride('apex',  best + 150, 9.0, 54, 78, 0.35, 22);       // trailing the pack
+  }
+  return S;
+}
+
+// -------------------------------------------------------------------------------- racers
+function placeRacers(travel, shotInfo) {
+  if (!track || !racers.length) return;
+  const s = (shotInfo && shotInfo.kartS != null) ? shotInfo.kartS : travel;
+  for (let i = 0; i < racers.length; i++) {
+    const r = racers[i];
+    const sm = track.sample(s + (i === 0 ? 0 : -4.2 * i - 1.5));
+    const lat = i === 0 ? 0 : (i % 2 ? 1 : -1) * Math.min(sm.width * 0.26, 3.0);
+    r.object3D.position.set(
+      sm.pos.x + sm.normal.x * lat, sm.pos.y + 0.02, sm.pos.z + sm.normal.z * lat);
+    r.object3D.rotation.y = Math.atan2(sm.tangent.x, sm.tangent.z);
+  }
+}
+
+// ---------------------------------------------------------------------------------- boot
+boot({
+  name: 'post',
+  views: { lane: { pos: [244, 84.2, -64], look: [202, 84.6, -92], fov: 62 } },
+  modules: async (ctx) => {
+    engine = ctx.engine; world = ctx.world;
+    const eng = ctx.engine, w = ctx.world;
+
+    await tryMod('../src/world/roads.js', m => m.createRoads(eng, w), 'roads');
+    await tryMod('../src/world/buildings.js', m => m.createBuildings(eng, w, { quality: 1 }), 'buildings');
+    await tryMod('../src/world/vegetation.js', m => m.createVegetation(eng, w, { quality: 1 }), 'vegetation');
+
+    track = await tryMod('../src/track/track.js', m => m.buildTrack(w), 'track');
+    if (track) {
+      await tryMod('../src/track/trackMesh.js', m => m.createTrackMesh(eng, w, track), 'trackMesh');
+      await tryMod('../src/track/furniture.js', m => m.createFurniture(eng, w, track), 'furniture');
+      await tryMod('../src/characters/roster.js', m => {
+        const ids = m.createRoster().slice(0, 3);
+        for (const e of ids) {
+          const r = m.createRacer(e.id, { detail: 1, shadows: true });
+          eng.scene.add(r.object3D);
+          racers.push(r);
+        }
+      }, 'racers');
+    }
+
+    // ---- the post stack -------------------------------------------------------------
+    if (POST) {
+      fx = createPostFX(eng.renderer, eng.scene, eng.camera, { quality: TIER });
+      if (NOLUT) fx.setGradeEnabled(false);
+      eng.composer = fx;                       // Engine.render() now drives the composer
+      window.__post = fx;
+    }
+
+    // ---- deterministic shot playback ---------------------------------------------------
+    const shots = makeShots(w);
+    const game = window.__game;
+    game.views = {};
+    for (const k of Object.keys(shots)) {
+      const a = shots[k].at(0);
+      game.views[k] = { pos: a.pos.toArray(), look: a.look.toArray(), fov: shots[k].fov };
+    }
+    game.setView = (name) => {
+      const s = shots[name]; if (!s) throw new Error('unknown view: ' + name);
+      shot = s; shotName = name; frame = 0;
+      apply();
+    };
+
+    function apply() {
+      const travel = (frame - WARM) * shot.speed * FIXED;
+      const a = shot.at(travel);
+      const cam = engine.camera;
+      cam.position.copy(a.pos);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(a.look);
+      cam.fov = shot.fov;
+      cam.updateProjectionMatrix();
+      cam.updateMatrixWorld(true);
+      placeRacers(travel, a);
+      if (fx) fx.setSpeed(shot.kmh, shot.boost);
+    }
+
+    eng.add({
+      update() {
+        if (!shot) return;
+        frame++;
+        apply();
+        for (const r of racers) r.update(FIXED, { speed: shot.kmh / 3.6, boost: shot.boost });
+        const t = fx ? fx.quality : -1;
+        hud.innerHTML =
+          `<b>${shotName}</b>   post <span class="${POST ? 'g' : 'r'}">${POST ? 'ON  q=' + t : 'OFF'}</span>` +
+          `${NOLUT ? '  <span class="r">no-LUT</span>' : ''}\n` +
+          `speed <span class="m">${shot.kmh.toFixed(0)} km/h</span>   ` +
+          `boost <span class="m">${shot.boost.toFixed(2)}</span>   frame ${frame}`;
+      },
+    });
+
+    game.setView('lane');
+  },
+});
+</script></body></html>

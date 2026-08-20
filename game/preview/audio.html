@@ -1,0 +1,465 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Kat Racing — audio</title>
+<style>
+  html,body{margin:0;height:100%;background:#070a11;overflow:hidden;
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;color:#dfe7f5}
+  #app{position:fixed;inset:0}
+  canvas{display:block;width:100%;height:100%}
+</style>
+</head><body><div id="app"><canvas id="c"></canvas></div>
+<script type="module">
+import {
+  runAudioTests, renderCue, renderEngine, renderEngineSweep, renderSurface, renderMusic,
+  renderRaceScene, spectrogram, spectrum, mono, onsets, analyse,
+} from '../src/audio/testkit.js';
+import { CUE_IDS } from '../src/audio/sfx.js';
+import { PHRASE, DRUM_BASE, DRUM_BUSY, BASS_ROOT } from '../src/audio/music.js';
+
+const API = new URLSearchParams(location.search).get('mode') === 'api';
+window.__audioTest = { run: (o = {}) => runAudioTests(o), renderCue, renderEngine, renderSurface, renderMusic };
+
+const cvs = document.getElementById('c');
+const g = cvs.getContext('2d', { alpha: false });
+let W = 1280, H = 720;
+function resize() {
+  W = cvs.width = Math.max(640, window.innerWidth | 0);
+  H = cvs.height = Math.max(400, window.innerHeight | 0);
+}
+window.addEventListener('resize', () => { resize(); draw(); });
+resize();
+
+/* --------------------------------------------------------------------------- palette */
+const BG = '#070a11', PANEL = '#0e1422', LINE = '#1e2942', TXT = '#cfd9ec', DIM = '#7b89a6';
+const ACC = '#4fd0e6', ACC2 = '#ffb64d', OK = '#6ee7a8', BAD = '#ff6b81';
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const LUT = (() => {
+  const s = [[0, 6, 12, 26], [0.16, 16, 40, 92], [0.36, 22, 106, 150], [0.56, 66, 190, 176],
+             [0.74, 206, 214, 96], [0.88, 255, 176, 64], [1, 255, 250, 235]];
+  const a = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let k = 0; while (k < s.length - 2 && t > s[k + 1][0]) k++;
+    const f = (t - s[k][0]) / Math.max(1e-6, s[k + 1][0] - s[k][0]);
+    for (let c = 0; c < 3; c++) a[i * 3 + c] = s[k][1 + c] + (s[k + 1][1 + c] - s[k][1 + c]) * f;
+  }
+  return a;
+})();
+
+/* ----------------------------------------------------------------------- primitives */
+function panel(x, y, w, h, title, sub) {
+  x = Math.round(x); y = Math.round(y); w = Math.round(w); h = Math.round(h);
+  g.fillStyle = PANEL; g.fillRect(x, y, w, h);
+  g.strokeStyle = LINE; g.lineWidth = 1; g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  if (title) {
+    g.textAlign = 'left';
+    g.fillStyle = TXT; g.font = '600 12px ui-monospace,monospace';
+    g.fillText(title, x + 10, y + 17);
+    // subs are right-aligned so a long title can never collide with them
+    if (sub) { g.fillStyle = DIM; g.font = '11px ui-monospace,monospace'; g.textAlign = 'right'; g.fillText(sub, x + w - 10, y + 17); g.textAlign = 'left'; }
+  }
+}
+function text(s, x, y, col = TXT, font = '11px ui-monospace,monospace', align = 'left') {
+  g.fillStyle = col; g.font = font; g.textAlign = align; g.fillText(s, x, y); g.textAlign = 'left';
+}
+function waveform(x, y, w, h, data, col = ACC, gain = 1, span = 1) {
+  x = Math.round(x); y = Math.round(y); w = Math.round(w); h = Math.round(h);
+  const n = Math.max(2, Math.floor(data.length * Math.min(1, span))), step = Math.max(1, Math.floor(n / w));
+  g.fillStyle = 'rgba(79,208,230,0.10)'; g.fillRect(x, y, w, h);
+  g.strokeStyle = LINE; g.beginPath(); g.moveTo(x, y + h / 2); g.lineTo(x + w, y + h / 2); g.stroke();
+  g.fillStyle = col;
+  for (let px = 0; px < w; px++) {
+    const i0 = Math.floor(px / w * n), i1 = Math.min(n, Math.max(i0 + 1, Math.floor((px + 1) / w * n)));
+    let mn = 0, mx = 0;
+    for (let i = i0; i < i1; i += step) { const v = data[i] * gain; if (v < mn) mn = v; if (v > mx) mx = v; }
+    const y0 = y + h / 2 - Math.max(-1, Math.min(1, mx)) * h / 2;
+    const y1 = y + h / 2 - Math.max(-1, Math.min(1, mn)) * h / 2;
+    g.fillRect(x + px, y0, 1, Math.max(1, y1 - y0));
+  }
+}
+function specgram(x, y, w, h, sg, { fmax = 12000, fmin = 40 } = {}) {
+  x = Math.round(x); y = Math.round(y); w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h));
+  const img = g.createImageData(w, h);
+  const cols = sg.cols, nb = sg.bins, binHz = sg.binHz;
+  const lg0 = Math.log(fmin), lg1 = Math.log(fmax);
+  for (let px = 0; px < w; px++) {
+    const ci = Math.min(cols.length - 1, Math.floor(px / w * cols.length));
+    const col = cols[ci] || cols[0];
+    if (!col) continue;
+    for (let py = 0; py < h; py++) {
+      const t = 1 - py / h;
+      const f = Math.exp(lg0 + (lg1 - lg0) * t);
+      const b0 = f / binHz, b1 = Math.exp(lg0 + (lg1 - lg0) * (t + 1 / h)) / binHz;
+      let v = 0;
+      const a = Math.max(0, Math.floor(b0)), b = Math.min(nb - 1, Math.max(a, Math.ceil(b1)));
+      for (let k = a; k <= b; k++) v = Math.max(v, col[k] || 0);
+      const li = Math.max(0, Math.min(255, (v * 255) | 0)) * 3;
+      const o = (py * w + px) * 4;
+      img.data[o] = LUT[li]; img.data[o + 1] = LUT[li + 1]; img.data[o + 2] = LUT[li + 2]; img.data[o + 3] = 255;
+    }
+  }
+  g.putImageData(img, x, y);
+  // frequency gridlines
+  g.strokeStyle = 'rgba(255,255,255,0.13)'; g.lineWidth = 1;
+  for (const f of [100, 300, 1000, 3000, 10000]) {
+    if (f > fmax) continue;
+    const yy = y + h * (1 - (Math.log(f) - lg0) / (lg1 - lg0));
+    g.beginPath(); g.moveTo(x, yy + 0.5); g.lineTo(x + w, yy + 0.5); g.stroke();
+    text(f >= 1000 ? (f / 1000) + 'k' : f + '', x + 3, yy - 3, 'rgba(255,255,255,0.55)', '9px ui-monospace,monospace');
+  }
+  g.strokeStyle = LINE; g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+}
+function specCurve(x, y, w, h, sp, col = ACC, fmax = 16000) {
+  x = Math.round(x); y = Math.round(y); w = Math.round(w); h = Math.round(h);
+  const { mag, binHz } = sp;
+  const lg0 = Math.log(40), lg1 = Math.log(fmax);
+  let mx = 1e-9; for (let k = 1; k < mag.length; k++) mx = Math.max(mx, mag[k]);
+  g.strokeStyle = col; g.lineWidth = 1.4; g.beginPath();
+  for (let px = 0; px < w; px++) {
+    const f = Math.exp(lg0 + (lg1 - lg0) * (px / w));
+    const k = Math.min(mag.length - 1, Math.max(1, Math.round(f / binHz)));
+    const db = 20 * Math.log10(mag[k] / mx + 1e-7);
+    const v = Math.max(0, Math.min(1, (db + 72) / 72));
+    const yy = y + h - v * h;
+    px ? g.lineTo(x + px, yy) : g.moveTo(x + px, yy);
+  }
+  g.stroke(); g.lineWidth = 1;
+}
+function badge(x, y, label, ok) {
+  const w = g.measureText(label).width + 14;
+  g.fillStyle = ok ? 'rgba(110,231,168,0.14)' : 'rgba(255,107,129,0.16)';
+  g.fillRect(x, y - 11, w, 16);
+  text(label, x + 7, y, ok ? OK : BAD, '11px ui-monospace,monospace');
+  return w;
+}
+
+/* ---------------------------------------------------------------------------- data */
+const DATA = { ready: false };
+const CUE_SHOW = CUE_IDS;
+
+async function build() {
+  DATA.sweep = await renderEngineSweep({ seconds: 5 });
+  DATA.sweepSg = spectrogram(mono(DATA.sweep.buffer), 48000, 1024, 384, 12000);
+  DATA.eng = [];
+  for (const rpm of [0.05, 0.35, 0.7, 1.0]) {
+    const r = await renderEngine(rpm, { seconds: 1.2 });
+    DATA.eng.push({ rpm, a: r.analysis, expected: r.expectedHz, sp: spectrum(mono(r.buffer), 48000, 4096), wav: mono(r.buffer) });
+  }
+  DATA.surf = [];
+  for (const s of ['tarmac', 'gravel', 'dirt_track', 'grass', 'kerb']) {
+    const r = await renderSurface(s, { seconds: 1.5, speed: 20 });
+    DATA.surf.push({ s, a: r.analysis, sp: spectrum(mono(r.buffer), 48000, 4096), sg: spectrogram(mono(r.buffer), 48000, 1024, 256, 12000) });
+  }
+  const scrub = await renderSurface('tarmac', { seconds: 1.5, speed: 22, slip: 1 });
+  DATA.surf.push({ s: 'drift scrub', a: scrub.analysis, sp: spectrum(mono(scrub.buffer), 48000, 4096), sg: spectrogram(mono(scrub.buffer), 48000, 1024, 256, 12000) });
+
+  DATA.mHi = await renderMusic(0.95, { seconds: 14 });
+  DATA.mHiSg = spectrogram(mono(DATA.mHi.buffer), 48000, 1024, 256, 12000);
+  DATA.mLo = await renderMusic(0.3, { seconds: 14 });
+  DATA.mLoSg = spectrogram(mono(DATA.mLo.buffer), 48000, 1024, 256, 12000);
+
+  DATA.scene = await renderRaceScene({ seconds: 16 });
+  DATA.sceneWav = mono(DATA.scene.buffer);
+  DATA.sceneSg = spectrogram(DATA.sceneWav, 48000, 1024, 256, 12000);
+
+  DATA.cues = [];
+  for (const id of CUE_SHOW) {
+    const r = await renderCue(id, { seconds: 3 });
+    DATA.cues.push({ id, a: r.analysis, wav: mono(r.buffer) });
+  }
+  DATA.tests = await runAudioTests({ quick: true });
+  DATA.ready = true;
+}
+
+/* --------------------------------------------------------------------------- views */
+function header(title, sub) {
+  g.fillStyle = BG; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#0b1120'; g.fillRect(0, 0, W, 40);
+  text('KAT RACING', 16, 26, ACC2, '700 15px ui-monospace,monospace');
+  text('/ AUDIO', 130, 26, DIM, '600 13px ui-monospace,monospace');
+  text(title, 210, 26, TXT, '600 13px ui-monospace,monospace');
+  if (sub) text(sub, 210 + g.measureText(title).width + 16, 26, DIM, '11px ui-monospace,monospace');
+  if (DATA.tests) {
+    const t = DATA.tests;
+    text(`${t.total - t.failed}/${t.total} checks`, W - 16, 26, t.failed ? BAD : OK, '600 12px ui-monospace,monospace', 'right');
+  }
+  g.strokeStyle = LINE; g.beginPath(); g.moveTo(0, 40.5); g.lineTo(W, 40.5); g.stroke();
+}
+
+function viewEngine() {
+  header('ENGINE', 'granular firing-pulse synthesis, pitch = rpm');
+  const x = 16, y = 56, w = W - 32, h = 300;
+  panel(x, y, w, h + 34, 'rpm sweep  0.06 → 1.04 → lift/overrun → boost', '5 s, log frequency');
+  specgram(x + 8, y + 26, w - 16, h, DATA.sweepSg, { fmax: 12000 });
+  const marks = [[0.02, 'launch'], [0.45, 'pulling'], [0.56, 'limiter'], [0.62, 'lift · overrun pops'], [0.78, 'back on power'], [0.92, 'turbo']];
+  for (const [u, label] of marks) {
+    const mx = x + 8 + (w - 16) * u;
+    g.strokeStyle = 'rgba(255,255,255,0.5)'; g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(mx, y + 26); g.lineTo(mx, y + 26 + h); g.stroke(); g.setLineDash([]);
+    text(label, mx + 4, y + 40, '#fff', '10px ui-monospace,monospace');
+  }
+  const ty = y + h + 44, tw = (W - 32 - 24) / 4;
+  for (let i = 0; i < DATA.eng.length; i++) {
+    const e = DATA.eng[i], px = 16 + i * (tw + 8);
+    panel(px, ty, tw, H - ty - 16, `rpm ${e.rpm.toFixed(2)}`, `${e.expected.toFixed(0)} Hz firing`);
+    waveform(px + 8, ty + 30, tw - 16, 46, e.wav, ACC, 3);
+    specCurve(px + 8, ty + 82, tw - 16, H - ty - 16 - 108, e.sp, ACC2);
+    const a = e.a;
+    text(`f0 ${a.f0} Hz  ·  centroid ${a.centroid} Hz`, px + 8, H - 34, DIM, '10px ui-monospace,monospace');
+    text(`rms ${a.rms.toFixed(4)}  peak ${a.peak.toFixed(3)}`, px + 8, H - 22, DIM, '10px ui-monospace,monospace');
+  }
+}
+
+function viewSurfaces() {
+  header('SURFACES', 'rolling noise · granular crackle · kerb rattle · drift scrub');
+  const x = 16, y = 56, w = W - 32;
+  const rows = DATA.surf.length, rh = Math.floor((H - y - 16) / rows) - 6;
+  for (let i = 0; i < rows; i++) {
+    const s = DATA.surf[i], ry = y + i * (rh + 6);
+    panel(x, ry, w, rh, '', '');
+    text(s.s, x + 12, ry + 20, i === rows - 1 ? ACC2 : TXT, '600 13px ui-monospace,monospace');
+    text('20 m/s' + (i === rows - 1 ? ' · full slip' : ''), x + 12, ry + 36, DIM, '10px ui-monospace,monospace');
+    text(`rms ${s.a.rms.toFixed(4)}`, x + 12, ry + 52, DIM, '10px ui-monospace,monospace');
+    text(`centroid ${s.a.centroid} Hz`, x + 12, ry + 66, DIM, '10px ui-monospace,monospace');
+    text(`peak ${s.a.peak.toFixed(3)}`, x + 12, ry + 80, DIM, '10px ui-monospace,monospace');
+    const gx = x + 150, gw = w - 150 - 300;
+    specgram(gx, ry + 6, gw, rh - 12, s.sg, { fmax: 12000 });
+    specCurve(gx + gw + 14, ry + 12, 272, rh - 24, s.sp, i === rows - 1 ? ACC2 : ACC);
+    g.strokeStyle = LINE; g.strokeRect(gx + gw + 8.5, ry + 6.5, 283, rh - 13);
+    text('spectrum', gx + gw + 16, ry + rh - 12, DIM, '9px ui-monospace,monospace');
+  }
+}
+
+function viewMusic() {
+  header('MUSIC', 'maqam hijaz on D · maqsum groove · live sequencer, 8-bar phrase, no seam');
+  const x = 16, w = W - 32;
+  const m2 = DATA.mHi, m1 = DATA.mLo;
+  const y = 52, hSg = 176;
+  panel(x, y, w, hSg + 30, 'final lap / last corner',
+    `intensity 0.95 · ${m2.bpm.toFixed(0)} bpm · measured ${m2.onsets.bpm.toFixed(1)} · rms ${m2.analysis.rms.toFixed(4)} · peak ${m2.analysis.peak.toFixed(2)}`);
+  specgram(x + 8, y + 24, w - 16, hSg, DATA.mHiSg, { fmax: 12000 });
+  const dur = 14, beat = 60 / m2.bpm;
+  for (let b = 0; b * beat < dur; b++) {
+    const bx = x + 8 + (w - 16) * (b * beat / dur);
+    g.strokeStyle = b % 4 === 0 ? 'rgba(255,182,77,0.9)' : 'rgba(255,255,255,0.25)';
+    g.beginPath(); g.moveTo(bx, y + 24 + hSg - (b % 4 === 0 ? 20 : 9)); g.lineTo(bx, y + 24 + hSg); g.stroke();
+  }
+  text('beat grid', x + 14, y + 24 + hSg - 26, 'rgba(255,255,255,0.7)', '9px ui-monospace,monospace');
+
+  const y2 = y + hSg + 38, h2 = 168;
+  const lw = Math.round(w * 0.50);
+  panel(x, y2, lw, h2, 'early race', `intensity 0.30 · ${m1.bpm.toFixed(0)} bpm · rms ${m1.analysis.rms.toFixed(4)}`);
+  specgram(x + 8, y2 + 24, lw - 16, h2 - 32, DATA.mLoSg, { fmax: 12000 });
+
+  const px = x + lw + 10, pw = w - lw - 10;
+  panel(px, y2, pw, h2, 'oud phrase', 'hijaz degrees · 8 bars × 16 steps');
+  const cw = (pw - 60) / 16, chh = (h2 - 34) / 8;
+  const names = ['D', 'E♭', 'F♯', 'G', 'A', 'B♭', 'C', 'D′'];
+  for (let bar = 0; bar < 8; bar++) {
+    for (let st = 0; st < 16; st++) {
+      const d = PHRASE[bar][st];
+      const cx = px + 44 + st * cw, cy = y2 + 26 + bar * chh;
+      g.fillStyle = d < 0 ? 'rgba(255,255,255,0.05)' : `hsl(${188 + d * 13} 76% ${40 + d * 4}%)`;
+      g.fillRect(Math.round(cx) + 1, Math.round(cy) + 1, Math.round(cw) - 2, Math.round(chh) - 3);
+      if (d >= 0 && chh > 12) text(names[d] || '', cx + cw / 2, cy + chh - 5, '#08131c', '9px ui-monospace,monospace', 'center');
+    }
+    text('bar ' + (bar + 1), px + 8, y2 + 26 + bar * chh + chh - 5, DIM, '9px ui-monospace,monospace');
+  }
+
+  /* ---- arrangement: which layer is alive at which intensity ---- */
+  const y3 = y2 + h2 + 10, h3 = H - y3 - 16;
+  panel(x, y3, lw, h3, 'arrangement', 'layer gain vs music intensity');
+  const layers = [
+    ['drone',   i => lerp(0.20, 0.07, clamp(i / 0.6, 0, 1))],
+    ['oud',     i => clamp((i - 0.08) / 0.3, 0, 1) * 0.62],
+    ['bass',    i => clamp((i - 0.10) / 0.3, 0, 1) * 0.55],
+    ['darbuka', i => clamp((i - 0.05) / 0.35, 0, 1) * 0.72],
+    ['riq',     i => clamp((i - 0.42) / 0.3, 0, 1) * 0.55],
+    ['ney',     i => clamp((i - 0.50) / 0.3, 0, 1) * 0.42],
+    ['claps',   i => clamp((i - 0.75) / 0.25, 0, 1) * 0.60],
+  ];
+  const lh = (h3 - 46) / layers.length, gx0 = x + 76, gw0 = lw - 96;
+  for (let i = 0; i < layers.length; i++) {
+    const [name, fn] = layers[i], ly = y3 + 26 + i * lh;
+    text(name, x + 12, ly + lh * 0.62, TXT, '10px ui-monospace,monospace');
+    const hue = [200, 188, 26, 40, 168, 280, 320][i];
+    for (let px2 = 0; px2 < gw0; px2++) {
+      const t = px2 / gw0, v = clamp(fn(t) / 0.62, 0, 1);
+      // dark track, layer colour fills in as its gain comes up, so thresholds are obvious
+      g.fillStyle = 'rgba(255,255,255,0.05)';
+      const y0b = Math.round(ly + 2), hb = Math.max(1, Math.round(lh - 6));
+      g.fillRect(gx0 + px2, y0b, 1, hb);
+      if (v > 0.004) {
+        g.fillStyle = `hsl(${hue} 82% 58% / ${0.25 + v * 0.75})`;
+        const fh = Math.max(1, Math.round(hb * (0.25 + 0.75 * v)));
+        g.fillRect(gx0 + px2, y0b + hb - fh, 1, fh);
+      }
+    }
+  }
+  for (const [t, lbl] of [[0.16, 'menu'], [0.34, 'grid'], [0.56, 'race'], [0.86, 'final lap'], [1.0, 'last bend']]) {
+    const mx = gx0 + gw0 * t;
+    g.strokeStyle = 'rgba(255,255,255,0.35)'; g.setLineDash([2, 3]);
+    g.beginPath(); g.moveTo(mx, y3 + 24); g.lineTo(mx, y3 + h3 - 22); g.stroke(); g.setLineDash([]);
+    text(lbl, mx, y3 + h3 - 8, DIM, '9px ui-monospace,monospace', 'center');
+  }
+
+  /* ---- the groove itself ---- */
+  panel(px, y3, pw, h3, 'maqsum groove', 'darbuka · 16ths · fills above 0.62');
+  const bw = (pw - 60) / 16, rows = ['dum', 'tek', 'ka', 'bass'];
+  for (let r = 0; r < rows.length; r++) {
+    const ry = y3 + 32 + r * ((h3 - 62) / rows.length);
+    const rh2 = (h3 - 62) / rows.length - 4;
+    text(rows[r], px + 8, ry + rh2 * 0.7, DIM, '10px ui-monospace,monospace');
+    for (let st = 0; st < 16; st++) {
+      const base = DRUM_BASE[st], busy = DRUM_BUSY[st];
+      let on = 0;
+      if (rows[r] === 'bass') on = (st === 0 || st === 6 || st === 8 || st === 14) ? 1 : 0;
+      else if (base === rows[r]) on = 1;
+      else if (busy === rows[r]) on = 0.5;
+      const cx = px + 44 + st * bw;
+      g.fillStyle = on === 1 ? (r === 0 ? '#ffb64d' : ACC) : on ? 'rgba(79,208,230,0.35)' : 'rgba(255,255,255,0.05)';
+      g.fillRect(Math.round(cx) + 1, Math.round(ry), Math.round(bw) - 2, Math.round(rh2));
+    }
+  }
+  for (let st = 0; st < 16; st += 4) {
+    text('beat ' + (st / 4 + 1), px + 44 + st * bw + bw / 2, y3 + h3 - 10, DIM, '9px ui-monospace,monospace', 'center');
+  }
+  text('solid = every bar   ·   faded = fill above intensity 0.62', px + 44, y3 + 20, DIM, '9px ui-monospace,monospace');
+}
+
+function viewCues() {
+  header('CUES', `${DATA.cues.length} procedurally synthesised one-shots — waveform, peak, length, centroid`);
+  const cols = 7, x0 = 16, y0 = 52;
+  const cw = (W - 32 - (cols - 1) * 8) / cols;
+  const rows = Math.ceil(DATA.cues.length / cols);
+  const ch = Math.floor((H - y0 - 16 - (rows - 1) * 8) / rows);
+  for (let i = 0; i < DATA.cues.length; i++) {
+    const c = DATA.cues[i];
+    const cx = x0 + (i % cols) * (cw + 8), cy = y0 + Math.floor(i / cols) * (ch + 8);
+    panel(cx, cy, cw, ch, '');
+    text(c.id, cx + 8, cy + 15, TXT, '600 10px ui-monospace,monospace');
+    const span = Math.min(1, (c.a.dur + 0.08) / (c.a.samples / 48000));
+    waveform(cx + 6, cy + 22, cw - 12, ch - 46, c.wav, c.a.peak > 0.9 ? BAD : ACC, 0.92 / Math.max(0.02, c.a.peak), span);
+    text(`pk ${c.a.peak.toFixed(2)}  ${c.a.dur.toFixed(2)}s`, cx + 8, cy + ch - 14, DIM, '9px ui-monospace,monospace');
+    text(`${c.a.centroid} Hz`, cx + cw - 8, cy + ch - 14, ACC2, '9px ui-monospace,monospace', 'right');
+  }
+}
+
+function viewScene() {
+  header('RACE SCENE', '16 s scripted mix: countdown → launch → gravel → kerb → drift tiers → boost → bump → landing → finish');
+  const x = 16, y = 56, w = W - 32;
+  panel(x, y, w, 176, 'master output', `peak ${DATA.scene.analysis.peak.toFixed(3)} · rms ${DATA.scene.analysis.rms.toFixed(4)} (${DATA.scene.analysis.rmsDb} dB) · limiter holds below 0 dBFS`);
+  waveform(x + 8, y + 26, w - 16, 142, DATA.sceneWav, ACC, 1);
+  const events = [[0.2, '3'], [1.2, '2'], [2.2, '1'], [3.4, 'GO'], [6, 'gravel'], [8.5, 'kerb'],
+    [9.4, 'drift'], [10.0, 'tier1'], [10.8, 'tier2'], [11.6, 'tier3'], [12.2, 'BOOST'], [13, 'bump'], [14, 'land'], [14.6, 'finish']];
+  for (const [t, label] of events) {
+    const ex = x + 8 + (w - 16) * (t / 16);
+    g.strokeStyle = 'rgba(255,182,77,0.55)'; g.setLineDash([2, 3]);
+    g.beginPath(); g.moveTo(ex, y + 26); g.lineTo(ex, y + 168); g.stroke(); g.setLineDash([]);
+    text(label, ex + 3, y + 38, ACC2, '9px ui-monospace,monospace');
+  }
+  const y2 = y + 190;
+  panel(x, y2, w, H - y2 - 16, 'spectrogram', 'engine harmonics, surface bands, music bed, cue transients');
+  specgram(x + 8, y2 + 26, w - 16, H - y2 - 16 - 34, DATA.sceneSg, { fmax: 12000 });
+  for (const [t, label] of events) {
+    const ex = x + 8 + (w - 16) * (t / 16);
+    g.strokeStyle = 'rgba(255,255,255,0.35)';
+    g.beginPath(); g.moveTo(ex, y2 + 26); g.lineTo(ex, y2 + 40); g.stroke();
+    text(label, ex + 3, y2 + 38, '#fff', '9px ui-monospace,monospace');
+  }
+}
+
+function viewTests() {
+  const t = DATA.tests, d = t.data;
+  header('VERIFICATION', 'OfflineAudioContext renders — every cue measured, not guessed');
+  const colW = (W - 40) / 3;
+  // group the four per-cue checks into one line each, so the whole suite fits on screen
+  const groups = [];
+  const cueMap = new Map();
+  for (const r of t.rows) {
+    const m = /^cue ([a-z0-9_]+) (.+)$/.exec(r.name);
+    if (m) {
+      let e = cueMap.get(m[1]);
+      if (!e) { e = { name: 'cue ' + m[1], ok: true, parts: [] }; cueMap.set(m[1], e); groups.push(e); }
+      e.parts.push(r.ok); e.ok = e.ok && r.ok;
+    } else groups.push({ name: r.name, ok: r.ok, parts: null });
+  }
+  const y0 = 58, lh = 10.4;
+  const per = Math.floor((H - y0 - 24) / lh);
+  g.font = '9px ui-monospace,monospace';
+  for (let i = 0; i < groups.length; i++) {
+    const c = Math.floor(i / per), r = i % per;
+    if (c > 1) break;
+    const x = 16 + c * colW, y = y0 + r * lh;
+    text(groups[i].ok ? '✓' : '✗', x, y, groups[i].ok ? OK : BAD, '9px ui-monospace,monospace');
+    let s2 = groups[i].name;
+    while (g.measureText(s2).width > colW - 60 && s2.length > 4) s2 = s2.slice(0, -2);
+    text(s2, x + 12, y, groups[i].ok ? TXT : BAD, '9px ui-monospace,monospace');
+    if (groups[i].parts) {
+      text('audible · headroom · length · spectrum', x + colW - 66, y, 'rgba(110,231,168,0.5)', '8px ui-monospace,monospace', 'right');
+    }
+  }
+  /* third column: the numbers the assertions are made of */
+  const tx = 16 + 2 * colW, tw = colW - 6;
+  let ty = 52;
+  const tableRow = (cols, widths, y, col = TXT, font = '10px ui-monospace,monospace') => {
+    let cx = tx + 10;
+    for (let i = 0; i < cols.length; i++) { text(cols[i], cx, y, col, font); cx += widths[i]; }
+  };
+  const block = (title, h, headers, widths, data) => {
+    panel(tx, ty, tw, h, title, '');
+    tableRow(headers, widths, ty + 34, DIM, '9px ui-monospace,monospace');
+    let ry = ty + 48;
+    for (const row of data) { tableRow(row, widths, ry, TXT, '10px ui-monospace,monospace'); ry += 14; }
+    ty += h + 8;
+  };
+  block('engine', 24 + 22 + d.engine.length * 14, ['rpm', 'fires', 'measured', 'rms', 'centroid'], [46, 62, 74, 62, 60],
+    d.engine.map(e => [String(e.rpm), e.expectedHz + ' Hz', e.firing + ' Hz', e.rms.toFixed(3), e.centroid + ' Hz']));
+  const su = Object.entries(d.surfaces);
+  block('surfaces @ 20 m/s', 24 + 22 + su.length * 14, ['surface', 'rms', 'peak', 'centroid'], [96, 66, 66, 70],
+    su.map(([k, a]) => [k, a.rms.toFixed(4), a.peak.toFixed(3), a.centroid + ' Hz']));
+  block('music', 24 + 22 + 2 * 14, ['mix', 'bpm', 'measured', 'rms', 'flux'], [58, 50, 74, 62, 56],
+    [['early', d.music.low.bpm.toFixed(0), d.music.low.measuredBpm + '', d.music.low.rms.toFixed(4), String(d.music.low.flux)],
+     ['final', d.music.high.bpm.toFixed(0), d.music.high.measuredBpm + '', d.music.high.rms.toFixed(4), String(d.music.high.flux)]]);
+  block('master', 24 + 22 + 3 * 14, ['case', 'peak', 'rms', ''], [122, 66, 66, 10],
+    [['race scene', d.scene.peak.toFixed(3), d.scene.rms.toFixed(4), ''],
+     ['8-cue pile-up', d.pile.peak.toFixed(3), d.pile.rms.toFixed(4), ''],
+     ['ceiling', '0.980', 'soft-clip', '']]);
+  const cueCount = Object.keys(d.cues).length;
+  const loud = Object.entries(d.cues).sort((a, b) => b[1].peak - a[1].peak).slice(0, 4);
+  block('loudest cues of ' + cueCount, 24 + 22 + loud.length * 14, ['cue', 'peak', 'dur', 'centroid'], [122, 56, 56, 60],
+    loud.map(([k, a]) => [k, a.peak.toFixed(2), a.dur.toFixed(2) + 's', a.centroid + ' Hz']));
+
+  text(`${t.total - t.failed} of ${t.total} checks pass`, 16, H - 12, t.failed ? BAD : OK, '600 12px ui-monospace,monospace');
+}
+
+const VIEWS = { engine: viewEngine, surfaces: viewSurfaces, music: viewMusic, cues: viewCues, scene: viewScene, tests: viewTests };
+let current = 'engine';
+function draw() {
+  if (!DATA.ready) {
+    g.fillStyle = BG; g.fillRect(0, 0, W, H);
+    text('rendering audio offline…', W / 2, H / 2, DIM, '13px ui-monospace,monospace', 'center');
+    return;
+  }
+  try { VIEWS[current](); }
+  catch (e) { g.fillStyle = BG; g.fillRect(0, 0, W, H); text(String(e && e.stack || e), 20, 60, BAD); }
+}
+
+/* the screenshot harness contract */
+const game = window.__game = {
+  engine: null, world: null, ready: false, error: null,
+  views: Object.fromEntries(Object.keys(VIEWS).map(k => [k, { pos: [0, 0, 0], look: [0, 0, 0], fov: 55 }])),
+  setView(n) { if (VIEWS[n]) { current = n; draw(); } },
+  renderOnce() { draw(); },
+};
+
+(async () => {
+  try {
+    if (!API) { await build(); game.ready = true; draw(); }
+    else { game.ready = true; }
+  } catch (e) {
+    game.error = String((e && e.stack) || e);
+    draw();
+    console.error(e);
+  }
+})();
+</script></body></html>
