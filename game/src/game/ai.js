@@ -375,13 +375,15 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
       consistency: clamp(0.35 + r2 * 0.6 + sHandling * 0.4, 0.05, 1),
       lineOffset: (r3 - 0.5) * 2.6 * (1.25 - clamp(0.35 + r2 * 0.6, 0, 1)),
       driftLove: clamp(0.35 + r4 * 0.65 + sDrift * 0.5, 0, 1.2),
-      launch: 0.16 + r1 * 0.55,          // seconds before GO that the throttle goes down
+      launch: 0.06 + r1 * 1.55,          // seconds before GO the throttle goes down (tier-sharpened below)
       itemDelay: 0.25 + r2 * 1.5,
     };
     const v = O.vehicles?.[i] || vehicleFactory?.(i, Object.assign({ seed: (O.seed + i * 7919) >>> 0 }, O.vehicleOpts))
       || createVehicle(world, trk, Object.assign({ seed: (O.seed + i * 7919) >>> 0 }, O.vehicleOpts));
     const slot = O.grid?.[i] || trk.startGrid?.[i % Math.max(1, (trk.startGrid || [1]).length)];
     if (slot && O.vehicles == null) { try { v.reset(slot.pos, slot.rot); } catch (e) { /* keep the default */ } }
+    // a sharper driver launches closer to the perfect window; a slow one bogs or jumps
+    person.launch = lerp(person.launch, 0.34, clamp(tier.item * 0.55 + (1 - tier.react) * 0.35, 0, 0.92));
     racers.push({
       index: i,
       id: O.ids?.[i] || ('cpu' + i),

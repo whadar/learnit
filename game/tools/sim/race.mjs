@@ -147,6 +147,7 @@ async function runRace(world, track, opts = {}) {
     t += DT;
     if (race.state.phase === 'racing' || race.state.phase === 'finished') {
       race.racers.forEach((r, i) => {
+        if (r.finished) return;
         const s = stuck[i];
         if (r.progress - s.last > 1.0) { s.last = r.progress; s.t = 0; }
         else { s.t += DT; if (s.t > s.worst) s.worst = s.t; }
@@ -184,13 +185,19 @@ function reportRace({ race, events, stuck }) {
   const sd = Math.sqrt(allLaps.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(allLaps.length, 1));
   const worstSpread = perRacerSpread.length ? Math.max(...perRacerSpread) : NaN;
   const meanSpread = perRacerSpread.reduce((a, b) => a + b, 0) / Math.max(perRacerSpread.length, 1);
+  // lap 1 starts from a standing grid in traffic, so judge consistency on the flying laps
+  const flySpread = [];
+  for (const r of results) { const f = r.lapTimes.slice(1); if (f.length > 1) flySpread.push(Math.max(...f) - Math.min(...f)); }
+  const flyMean = flySpread.reduce((a, b) => a + b, 0) / Math.max(flySpread.length, 1);
+  const flyWorst = flySpread.length ? Math.max(...flySpread) : NaN;
 
   console.log(B('\nNUMBERS'));
   console.log('  finishers                        ' + num(finished.length, 0, 8) + ' / 12');
   console.log('  winner                           ' + pad(results[0]?.name, 10) + fmtTime(results[0]?.time));
   console.log('  1st→last spread                  ' + num(spread, 2, 8) + ' s   ' + (spread / Math.max(results[0]?.time, 1) * 100).toFixed(1) + '% of the winner');
   console.log('  mean lap                         ' + num(mean, 2, 8) + ' s   sd ' + sd.toFixed(2) + ' s');
-  console.log('  per-kart lap spread  mean/worst  ' + num(meanSpread, 2, 6) + ' /' + num(worstSpread, 2, 7) + ' s   want < 1.50 s');
+  console.log('  per-kart lap spread  mean/worst  ' + num(meanSpread, 2, 6) + ' /' + num(worstSpread, 2, 7) + ' s   (all laps)');
+  console.log('  flying-lap spread    mean/worst  ' + num(flyMean, 2, 6) + ' /' + num(flyWorst, 2, 7) + ' s   want < 1.50 s');
   console.log('  best lap of the race             ' + num(Math.min(...results.map(r => r.bestLap ?? Infinity)), 2, 8) + ' s');
   console.log('  ideal lap (speed profile)        ' + num(race.line.stats.estLap, 2, 8) + ' s');
 

@@ -57,7 +57,7 @@ export function createRace(world, track, opts = {}) {
     line: null, lineOpts: null,
     introTime: 6.0,
     countdownTime: 3.6,
-    rocket: { open: 0.92, perfect: 0.42, close: 0.06, burnout: 1.75, power: 0.34, dur: 1.35 },
+    rocket: { open: 0.75, perfect: 0.34, close: 0.05, burnout: 1.30, power: 0.34, dur: 1.35 },
     postRaceTime: 6.0,
     finishTimeout: 45,          // seconds after the winner before stragglers are timed out
     ghostHz: 20,
@@ -158,7 +158,7 @@ export function createRace(world, track, opts = {}) {
       name: entry?.name || FALLBACK_NAMES[i % FALLBACK_NAMES.length],
       entry, vehicle: v, isPlayer: i === O.playerIndex,
       grid: i + 1, place: i + 1, prevPlace: i + 1,
-      lap: 0, cpIndex: 1, u: 0, prevU: 0, s: 0, lateral: 0, progress: 0, distSinceCp: 0,
+      lap: 0, cpIndex: 1, u: 0, prevU: 0, s: 0, lateral: 0, progress: 0, progressInit: false, distSinceCp: 0,
       lapTimes: [], bestLap: Infinity, lapStart: 0, totalTime: 0,
       finished: false, finishTime: 0, finishPlace: 0, dnf: false,
       wrongWay: false, wrongWayT: 0, shortcuts: 0, missedCp: false,
@@ -299,9 +299,9 @@ export function createRace(world, track, opts = {}) {
     // wrong way
     let tan = null;
     try { tan = trk.sample(nr.s).tangent; } catch (e) { tan = null; }
-    if (tan) {
+    if (tan && (state.phase === 'racing' || state.phase === 'finished')) {
       const dot = (st.vel.x * tan.x + st.vel.z * tan.z);
-      if (st.speed > 3 && dot < -0.15 * st.speed) r.wrongWayT += dt;
+      if (st.speed > 4 && dot < -0.25 * st.speed) r.wrongWayT += dt;
       else r.wrongWayT = Math.max(0, r.wrongWayT - dt * 2);
       const ww = r.wrongWayT > O.wrongWayTime;
       if (ww !== r.wrongWay) { r.wrongWay = ww; emit('wrongway', { racer: r, on: ww }); }
@@ -326,9 +326,15 @@ export function createRace(world, track, opts = {}) {
         }
       }
     }
+    // Progress is integrated, not derived from (lap, u): karts start *behind* the line, so a
+    // lap*len + u formula would jump backwards by a whole lap the first time they cross it.
+    if (r.progressInit) {
+      let d = u - r.prevU;
+      if (d > len * 0.5) d -= len; else if (d < -len * 0.5) d += len;
+      r.progress += d;
+    } else { r.progress = u > len * 0.5 ? u - len : u; r.progressInit = true; }
     r.prevU = u;
     r.u = u;
-    r.progress = r.lap * len + u;
   }
 
   function completeLap(r) {
@@ -417,9 +423,9 @@ export function createRace(world, track, opts = {}) {
       if (held > R.burnout) {
         r.rocket = 'burnout'; r.burnout = 1.1;
         emit('rocket', { racer: r, kind: 'burnout' });
-      } else if (held <= R.open) {
-        const q = 1 - clamp(Math.abs(held - R.perfect) / Math.max(R.open - R.close, 0.1), 0, 1);
-        r.rocket = q > 0.6 ? 'perfect' : 'good';
+      } else if (held <= R.open && held >= R.close) {
+        const q = 1 - clamp(Math.abs(held - R.perfect) / Math.max(R.open - R.perfect, 0.1), 0, 1);
+        r.rocket = q > 0.72 ? 'perfect' : 'good';
         try { r.vehicle.addBoost(R.dur * lerp(0.6, 1, q), R.power * lerp(0.55, 1, q), 'rocket'); } catch (e) { /* ignore */ }
         emit('rocket', { racer: r, kind: r.rocket, quality: q });
       } else r.rocket = 'none';
@@ -597,7 +603,7 @@ export function createRace(world, track, opts = {}) {
       try { r.vehicle.reset(slot.pos, slot.rot); } catch (e) { /* ignore */ }
       r.lap = 0; r.cpIndex = 1; r.lapTimes.length = 0; r.bestLap = Infinity; r.lapStart = 0;
       r.finished = false; r.finishTime = 0; r.finishPlace = 0; r.dnf = false;
-      r.place = i + 1; r.prevPlace = i + 1; r.progress = 0; r.distSinceCp = 0;
+      r.place = i + 1; r.prevPlace = i + 1; r.progress = 0; r.progressInit = false; r.distSinceCp = 0;
       r.wrongWay = false; r.wrongWayT = 0; r.shortcuts = 0; r.offTrack = 0; r.offTrackTime = 0;
       r.launchHold = 0; r.launchStart = -1; r.rocket = 'none'; r.burnout = 0;
       r.speedSum = 0; r.speedN = 0; r.topSpeed = 0;
