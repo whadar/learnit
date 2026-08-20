@@ -1,0 +1,7 @@
+node_modules
+dist
+dist-*
+shots
+data/ov_building_index.json
+*.log
+data/amikam-dem.f32
