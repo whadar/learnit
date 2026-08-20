@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import { boot } from './common.js';
 import { clamp, lerp, damp, rng, TAU } from '../src/core/mathx.js';
 import { createItemSystem, fallbackTrack, ITEMS, ITEM_IDS } from '../src/game/items.js';
-import { createItemMesh, createItemBoxMesh, ITEM_VISUALS } from '../src/game/itemMeshes.js';
+import { createItemMesh, createItemBoxMesh, makeHummusSlick, makeKhamsin, createPickupBurst, makeTrail, ITEM_VISUALS } from '../src/game/itemMeshes.js';
 
 const hudEl = document.getElementById('hud');
 const views = {};                        // filled in below; boot() keeps this reference
@@ -23,6 +23,7 @@ const STEP = 1 / 60;                     // scenarios are stepped at a fixed rat
 let ctx = null, track = null, items = null, karts = [], scene = null, engine = null;
 let hudScene = null, hudCam = null, hudHolder = null, hudFace = null, hero = null;
 let current = null, simTime = 0, pending = [];
+let itemsAdopt = null, adoptTimer = 0;
 
 /* Other agents are writing track.js right now: use it if it is ready, else our own loop. */
 async function loadTrack(world) {
@@ -55,20 +56,27 @@ function roadRibbon(trk, world) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  g.setIndex(idx); g.computeVertexNormals();
+  g.setIndex(idx);
+  const nrm = new Float32Array((pos.length / 3) * 3);
+  for (let i = 0; i < nrm.length; i += 3) nrm[i + 1] = 1;      // the ribbon is flat enough
+  g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   const cv = document.createElement('canvas'); cv.width = cv.height = 256;
   const c = cv.getContext('2d'); const r = rng(2);
-  c.fillStyle = '#4a4a50'; c.fillRect(0, 0, 256, 256);
+  c.fillStyle = '#9a999f'; c.fillRect(0, 0, 256, 256);
   for (let i = 0; i < 5200; i++) {
-    c.fillStyle = `rgba(${120 + r() * 90 | 0},${118 + r() * 80 | 0},${118 + r() * 80 | 0},${r() * 0.24})`;
+    c.fillStyle = `rgba(${150 + r() * 90 | 0},${148 + r() * 84 | 0},${148 + r() * 84 | 0},${r() * 0.30})`;
     c.fillRect(r() * 256, r() * 256, 1 + r() * 2.4, 1 + r() * 2.4);
   }
-  c.fillStyle = '#e8e4d8'; c.fillRect(0, 0, 7, 256); c.fillRect(249, 0, 7, 256);
+  c.fillStyle = '#f2eee0'; c.fillRect(0, 0, 11, 256); c.fillRect(245, 0, 11, 256);
+  c.fillStyle = 'rgba(242,238,224,.85)';
+  for (let y = 0; y < 256; y += 42) c.fillRect(124, y, 8, 24);        // dashed centre line
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping;
   const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
-    map: t, roughness: 0.94, metalness: 0.0, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
+    map: t, roughness: 0.94, metalness: 0.0, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
   mesh.receiveShadow = true;
+  mesh.name = 'road-ribbon';
   return mesh;
 }
 
@@ -161,14 +169,14 @@ const SCENES = {
     frames: 128, fov: 34,
     setup() {
       const b = items.boxes[3];
-      karts.forEach((k, i) => placeKart(k, b.s - 40 - i * 9, [0, -3.2, 3.2, -1.6, 1.6][i], 21));
+      karts.forEach((k, i) => placeKart(k, b.s - 39.6 - i * 10, [-3.2, 3.2, 0, -1.6, 1.6][i], 21));
       hero = karts[0];
     },
     camera() {
-      const b = items.boxes[3], sm = track.sample(b.s + 4);
+      const b = items.boxes[4], sm = track.sample(b.s - 6);
       return {
-        pos: [sm.pos.x - sm.tangent.x * 7.5 + sm.normal.x * 4.2, sm.pos.y + 2.6, sm.pos.z - sm.tangent.z * 7.5 + sm.normal.z * 4.2],
-        look: [b.pos.x, b.pos.y - 0.5, b.pos.z], fov: 34,
+        pos: [sm.pos.x - sm.tangent.x * 10.5 + sm.normal.x * 6.4, sm.pos.y + 3.4, sm.pos.z - sm.tangent.z * 10.5 + sm.normal.z * 6.4],
+        look: [b.pos.x, b.pos.y - 0.35, b.pos.z], fov: 36,
       };
     },
   },
@@ -308,7 +316,8 @@ function iconOf(id, span = 1.5) {
   m.position.sub(box.getCenter(new THREE.Vector3()).multiplyScalar(k));
   holder.add(m);
   holder.rotation.x = m.userData?.iconTilt ?? 0;
-  holder.userData = { id, inner: m };
+  holder.userData = { id, inner: m, yaw: m.userData?.iconYaw ?? -0.55 };
+  m.rotation.y = holder.userData.yaw;
   return holder;
 }
 
@@ -344,6 +353,33 @@ function renderHud() {
   r.autoClear = true;
 }
 
+function warmShaders() {
+  const g = new THREE.Group();
+  const cam = engine.camera;
+  g.position.set(cam.position.x, cam.position.y - 600, cam.position.z);
+  for (const id of ITEM_IDS) g.add(createItemMesh(id));
+  g.add(makeHummusSlick(1.7, 3));
+  g.add(makeKhamsin(3.6, 1));
+  g.add(createItemBoxMesh({ size: 1.5 }));
+  const burst = createPickupBurst({ seed: 5 });
+  burst.object3D.visible = true;
+  burst.play({ x: g.position.x, y: g.position.y, z: g.position.z }, 0xffd27a);
+  burst.update(0.01);
+  g.add(burst.object3D);
+  const tr = makeTrail(0xff9a3c);
+  tr.push({ x: g.position.x, y: g.position.y, z: g.position.z });
+  tr.push({ x: g.position.x + 1, y: g.position.y, z: g.position.z });
+  tr.update(0.01);
+  g.add(tr.object3D);
+  scene.add(g);
+  try {
+    engine.renderer.compile(scene, engine.camera);
+    if (hudScene) engine.renderer.compile(hudScene, hudCam);
+  } catch (e) { console.warn('[items] shader warmup failed:', e.message); }
+  scene.remove(g);
+  g.traverse(o => { if (o.isMesh) o.geometry?.dispose?.(); });
+}
+
 /* ---------------------------------------------------------------- stepping */
 function runEvents(t) {
   while (pending.length && pending[0].at <= t) pending.shift().fn();
@@ -364,6 +400,7 @@ function seek(name) {
     items.update(STEP, sc.display ? [] : karts);
     simTime += STEP;
   }
+  itemsAdopt?.();
   updateHudText();
 }
 
@@ -396,7 +433,7 @@ const game = await boot({
     // the item museum, floating over the tarmac near the start line
     display = buildDisplay();
     const sm = track.sample(0);
-    display.position.set(sm.pos.x, sm.pos.y + 2.9, sm.pos.z);
+    display.position.set(sm.pos.x, sm.pos.y + 3.7, sm.pos.z);
     display.rotation.y = Math.atan2(sm.tangent.x, sm.tangent.z) + Math.PI;
     display.visible = false;
     scene.add(display);
@@ -415,7 +452,7 @@ const game = await boot({
     for (const [name, sc] of Object.entries(SCENES)) {
       if (sc.display) {
         const p = display.position, f = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), display.rotation.y);
-        views[name] = { pos: [p.x + f.x * 9.2, p.y - 0.9, p.z + f.z * 9.2], look: [p.x, p.y - 1.05, p.z], fov: sc.fov };
+        views[name] = { pos: [p.x + f.x * 11.0, p.y - 1.0, p.z + f.z * 11.0], look: [p.x, p.y - 1.3, p.z], fov: sc.fov };
       } else {
         const v = sc.camera();
         views[name] = v;
@@ -430,16 +467,38 @@ const game = await boot({
         if (!SCENES[current]?.display) stepKarts(d);
         items.update(d, SCENES[current]?.display ? [] : karts);
         simTime += d;
+        adoptTimer += d;
+        if (itemsAdopt && adoptTimer > 0.25) { adoptTimer = 0; itemsAdopt(); }
         if (display?.visible) {
           for (const h of display.children) {
             const u = h.userData;
-            u.m.rotation.y += d * 26;
-            u.m.position.y = 0.78 + Math.sin(simTime * 30 + u.phase) * 0.06;
+            u.m.rotation.y = (u.m.userData.yaw ?? -0.55) + Math.sin(simTime * 6 + u.phase) * 0.12;
+            u.m.position.y = 0.78 + Math.sin(simTime * 30 + u.phase) * 0.05;
           }
         }
         updateHudText();
       },
     });
+
+    // Adopt every material we just created into the lighting rig (CSM sun + aerial fog).
+    // Without this the road and the items are lit by ambient only and read almost black.
+    const adopt = () => { try { c.sky?.lighting?.scan?.(); } catch (e) { /* sky mid-rewrite */ } };
+    adopt();
+    itemsAdopt = adopt;
+
+    // The review harness renders under SwiftShader: 3 x 2048 shadow cascades cost more per
+    // frame than everything else combined, and this page only needs them to read as shadows.
+    scene.traverse(o => {
+      if (o.isDirectionalLight && o.shadow) {
+        o.shadow.mapSize.set(1024, 1024);
+        o.shadow.map?.dispose?.();
+        o.shadow.map = null;
+      }
+    });
+
+    // Warm every shader before `ready` flips: under SwiftShader a first-use compile of the
+    // iridescent box or a projectile costs tens of seconds, and it would land mid-screenshot.
+    warmShaders();
 
     const origRender = engine.render.bind(engine);
     engine.render = () => { origRender(); renderHud(); };

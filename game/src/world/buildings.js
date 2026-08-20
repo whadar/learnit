@@ -189,18 +189,39 @@ class Surf {
     this.uv.push(u, v); this.c.push(col[0], col[1], col[2]);
     return k;
   }
-  /** Convex polygon fan. `pts` = [[x,y,z]..], `uvs` = [[u,v]..], oriented toward `ref`. */
+  /**
+   * Convex polygon fan. `pts` = [[x,y,z]..], `uvs` = [[u,v]..], oriented toward `ref`.
+   * `col` is one rgb triple, or one triple per vertex for a gradient (window glass).
+   */
   poly(pts, uvs, col, ref) {
     if (pts.length < 3) return;
+    const perVert = Array.isArray(col[0]);
     const n = faceNormal(pts[0], pts[1], pts[2], _n);
-    let order = pts, ord2 = uvs;
+    let order = pts, ord2 = uvs, ord3 = col;
     if (ref && (n[0] * ref[0] + n[1] * ref[1] + n[2] * ref[2]) < 0) {
       order = pts.slice().reverse(); ord2 = uvs.slice().reverse();
+      if (perVert) ord3 = col.slice().reverse();
       faceNormal(order[0], order[1], order[2], _n);
     }
     const base = [];
-    for (let i = 0; i < order.length; i++) base.push(this.vert(order[i][0], order[i][1], order[i][2], _n, ord2[i][0], ord2[i][1], col));
+    for (let i = 0; i < order.length; i++)
+      base.push(this.vert(order[i][0], order[i][1], order[i][2], _n, ord2[i][0], ord2[i][1],
+        perVert ? ord3[i] : col));
     for (let i = 1; i < order.length - 1; i++) this.i.push(base[0], base[i], base[i + 1]);
+  }
+  /** Append a transformed prop geometry (position/normal/colour, no UVs). */
+  addGeo(geo, m4, nm3, _v = new THREE.Vector3(), _w = new THREE.Vector3()) {
+    const p = geo.attributes.position, n = geo.attributes.normal, c = geo.attributes.color;
+    const base = this.p.length / 3;
+    for (let i = 0; i < p.count; i++) {
+      _v.set(p.getX(i), p.getY(i), p.getZ(i)).applyMatrix4(m4);
+      _w.set(n.getX(i), n.getY(i), n.getZ(i)).applyMatrix3(nm3).normalize();
+      this.p.push(_v.x, _v.y, _v.z); this.n.push(_w.x, _w.y, _w.z);
+      this.uv.push(0, 0); this.c.push(c.getX(i), c.getY(i), c.getZ(i));
+    }
+    const ix = geo.index;
+    if (ix) for (let i = 0; i < ix.count; i++) this.i.push(base + ix.getX(i));
+    else for (let i = 0; i < p.count; i++) this.i.push(base + i);
   }
   geometry() {
     const g = new THREE.BufferGeometry();
@@ -312,14 +333,14 @@ function design(b, world, idx) {
   if (b.h) storeyH = clamp(b.h / storeys, 2.4, 9);
 
   const wallH = storeys * storeyH;
-  const pitch = (kind === 'house' ? 19 + rand() * 6 : 15 + rand() * 6) * Math.PI / 180;
+  const pitch = (kind === 'house' ? 22 + rand() * 6 : 15 + rand() * 7) * Math.PI / 180;
   const ov = kind === 'house' ? 0.56 + rand() * 0.22 : 0.34 + rand() * 0.20;
 
   // --- surfacing ----------------------------------------------------------------------
   const mr = rand();
   let wallMat = 'plaster';
-  if (kind === 'house') wallMat = mr < 0.20 ? 'stone' : (mr < 0.44 ? 'mixed' : 'plaster');
-  else if (kind === 'packing' || kind === 'barn') wallMat = mr < 0.12 ? 'stone' : 'plaster';
+  if (kind === 'house') wallMat = mr < 0.11 ? 'stone' : (mr < 0.34 ? 'mixed' : 'plaster');
+  else if (kind === 'packing' || kind === 'barn') wallMat = mr < 0.07 ? 'stone' : 'plaster';
   const tint = PLASTER_TINTS[(rand() * PLASTER_TINTS.length) | 0];
   const sheeted = kind !== 'house' && kind !== 'greenhouse' && rand() < 0.55;
   const roofTint = sheeted ? SHEET_TINTS[(rand() * SHEET_TINTS.length) | 0]
@@ -384,7 +405,7 @@ function addWallBand(out, mat, a, b, y0, y1, holes, col, us, opt) {
   quad(cursor, L, y0, y1);
 
   if (!opt || opt.plain) return;
-  const trim = out.plaster, tc = opt.trimCol;
+  const trim = out.trim, tc = opt.trimCol;
   for (const h of hs) {
     const d = REVEAL;
     const A = (s, y) => P(s, y, 0), B = (s, y) => P(s, y, -d);
@@ -400,13 +421,13 @@ function addWallBand(out, mat, a, b, y0, y1, holes, col, us, opt) {
       [[0, 0], [w / 4, 0], [w / 4, d / 4], [0, d / 4]], tc, [0, 1, 0]);
 
     if (h.type === 'door') {
-      out.plaster.poly([B(h.s0, h.y0), B(h.s1, h.y0), B(h.s1, h.y1), B(h.s0, h.y1)],
+      out.trim.poly([B(h.s0, h.y0), B(h.s1, h.y0), B(h.s1, h.y1), B(h.s0, h.y1)],
         [[0, 0], [w / 4, 0], [w / 4, hh / 4], [0, hh / 4]], opt.doorCol, N);
       // door frame reveal band + a handle-height rail
       continue;
     }
     // white frame ring + centre mullion, then the glass a little further back
-    const fw = 0.055, gd = d + 0.03;
+    const fw = 0.075, gd = d + 0.035;
     const G = (s, y) => P(s, y, -gd);
     const fr = opt.frameCol;
     const bar = (s0, y0b, s1, y1b) => trim.poly([B(s0, y0b), B(s1, y0b), B(s1, y1b), B(s0, y1b)],
@@ -417,17 +438,27 @@ function addWallBand(out, mat, a, b, y0, y1, holes, col, us, opt) {
     bar(h.s1 - fw, h.y0 + fw, h.s1, h.y1 - fw);
     const mc = (h.s0 + h.s1) * 0.5;
     bar(mc - fw * 0.5, h.y0 + fw, mc + fw * 0.5, h.y1 - fw);
+    const gTop = opt.glassTop, gBot = opt.glassBot;
     out.glass.poly([G(h.s0 + fw, h.y0 + fw), G(h.s1 - fw, h.y0 + fw), G(h.s1 - fw, h.y1 - fw), G(h.s0 + fw, h.y1 - fw)],
-      [[0, 0], [w, 0], [w, hh], [0, hh]], opt.glassCol, N);
-    // projecting stone sill
-    const sd = 0.075, st = 0.055;
-    addBox(trim, (A(h.s0, h.y0)[0] + A(h.s1, h.y0)[0]) * 0.5 + ox * (sd * 0.5 - d * 0.5),
-      h.y0 - st * 0.5, (A(h.s0, h.y0)[2] + A(h.s1, h.y0)[2]) * 0.5 + oz * (sd * 0.5 - d * 0.5),
-      tx, tz, w * 0.5 + 0.07, st * 0.5, (sd + d) * 0.5, tc, 2);
-    // shutter box above the head
-    addBox(trim, (A(h.s0, h.y1)[0] + A(h.s1, h.y1)[0]) * 0.5 + ox * 0.03,
-      h.y1 + 0.13, (A(h.s0, h.y1)[2] + A(h.s1, h.y1)[2]) * 0.5 + oz * 0.03,
-      tx, tz, w * 0.5 + 0.05, 0.13, 0.09, tc, 2);
+      [[0, 0], [w, 0], [w, hh], [0, hh]], [gBot, gBot, gTop, gTop], N);
+    // projecting stone sill and the shutter-box lintel, as open shells: the faces that
+    // would be buried in the wall are never emitted, which is 12 triangles a window saved
+    // across roughly eight thousand of them.
+    const sd = 0.075, st = 0.055, e0 = h.s0 - 0.07, e1 = h.s1 + 0.07;
+    const Q = (s, y, off) => P(s, y, off);
+    trim.poly([Q(e0, h.y0, -d), Q(e1, h.y0, -d), Q(e1, h.y0 + 0.005, sd), Q(e0, h.y0 + 0.005, sd)],
+      [[0, 0], [w / 2, 0], [w / 2, 0.1], [0, 0.1]], tc, [0, 1, 0]);
+    trim.poly([Q(e0, h.y0 - st, sd), Q(e1, h.y0 - st, sd), Q(e1, h.y0 + 0.005, sd), Q(e0, h.y0 + 0.005, sd)],
+      [[0, 0], [w / 2, 0], [w / 2, st / 2], [0, st / 2]], tc, N);
+    trim.poly([Q(e0, h.y0 - st, 0), Q(e1, h.y0 - st, 0), Q(e1, h.y0 - st, sd), Q(e0, h.y0 - st, sd)],
+      [[0, 0], [w / 2, 0], [w / 2, 0.06], [0, 0.06]], opt.soffitCol, [0, -1, 0]);
+    const bx = 0.10, bh = 0.26, l0 = h.s0 - 0.05, l1 = h.s1 + 0.05;
+    trim.poly([Q(l0, h.y1, bx), Q(l1, h.y1, bx), Q(l1, h.y1 + bh, bx), Q(l0, h.y1 + bh, bx)],
+      [[0, 0], [w / 2, 0], [w / 2, bh / 2], [0, bh / 2]], tc, N);
+    trim.poly([Q(l0, h.y1, 0), Q(l1, h.y1, 0), Q(l1, h.y1, bx), Q(l0, h.y1, bx)],
+      [[0, 0], [w / 2, 0], [w / 2, 0.06], [0, 0.06]], opt.soffitCol, [0, -1, 0]);
+    trim.poly([Q(l0, h.y1 + bh, 0), Q(l1, h.y1 + bh, 0), Q(l1, h.y1 + bh, bx), Q(l0, h.y1 + bh, bx)],
+      [[0, 0], [w / 2, 0], [w / 2, 0.06], [0, 0.06]], tc, [0, 1, 0]);
     // the shutter itself, dropped by a per-window amount
     const drop = h.drop ?? 0;
     if (drop > 0.02) {
@@ -447,7 +478,7 @@ function planHoles(L, y0, storeyH, isGround, isEntrance, rand, kind) {
   const usable = L - 1.0;
   if (usable < 1.4) return holes;
   const wide = kind === 'barn' || kind === 'packing';
-  const pitch = wide ? 5.2 : 3.35;
+  const pitch = wide ? 5.6 : 3.7;
   let n = clamp(Math.round(usable / pitch), 1, 6);
   const step = L / n;
   const yTop = y0 + Math.min(SILL_H + WINDOW_H, storeyH - 0.55);
@@ -505,7 +536,7 @@ function addRoof(out, rect, wallTopY, pitch, ov, gable, roofCol, trimCol, soffit
   }
 
   // fascia + soffit around the eave
-  const FD = 0.21;
+  const FD = 0.26;
   const eave = [[-ehw, -ehd], [ehw, -ehd], [ehw, ehd], [-ehw, ehd]];
   const wall = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
   for (let i = 0; i < 4; i++) {
@@ -543,6 +574,13 @@ function addRoof(out, rect, wallTopY, pitch, ov, gable, roofCol, trimCol, soffit
     }
   }
 
+  // half-round gutter clipped to the fascia, on the two long eaves, and one downpipe
+  for (const vs of [-1, 1]) {
+    const y = eaveY - FD - 0.055;
+    const gc = [trimCol[0] * 0.88, trimCol[1] * 0.87, trimCol[2] * 0.84];
+    const c = P(0, vs * (ehd + 0.055), y);
+    addBox(plaster, c[0], y, c[2], ux, uz, ehw, 0.055, 0.055, gc, 2);
+  }
   // ridge and hip capping
   const cap = (p0, p1) => {
     const dx = p1[0] - p0[0], dz = p1[2] - p0[2], l = Math.hypot(dx, dz);
@@ -626,9 +664,7 @@ function buildPropKit() {
 
   // --- dud shemesh on a pitched roof: tank across the slope, panel lying on the tiles ---
   const solarPitchedMetal = mergeGeos([
-    cyl(0.295, 1.55, 12, 0, 0.62, -0.30, WHITE, 'x'),
-    cyl(0.315, 0.10, 12, -0.78, 0.62, -0.30, GALV, 'x'),
-    cyl(0.315, 0.10, 12, 0.78, 0.62, -0.30, GALV, 'x'),
+    cyl(0.295, 1.62, 9, 0, 0.62, -0.30, WHITE, 'x'),
     box(0.07, 0.62, 0.07, -0.62, 0.31, -0.30, GALV),
     box(0.07, 0.62, 0.07, 0.62, 0.31, -0.30, GALV),
     box(0.07, 0.10, 0.66, -0.62, 0.34, 0.02, GALV),
@@ -650,16 +686,14 @@ function buildPropKit() {
     box(0.08, 0.95, 0.08, 0.90, 0.47, 0.60, GALV),
     box(0.08, 0.30, 0.08, -0.90, 0.15, -0.10, GALV),
     box(0.08, 0.30, 0.08, 0.90, 0.15, -0.10, GALV),
-    cyl(0.295, 1.55, 12, 0, 1.18, -0.42, WHITE, 'x'),
-    cyl(0.315, 0.10, 12, -0.78, 1.18, -0.42, GALV, 'x'),
-    cyl(0.315, 0.10, 12, 0.78, 1.18, -0.42, GALV, 'x'),
+    cyl(0.295, 1.62, 9, 0, 1.18, -0.42, WHITE, 'x'),
     box(0.08, 1.18, 0.08, -0.62, 0.59, -0.42, GALV),
     box(0.08, 1.18, 0.08, 0.62, 0.59, -0.42, GALV),
   ]);
   const solarFlatGlass = mergeGeos([glassP]);
 
   const waterTank = mergeGeos([
-    cyl(0.56, 1.15, 14, 0, 0.70, 0, BLACK),
+    cyl(0.56, 1.15, 12, 0, 0.70, 0, BLACK),
     cyl(0.30, 0.12, 10, 0, 1.33, 0, [0.35, 0.35, 0.36]),
     box(1.30, 0.12, 1.30, 0, 0.07, 0, GREY),
     box(0.10, 0.20, 0.10, 0, 0.22, 0.62, GALV),
@@ -668,14 +702,14 @@ function buildPropKit() {
   // local +Y is the wall normal, local +Z points down the wall
   const ac = mergeGeos([
     box(0.84, 0.29, 0.58, 0, 0.165, 0, GREY),
-    cyl(0.23, 0.035, 12, 0, 0.325, 0.02, [0.26, 0.27, 0.29]),
+    cyl(0.23, 0.035, 10, 0, 0.325, 0.02, [0.26, 0.27, 0.29]),
     cyl(0.055, 0.045, 8, 0, 0.335, 0.02, [0.45, 0.46, 0.47]),
     box(0.86, 0.03, 0.05, 0, 0.31, -0.26, [0.66, 0.67, 0.67]),
     box(0.05, 0.05, 0.12, -0.36, 0.06, 0.32, GALV),
     box(0.05, 0.05, 0.12, 0.36, 0.06, 0.32, GALV),
   ]);
 
-  const dishG = new THREE.SphereGeometry(0.40, 14, 7, 0, Math.PI * 2, 0, Math.PI * 0.42);
+  const dishG = new THREE.SphereGeometry(0.40, 11, 5, 0, Math.PI * 2, 0, Math.PI * 0.42);
   dishG.rotateX(Math.PI - 0.55);            // hollow face toward +Y, tipped up toward +Z
   dishG.translate(0, 0.50, 0.14);
   const dish = mergeGeos([
@@ -721,11 +755,12 @@ export function createBuildings(engine, world, opts = {}) {
   for (const d of designs) {
     let c = chunks.get(key(d));
     if (!c) {
+      // three buckets per chunk: the masses that define the silhouette (shell), the close
+      // range dressing (detail), and the cheap distant stand-in (far).
       c = {
-        near: { plaster: new Surf(), stone: new Surf(), tile: new Surf(), shutter: new Surf(), glass: new Surf(), sheeting: new Surf(), foliage: new Surf() },
+        shell: { plaster: new Surf(), stone: new Surf(), tile: new Surf(), sheeting: new Surf() },
+        detail: { plaster: new Surf(), shutter: new Surf(), glass: new Surf(), metal: new Surf(), foliage: new Surf() },
         far: { farSurface: new Surf(), farRoof: new Surf() },
-        min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity],
-        meshes: { near: [], far: [] },
       };
       chunks.set(key(d), c);
     }
@@ -733,87 +768,80 @@ export function createBuildings(engine, world, opts = {}) {
     c.list.push(d);
   }
 
-  const props = { solarPitched: [], solarFlat: [], waterTank: [], ac: [], dish: [], chimney: [], vent: [] };
-  const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1);
-  const _up = new THREE.Vector3(0, 1, 0);
+  // Roof furniture is merged into its own chunk rather than instanced globally: the props
+  // then inherit the chunk's LOD, so a village-wide pan draws 30k prop triangles instead of
+  // 215k, for the cost of one extra merged mesh per near chunk.
+  const _n3 = new THREE.Matrix3(), _vv = new THREE.Vector3(), _ww = new THREE.Vector3();
+  const _fw = new THREE.Vector3(), _rt = new THREE.Vector3();
 
-  /** Place a prop with its local +Y along `normal` and local +Z along `fwd`. */
-  function place(kind, x, y, z, normal, fwd, scale = 1) {
-    const n = _v.set(normal[0], normal[1], normal[2]).normalize();
-    const f = new THREE.Vector3(fwd[0], fwd[1], fwd[2]);
-    f.addScaledVector(n, -f.dot(n));
-    if (f.lengthSq() < 1e-6) f.set(0, 0, 1).addScaledVector(n, -n.z);
-    f.normalize();
-    const r = new THREE.Vector3().crossVectors(n, f);
-    const m = new THREE.Matrix4().makeBasis(r, n.clone(), f);
-    m.scale(_s.set(scale, scale, scale));
-    m.setPosition(x, y, z);
-    props[kind].push(m);
+  function makePlacer(chunk) {
+    /** Place a prop with its local +Y along `normal` and local +Z along `fwd`. */
+    return function place(kind, x, y, z, normal, fwd, scale = 1) {
+      const def = kit[kind];
+      if (!def) return;
+      const n = _vv.set(normal[0], normal[1], normal[2]);
+      if (n.lengthSq() < 1e-9) return;
+      n.normalize();
+      _fw.set(fwd[0], fwd[1], fwd[2]).addScaledVector(n, -_fw.dot(n));
+      if (_fw.lengthSq() < 1e-6) _fw.set(0, 0, 1).addScaledVector(n, -n.z);
+      _fw.normalize();
+      _rt.crossVectors(n, _fw);
+      const m = new THREE.Matrix4().makeBasis(_rt, n, _fw);
+      if (scale !== 1) m.scale(new THREE.Vector3(scale, scale, scale));
+      m.setPosition(x, y, z);
+      _n3.getNormalMatrix(m);
+      if (def.metal) chunk.detail.metal.addGeo(def.metal, m, _n3, _ww, new THREE.Vector3());
+      if (def.glass) chunk.detail.glass.addGeo(def.glass, m, _n3, _ww, new THREE.Vector3());
+    };
   }
 
   for (const [, chunk] of chunks) {
+    const place = makePlacer(chunk);
     for (const d of chunk.list) buildOne(d, chunk, world, M, place);
   }
 
   // ---- meshes ----------------------------------------------------------------------
   let drawCalls = 0;
   const chunkList = [];
+  const NO_SHADOW = { glass: 1, shutter: 1, sheeting: 1, foliage: 1 };
   for (const [k, c] of chunks) {
-    const sphere = new THREE.Sphere();
     const bb = new THREE.Box3();
-    const rec = { key: k, near: [], far: [], center: new THREE.Vector3(), radius: 1 };
-    for (const [name, surf] of Object.entries(c.near)) {
-      if (surf.empty) continue;
-      const g = surf.geometry();
-      const mesh = new THREE.Mesh(g, M[name]);
-      mesh.name = 'bld-' + name + '-' + k;
-      mesh.castShadow = true; mesh.receiveShadow = true;
-      rec.near.push(mesh); group.add(mesh); drawCalls++;
-      bb.union(new THREE.Box3().setFromBufferAttribute(g.attributes.position));
-    }
-    for (const [name, surf] of Object.entries(c.far)) {
-      if (surf.empty) continue;
-      const g = surf.geometry();
-      const mesh = new THREE.Mesh(g, M[name]);
-      mesh.name = 'bldfar-' + name + '-' + k;
-      mesh.castShadow = true; mesh.receiveShadow = true;
-      mesh.visible = false;
-      rec.far.push(mesh); group.add(mesh); drawCalls++;
-    }
-    bb.getBoundingSphere(sphere);
-    rec.center.copy(sphere.center); rec.radius = sphere.radius || 1;
+    const rec = { key: k, shell: [], detail: [], far: [], box: bb };
+    const emit = (bucket, tag, list, shadow) => {
+      for (const [name, surf] of Object.entries(bucket)) {
+        if (surf.empty) continue;
+        const g = surf.geometry();
+        const mesh = new THREE.Mesh(g, M[name]);
+        mesh.name = tag + '-' + name + '-' + k;
+        mesh.castShadow = shadow && !NO_SHADOW[name];
+        mesh.receiveShadow = true;
+        list.push(mesh); group.add(mesh); drawCalls++;
+        bb.union(new THREE.Box3().setFromBufferAttribute(g.attributes.position));
+      }
+    };
+    emit(c.shell, 'bld', rec.shell, true);
+    emit(c.detail, 'blddet', rec.detail, true);
+    emit(c.far, 'bldfar', rec.far, false);
+    for (const m of rec.far) m.visible = false;
     chunkList.push(rec);
-  }
-
-  // ---- instanced roof furniture -----------------------------------------------------
-  const instanced = [];
-  for (const [name, mats] of Object.entries(props)) {
-    if (!mats.length) continue;
-    const def = kit[name];
-    for (const slot of ['metal', 'glass']) {
-      const geo = def[slot];
-      if (!geo) continue;
-      const im = new THREE.InstancedMesh(geo, slot === 'glass' ? M.glass : M.metal, mats.length);
-      im.name = 'bldprop-' + name + '-' + slot;
-      for (let i = 0; i < mats.length; i++) im.setMatrixAt(i, mats[i]);
-      im.instanceMatrix.needsUpdate = true;
-      im.castShadow = true; im.receiveShadow = true;
-      im.frustumCulled = false;
-      group.add(im); instanced.push(im); drawCalls++;
-    }
   }
 
   engine.scene.add(group);
 
   // ---- LOD ---------------------------------------------------------------------------
-  let lodDist = opts.lodDistance ?? 300;
   const cam = engine.camera;
+  let quality = 1;
+  let shellDist = opts.shellDistance ?? 340;   // beyond this the box-and-roof stand-in shows
+  let detailDist = opts.detailDistance ?? 105; // beyond this the window trim and props drop
   function refreshLOD() {
     for (const c of chunkList) {
-      const d = cam.position.distanceTo(c.center) - c.radius;
-      const near = d < lodDist;
-      for (const m of c.near) m.visible = near;
-      for (const m of c.far) m.visible = !near;
+      // distance to the chunk's box, not its centre: a 256 m tile has a 180 m radius, and
+      // subtracting that would keep half the village at full detail.
+      const d = c.box.distanceToPoint(cam.position);
+      const shell = d < shellDist;
+      for (const m of c.shell) m.visible = shell;
+      for (const m of c.detail) m.visible = d < detailDist;
+      for (const m of c.far) m.visible = !shell;
     }
   }
   refreshLOD();
@@ -830,8 +858,9 @@ export function createBuildings(engine, world, opts = {}) {
       if (acc > 0.12) { acc = 0; refreshLOD(); }
     },
     setQuality(t) {
-      lodDist = lerp(110, 460, clamp(t, 0, 1));
-      for (const im of instanced) im.visible = t > 0.22;
+      quality = clamp(t, 0, 1);
+      shellDist = lerp(190, 520, quality);
+      detailDist = lerp(35, 150, quality);
       refreshLOD();
     },
   };
@@ -843,15 +872,24 @@ export function createBuildings(engine, world, opts = {}) {
 /* ==================================================================== one building = */
 
 function buildOne(d, chunk, world, M, place) {
-  const out = chunk.near;
+  // `out` routes each kind of surface at its own LOD tier: masses into the shell bucket,
+  // trim / joinery / furniture into the detail bucket.
+  const out = {
+    plaster: chunk.shell.plaster, stone: chunk.shell.stone, tile: chunk.shell.tile,
+    sheeting: chunk.shell.sheeting, trim: chunk.detail.plaster,
+    shutter: chunk.detail.shutter, glass: chunk.detail.glass,
+    metal: chunk.detail.metal, foliage: chunk.detail.foliage,
+  };
   const { ring, floorY, wallH, storeys, storeyH, kind, tint, roofTint } = d;
   const wallTopY = floorY + wallH;
   const isGH = kind === 'greenhouse';
   const trimCol = [Math.min(tint[0] * 1.06, 1.1), Math.min(tint[1] * 1.06, 1.1), Math.min(tint[2] * 1.05, 1.1)];
-  const soffitCol = [tint[0] * 0.62, tint[1] * 0.61, tint[2] * 0.60];
+  const soffitCol = [tint[0] * 0.50, tint[1] * 0.49, tint[2] * 0.48];
   const doorCol = [0.30 + d.rand() * 0.25, 0.22 + d.rand() * 0.16, 0.16 + d.rand() * 0.12];
   const glassCol = [1, 1, 1];
-  const frameCol = [1.06, 1.05, 1.03];
+  const glassTop = [1.35, 1.42, 1.55];      // upper pane catches the sky
+  const glassBot = [0.42, 0.46, 0.52];      // lower pane looks into the room
+  const frameCol = [1.10, 1.09, 1.06];
   const shutterCol = [0.92 + d.rand() * 0.1, 0.92, 0.90];
   const stoneCol = [0.96 + d.rand() * 0.08, 0.96, 0.95];
 
@@ -888,7 +926,7 @@ function buildOne(d, chunk, world, M, place) {
       if (!f) continue;
       const holes = isGH ? [] : planHoles(f.L, y0, storeyH, s === 0, i === d.entrance, d.rand, kind);
       addWallBand(out, mat, a, b, y0, y1, holes, col, us,
-        isGH ? { plain: true } : { trimCol, soffitCol, doorCol, glassCol, shutterCol, frameCol });
+        isGH ? { plain: true } : { trimCol, soffitCol, doorCol, glassCol, shutterCol, frameCol, glassTop, glassBot });
     }
   }
 
@@ -906,6 +944,15 @@ function buildOne(d, chunk, world, M, place) {
       const info = addRoof(out, rect, wallTopY, d.pitch, d.ov,
         d.roofKind === 'gable', roofCol, trimCol, soffitCol, tint, 2.0);
       roofTop = Math.max(roofTop, info.ridgeY);
+      // downpipe from that roof's gutter to the ground
+      const vx2 = -rect.uz, vz2 = rect.ux;
+      const px = rect.cx + rect.ux * (rect.w / 2 - 0.16) + vx2 * (rect.d / 2 + 0.11);
+      const pz = rect.cz + rect.uz * (rect.w / 2 - 0.16) + vz2 * (rect.d / 2 + 0.11);
+      const yTop = info.eaveY - 0.33, yBot = world.heightAt(px, pz) - 0.1;
+      if (yTop > yBot + 0.5) {
+        addBox(out.plaster, px, (yTop + yBot) * 0.5, pz, rect.ux, rect.uz, 0.05,
+          (yTop - yBot) * 0.5, 0.05, [trimCol[0] * 0.86, trimCol[1] * 0.85, trimCol[2] * 0.82], 2);
+      }
     }
   }
 
@@ -1048,36 +1095,52 @@ function addPergola(d, world, out, trimCol, tint) {
   const a = d.ring[d.entrance], b = d.ring[(d.entrance + 1) % d.ring.length];
   const f = edgeFrame(a, b);
   if (!f || f.L < 3.2) return;
-  const depth = 2.5, len = Math.min(f.L - 0.6, 6.5);
+  const depth = 2.6, len = Math.min(f.L - 0.6, 6.8);
   const s0 = (f.L - len) * 0.5;
-  const postCol = [0.52, 0.38, 0.24], beamCol = [0.58, 0.43, 0.28];
-  const beamY = d.floorY + 2.55;
+  const postCol = [0.50, 0.36, 0.23], beamCol = [0.58, 0.43, 0.28];
   const P = (s, off) => [a[0] + f.tx * s + f.ox * off, a[1] + f.tz * s + f.oz * off];
-  // slab
+
+  // paved veranda, dropped onto the ground rather than hung off the floor level
+  const slabY = d.floorY + 0.02;
   const c0 = P(s0, 0.0), c1 = P(s0 + len, 0.0), c2 = P(s0 + len, depth), c3 = P(s0, depth);
-  const sy = d.floorY + 0.02;
-  out.plaster.poly([[c0[0], sy, c0[1]], [c1[0], sy, c1[1]], [c2[0], sy, c2[1]], [c3[0], sy, c3[1]]],
+  out.trim.poly([[c0[0], slabY, c0[1]], [c1[0], slabY, c1[1]], [c2[0], slabY, c2[1]], [c3[0], slabY, c3[1]]],
     [[0, 0], [len / 4, 0], [len / 4, depth / 4], [0, depth / 4]],
-    [tint[0] * 0.80, tint[1] * 0.79, tint[2] * 0.77], [0, 1, 0]);
-  for (const s of [s0 + 0.25, s0 + len - 0.25]) {
-    const p = P(s, depth - 0.2);
-    addBox(out.plaster, p[0], d.floorY + 1.28, p[1], f.tx, f.tz, 0.075, 1.28, 0.075, postCol, 1);
+    [tint[0] * 0.78, tint[1] * 0.77, tint[2] * 0.74], [0, 1, 0]);
+  // slab edge down to the terrain, so it never floats on a slope
+  const edges = [[c0, c1, [-f.ox, -f.oz]], [c1, c2, [f.tx, f.tz]], [c2, c3, [f.ox, f.oz]], [c3, c0, [-f.tx, -f.tz]]];
+  for (const [p, q, nrm] of edges) {
+    const yp = Math.min(world.heightAt(p[0], p[1]), slabY) - 0.25;
+    const yq = Math.min(world.heightAt(q[0], q[1]), slabY) - 0.25;
+    out.trim.poly([[p[0], yp, p[1]], [q[0], yq, q[1]], [q[0], slabY, q[1]], [p[0], slabY, p[1]]],
+      [[0, 0], [1, 0], [1, 0.4], [0, 0.4]], [tint[0] * 0.66, tint[1] * 0.65, tint[2] * 0.62],
+      [nrm[0], 0, nrm[1]]);
   }
-  const mid = P(s0 + len / 2, depth - 0.2);
-  addBox(out.plaster, mid[0], beamY + 0.09, mid[1], f.tx, f.tz, len / 2 + 0.2, 0.09, 0.07, beamCol, 1);
-  const midw = P(s0 + len / 2, depth * 0.5);
-  // rafters across the pergola
-  const n = Math.max(4, Math.round(len / 0.55));
+
+  const beamY = slabY + 2.55;
+  for (const s of [s0 + 0.3, s0 + len - 0.3]) {
+    const p = P(s, depth - 0.22);
+    const gy = Math.min(world.heightAt(p[0], p[1]), slabY) - 0.15;
+    const h = (beamY - gy) * 0.5;
+    addBox(out.trim, p[0], gy + h, p[1], f.tx, f.tz, 0.08, h, 0.08, postCol, 4);
+  }
+  const mid = P(s0 + len / 2, depth - 0.22);
+  addBox(out.trim, mid[0], beamY + 0.10, mid[1], f.tx, f.tz, len / 2 + 0.25, 0.10, 0.075, beamCol, 4);
+  // rafters running back to the wall
+  const n = Math.max(4, Math.round(len / 0.62));
   for (let i = 0; i <= n; i++) {
-    const p = P(s0 + len * i / n, depth * 0.5);
-    addBox(out.plaster, p[0], beamY, p[1], f.ox, f.oz, depth * 0.5 + 0.2, 0.05, 0.045, beamCol, 1);
+    const p = P(s0 + len * i / n, depth * 0.5 - 0.1);
+    addBox(out.trim, p[0], beamY, p[1], f.ox, f.oz, depth * 0.5 + 0.22, 0.055, 0.05, beamCol, 4);
   }
-  // vine mat
-  const vy = beamY + 0.16;
-  const g = [P(s0 - 0.2, -0.1), P(s0 + len + 0.2, -0.1), P(s0 + len + 0.2, depth + 0.25), P(s0 - 0.2, depth + 0.25)];
-  const vc = [0.30 + d.rand() * 0.1, 0.42 + d.rand() * 0.12, 0.20];
-  out.foliage.poly(g.map((p, i) => [p[0], vy + (i % 2 ? 0.06 : 0), p[1]]),
-    [[0, 0], [1, 0], [1, 1], [0, 1]], vc, [0, 1, 0]);
+  // grape vine: a couple of rumpled leaf layers rather than one flat sheet
+  const vc = [0.26 + d.rand() * 0.12, 0.40 + d.rand() * 0.14, 0.17 + d.rand() * 0.07];
+  for (let layer = 0; layer < 2; layer++) {
+    const vy = beamY + 0.14 + layer * 0.13;
+    const pad = 0.22 - layer * 0.14;
+    const g2 = [P(s0 - pad, -0.15), P(s0 + len + pad, -0.15), P(s0 + len + pad, depth + pad), P(s0 - pad, depth + pad)];
+    const cc = [vc[0] * (1 - layer * 0.22), vc[1] * (1 - layer * 0.18), vc[2] * (1 - layer * 0.2)];
+    out.foliage.poly(g2.map((p, i) => [p[0], vy + (i % 2 ? 0.09 : -0.03), p[1]]),
+      [[0, 0], [1, 0], [1, 1], [0, 1]], cc, [0, 1, 0]);
+  }
 }
 
 function addGardenWall(d, world, out, tint) {
@@ -1097,20 +1160,20 @@ function addGardenWall(d, world, out, tint) {
       const t0 = q0 + (q1 - q0) * i / n, t1 = q0 + (q1 - q0) * (i + 1) / n;
       const m = P((t0 + t1) * 0.5);
       const gy = world.heightAt(m[0], m[1]);
-      addBox(out.plaster, m[0], gy + H * 0.5, m[1], f.tx, f.tz, (t1 - t0) * 0.5 + 0.05, H * 0.5 + 0.25, 0.14, col, 4);
+      addBox(out.trim, m[0], gy + H * 0.5, m[1], f.tx, f.tz, (t1 - t0) * 0.5 + 0.05, H * 0.5 + 0.25, 0.14, col, 4);
     }
   }
   for (const s of [s0, s0 + len / 2 - gate / 2, s0 + len / 2 + gate / 2, s0 + len]) {
     const m = P(s);
     const gy = world.heightAt(m[0], m[1]);
-    addBox(out.plaster, m[0], gy + (H + 0.35) * 0.5, m[1], f.tx, f.tz, 0.19, (H + 0.35) * 0.5 + 0.2, 0.19,
+    addBox(out.trim, m[0], gy + (H + 0.35) * 0.5, m[1], f.tx, f.tz, 0.19, (H + 0.35) * 0.5 + 0.2, 0.19,
       [col[0] * 0.95, col[1] * 0.94, col[2] * 0.92], 2);
   }
   // mailbox post beside the gate
   const mb = P(s0 + len / 2 - gate / 2 - 0.5);
   const my = world.heightAt(mb[0], mb[1]);
-  addBox(out.plaster, mb[0], my + 0.55, mb[1], f.tx, f.tz, 0.05, 0.55, 0.05, [0.35, 0.35, 0.34], 1);
-  addBox(out.plaster, mb[0], my + 1.18, mb[1], f.tx, f.tz, 0.17, 0.11, 0.13, [0.30, 0.34, 0.40], 1);
+  addBox(out.trim, mb[0], my + 0.55, mb[1], f.tx, f.tz, 0.05, 0.55, 0.05, [0.35, 0.35, 0.34], 1);
+  addBox(out.trim, mb[0], my + 1.18, mb[1], f.tx, f.tz, 0.17, 0.11, 0.13, [0.30, 0.34, 0.40], 1);
 }
 
 function addStair(d, world, out, trimCol) {
@@ -1127,7 +1190,7 @@ function addStair(d, world, out, trimCol) {
     if (s > f.L - 0.4) break;
     const x = a[0] + f.tx * s + f.ox * 0.62, z = a[1] + f.tz * s + f.oz * 0.62;
     const y = d.floorY + rise * (k + 0.5);
-    addBox(out.plaster, x, y * 0.5 + (d.floorY - 0.3) * 0.5, z, f.tx, f.tz,
+    addBox(out.trim, x, y * 0.5 + (d.floorY - 0.3) * 0.5, z, f.tx, f.tz,
       run * 0.5 + 0.02, (y - d.floorY + 0.3) * 0.5, 0.60, col, 2);
   }
   // railing
@@ -1135,7 +1198,7 @@ function addStair(d, world, out, trimCol) {
   const mid = (s0 + sEnd) * 0.5;
   const mx = a[0] + f.tx * mid + f.ox * 1.2, mz = a[1] + f.tz * mid + f.oz * 1.2;
   const my = d.floorY + d.storeyH * 0.5 + 0.95;
-  addBox(out.plaster, mx, my, mz, f.tx, f.tz, (sEnd - s0) * 0.5, 0.035, 0.035, [0.35, 0.36, 0.36], 1);
+  addBox(out.trim, mx, my, mz, f.tx, f.tz, (sEnd - s0) * 0.5, 0.035, 0.035, [0.35, 0.36, 0.36], 1);
 }
 
 /* --------------------------------------------------------------------- far LOD ---- */
@@ -1151,6 +1214,27 @@ function buildFar(d, far, wallTopY) {
     S.poly([[a[0], y0, a[1]], [b[0], y0, b[1]], [b[0], wallTopY, b[1]], [a[0], wallTopY, a[1]]],
       [[0, 0], [f.L / 4, 0], [f.L / 4, (wallTopY - y0) / 4], [0, (wallTopY - y0) / 4]],
       tint, [f.ox, 0, f.oz]);
+  }
+  // flat window patches: two triangles each, enough to read as fenestration at 200 m
+  if (d.kind !== 'greenhouse') {
+    const wc = [0.30, 0.32, 0.34];
+    for (let st = 0; st < d.storeys; st++) {
+      const y0 = floorY + st * d.storeyH;
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i], b = ring[(i + 1) % ring.length];
+        const f = edgeFrame(a, b);
+        if (!f || f.L < 2.6) continue;
+        const n = clamp(Math.round((f.L - 1.0) / 3.7), 1, 5), step = f.L / n;
+        for (let k = 0; k < n; k++) {
+          const c = step * (k + 0.5), w = 0.6;
+          const yb = y0 + 0.95, yt = Math.min(y0 + 2.37, y0 + d.storeyH - 0.55);
+          const P = t => [a[0] + f.tx * t + f.ox * 0.04, a[1] + f.tz * t + f.oz * 0.04];
+          const p0 = P(c - w), p1 = P(c + w);
+          S.poly([[p0[0], yb, p0[1]], [p1[0], yb, p1[1]], [p1[0], yt, p1[1]], [p0[0], yt, p0[1]]],
+            [[0, 0], [0.3, 0], [0.3, 0.3], [0, 0.3]], wc, [f.ox, 0, f.oz]);
+        }
+      }
+    }
   }
   if (d.roofKind === 'flat') {
     const pts = ring.map(p => new THREE.Vector2(p[0], p[1]));

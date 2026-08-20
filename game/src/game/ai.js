@@ -329,6 +329,7 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
     driftSteerMin: 0.24,   // sustained steering that counts as "this is a corner"
     driftHold: 0.22,       // seconds it must be held before hopping
     driftMinSpeed: 8.0,    // m/s below which a hop is pointless
+    driftEntry: 0.86,      // target-speed trim while sliding
     driftCornerV: 11.0,    // only true hairpins: above this the slide costs more than the boost pays
     rubberBand: true,
     catchMax: 0.060,           // +6.0 % target speed when far behind …
@@ -639,9 +640,9 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
       catchup = 1 + clamp((behindBy - 20) / 150, 0, 1) * O.catchMax * r.tier.catch
         - clamp((aheadBy - 45) / 160, 0, 1) * O.leadDrag;
       r.boostCool -= dt;
-      if (O.catchBoost && behindBy > 110 && r.boostCool <= 0 && st.onTrack && st.grounded && st.boost.time <= 0) {
+      if (O.catchBoost && behindBy > 140 && r.boostCool <= 0 && st.onTrack && st.grounded && st.boost.time <= 0) {
         try { v.addBoost(0.65, 0.10, 'catchup'); r.stats.catchBoosts++; } catch (e) { /* ignore */ }
-        r.boostCool = 5.0;
+        r.boostCool = 7.0;
       }
     }
     r.catchup = catchup;
@@ -705,6 +706,7 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
     const surf = surfaceInfo(st.surface || 'tarmac');
     if (surf && surf.top < 1) vTarget = Math.min(vTarget, P.topSpeed * surf.top * 0.98);
     if (recovering > 0) vTarget = Math.min(vTarget, lerp(vTarget, 9.5, recovering));
+    if (r.drift.on) vTarget *= O.driftEntry;   // a slide needs a slower entry than a grip lap
     r.targetSpeed = vTarget;
     const err = vTarget - spd;
     if (err > 0.2) { inp.throttle = 1; inp.brake = 0; }
@@ -825,13 +827,19 @@ export function applyItemEffects(items, vehicle, dt, inp) {
   if (!fx) return inp;
   const st = vehicle.state;
 
-  // boosts: hand them to the physics once, and tell the item system not to double-count
+  // Boosts: the item system already hands them to any racer that exposes addBoost(), and marks
+  // them external so its own speed multiplier stops counting them. This is the fallback for the
+  // frames where it could not, so an item boost is never silently dropped.
   if (fx.boostTime > 0 && !fx.boostExternal) {
-    try { vehicle.addBoost(fx.boostTime, fx.boostPower, 'item'); } catch (e) { /* ignore */ }
-    fx.boostExternal = true;
-    fx.boostTime = 0; fx.boostPower = 0;
+    try { vehicle.addBoost(fx.boostTime, fx.boostPower, 'item'); fx.boostExternal = true; } catch (e) { /* ignore */ }
   }
-  if (fx.boostTime <= 0) fx.boostExternal = false;
+
+  // Hoopoe rush: the bird takes the wheel. Physics-side that is a held boost plus pinned throttle;
+  // the steering stays with whoever is driving, which is exactly what an autopilot should feel like.
+  if (fx.autopilot > 0) {
+    if (inp) { inp.throttle = 1; inp.brake = 0; inp.drift = 0; }
+    try { vehicle.addBoost(0.3, clamp((fx.speedMul ?? 1.6) - 1, 0.2, 0.6), 'rush'); } catch (e) { /* ignore */ }
+  }
 
   const stunned = Math.max(fx.spin, fx.slip, fx.squash, fx.stall);
   if (stunned > 0 && inp) {

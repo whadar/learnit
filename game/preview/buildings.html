@@ -8,11 +8,16 @@
     name: 'buildings',
     modules: async (ctx) => { ctx.buildings = createBuildings(ctx.engine, ctx.world, { quality: 1 }); window.__buildings = ctx.buildings; },
     views: {
-      establish: { pos: [-250, 232, 620], look: [250, 85, 60], fov: 42 },
-      street:    { pos: [140, 72.7, 200], look: [190, 75.5, 150], fov: 62 },
-      facade:    { pos: [191, 72.7, 171], look: [176.7, 75.0, 157.3], fov: 55 },
-      roofline:  { pos: [118, 106, 232], look: [190, 76, 150], fov: 45 },
-      farview:   { pos: [700, 196, 700], look: [200, 80, 100], fov: 45 },
+      // eye level on the moshav's residential lane, roughly kart-driver height
+      lane:      { pos: [244, 84.2, -64], look: [202, 84.6, -92], fov: 62 },
+      // close on a single front elevation
+      facade:    { pos: [240, 83.0, -58], look: [227.6, 84.6, -47.7], fov: 55 },
+      // over the rooftops: solar heaters, ridges, parapets
+      roofline:  { pos: [268, 106, -20], look: [222, 84, -62], fov: 46 },
+      // wide establishing shot of the whole village on its ridge
+      establish: { pos: [-190, 250, 560], look: [300, 90, -60], fov: 40 },
+      // LOD check: the far half of the village
+      farview:   { pos: [780, 210, 320], look: [220, 85, -90], fov: 42 },
     },
   });
 </script></body></html>

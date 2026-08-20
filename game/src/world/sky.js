@@ -265,7 +265,7 @@ vec4 cumulus( vec2 uv, float cosTheta ) {
   float powder = 1.0 - exp( - 2.6 * t );
 
   col = uCloudDark * ( 0.55 + 0.45 * powder );
-  col += uCloudLit * T * mix( 0.30, 1.0, powder );
+  col += uCloudLit * T * mix( 0.18, 1.0, powder );
   // forward scattering: thin edges in front of the sun light up silver
   float fwd = pow( max( cosTheta, 0.0 ), 9.0 );
   col += uCloudLit * fwd * uShine * ( 0.25 + 0.9 * ( 1.0 - alpha ) );
@@ -414,7 +414,7 @@ export function createSky(engine, world, opts = {}) {
     uMie:         { value: o.mie },
     uMieG:        { value: o.mieG },
     uKnee:        { value: 0.62 },
-    uAureole:     { value: new THREE.Color(1.10, 0.99, 0.82) },
+    uAureole:     { value: new THREE.Color(1.14, 0.98, 0.78) },
     uGroundHaze:  { value: new THREE.Color(0.34, 0.30, 0.25) },
     uEnvGround:   { value: new THREE.Color(0.30, 0.22, 0.15) },
     uHorizonHaze: { value: 0.30 },
@@ -425,7 +425,7 @@ export function createSky(engine, world, opts = {}) {
     uCloudScale:  { value: o.cloudScale },
     uCloudOpacity:{ value: o.cloudOpacity },
     uShine:       { value: 0.55 },
-    uAbsorb:      { value: 4.5 },
+    uAbsorb:      { value: 6.5 },
     uShadeStep:   { value: 0.019 },
     uCirrus:      { value: o.cirrus },
     uDrift:       { value: new THREE.Vector2(0, 0) },
@@ -479,6 +479,7 @@ export function createSky(engine, world, opts = {}) {
 
   const _d = new THREE.Vector3();
   const _dust = new THREE.Color();
+  const _warm = new THREE.Color();
   function computePalette() {
     const p = {
       rayleigh: o.rayleigh, turbidity: o.turbidity, mie: o.mie, mieG: o.mieG,
@@ -490,14 +491,18 @@ export function createSky(engine, world, opts = {}) {
     const inv = opticalInverse(Math.max(state.sunDir.y, 0.02));
     const Fex = [0, 1, 2].map(i => Math.exp(-(betaR[i] * RAY_ZENITH * inv + betaM[i] * MIE_ZENITH * inv)));
     const lum = 0.2126 * Fex[0] + 0.7152 * Fex[1] + 0.0722 * Fex[2] || 1e-4;
-    // Keep it luminous: normalise the beam to unit luminance, but keep the hue shift and
-    // pull a little saturation back so low sun is warm, never brown.
-    const warm = [Fex[0] / lum, Fex[1] / lum, Fex[2] / lum];
-    const mixBack = clamp(0.30 + 0.35 * smoothstep(4, 22, elev), 0, 1);
+    // Unit-luminance beam hue: keeps the frame luminous at any hour, hue shift intact.
+    const phys = [Fex[0] / lum, Fex[1] / lum, Fex[2] / lum];
+    // Physical extinction alone is nearly white at 30 deg — true, but Mario Kart reads warm.
+    // Art-direct a colour-temperature ramp (~4500 K low, ~5900 K high) and let the physical
+    // hue modulate it, so dusk still swings hard orange on its own.
+    const t = smoothstep(3, 62, elev);
+    _warm.setRGB(1.0, lerp(0.845, 0.965, t), lerp(0.66, 0.92, t), THREE.SRGBColorSpace);
+    const w = clamp(opts.warmth ?? 1, 0, 2);
     palette.sunColor.setRGB(
-      lerp(warm[0], 1, mixBack * 0.15),
-      lerp(warm[1], 1, mixBack),
-      lerp(warm[2], 1, mixBack * 1.25),
+      _warm.r * lerp(1, phys[0], w),
+      _warm.g * lerp(1, phys[1], w),
+      _warm.b * lerp(1, phys[2], w),
       THREE.LinearSRGBColorSpace);
     const up = clamp(Math.sin(Math.max(elev, 0) * D2R), 0, 1);
     palette.sunIntensity = (opts.sunIntensity ?? 4.9) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
@@ -564,8 +569,8 @@ export function createSky(engine, world, opts = {}) {
       .lerp(new THREE.Color(1, 1, 1), 0.70)
       .multiplyScalar(gain * lerp(1.7, 3.3, smoothstep(2, 30, elev)));
     uniforms.uCloudDark.value.copy(palette.zenith).lerp(palette.horizon, 0.40)
-      .multiplyScalar(gain * 0.42)
-      .lerp(palette.sunColor.clone().multiplyScalar(gain * 0.30), 0.18 + 0.25 * smoothstep(20, 0, elev));
+      .multiplyScalar(gain * 0.34)
+      .lerp(palette.sunColor.clone().multiplyScalar(gain * 0.26), 0.14 + 0.25 * smoothstep(20, 0, elev));
     uniforms.uShine.value = lerp(0.35, 0.8, smoothstep(25, 3, elev));
     uniforms.uHorizonHaze.value = 0.26 + 0.22 * smoothstep(25, 3, elev);
   }

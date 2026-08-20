@@ -84,14 +84,14 @@ function plasterMaps(size) {
  * makes a stone wall read as stone at 40 m instead of as a beige rectangle.
  */
 function stoneMaps(size) {
-  const rows = 4, rowH = size / rows, joint = 4.5;
+  const rows = 5, rowH = size / rows, joint = 4.0;
   const rand = rng(4242);
   const courses = [];
   for (let r = 0; r < rows; r++) {
-    const n = 3 + (rand() < 0.5 ? 0 : 1);
+    const n = 4 + (rand() < 0.45 ? 0 : 1);
     const w = [];
     let tot = 0;
-    for (let k = 0; k < n; k++) { const ww = 0.72 + rand() * 0.56; w.push(ww); tot += ww; }
+    for (let k = 0; k < n; k++) { const ww = 0.55 + rand() * 1.05; w.push(ww); tot += ww; }
     const bs = [0];
     let acc = 0;
     for (let k = 0; k < n; k++) { acc += w[k] / tot * size; bs.push(acc); }
@@ -127,13 +127,13 @@ function stoneMaps(size) {
       const sid2 = hash2i(s + 3, row + 7, 313);
       const warm = 0.94 + sid * 0.14;
       const grey = sid2 * 0.5;
-      let r = 226 * warm - grey * 22 + ch * 13 + (coarse[i] - 0.5) * 16;
-      let g = 208 * warm - grey * 10 + ch * 12 + (coarse[i] - 0.5) * 14;
-      let b = 176 * warm + grey * 16 + ch * 11 + (coarse[i] - 0.5) * 12;
+      let r = 232 * warm - grey * 14 + ch * 14 + (coarse[i] - 0.5) * 17;
+      let g = 199 * warm - grey * 12 + ch * 12 + (coarse[i] - 0.5) * 14;
+      let b = 143 * warm + grey * 22 + ch * 10 + (coarse[i] - 0.5) * 11;
       const gm = smoothstep(0.52, 0.85, grime[i]) * 0.16;         // weather staining
       r *= 1 - gm * 1.05; g *= 1 - gm; b *= 1 - gm * 0.8;
       const jm = 1 - face;                                        // mortar joint: cool grey, in shade
-      r = lerp(r, 128, jm * 0.9); g = lerp(g, 124, jm * 0.9); b = lerp(b, 116, jm * 0.9);
+      r = lerp(r, 146, jm * 0.9); g = lerp(g, 134, jm * 0.9); b = lerp(b, 114, jm * 0.9);
       const ao = lerp(0.62, 1, face);
       col[i * 4] = clamp(r * ao, 0, 255);
       col[i * 4 + 1] = clamp(g * ao, 0, 255);
@@ -187,10 +187,10 @@ function pantileMaps(size) {
       h[i] = hh;
       // --- colour ---------------------------------------------------------------
       const hue = jit2;
-      let r = lerp(203, 150, hue) + (jit - 0.5) * 40;
-      let g = lerp(101, 66, hue) + (jit - 0.5) * 24;
-      let b = lerp(66, 46, hue) + (jit - 0.5) * 18;
-      const sun = clamp(0.50 + hh * 0.60, 0.30, 1.20);   // baked curvature shading
+      let r = lerp(217, 163, hue) + (jit - 0.5) * 42;
+      let g = lerp(104, 68, hue) + (jit - 0.5) * 24;
+      let b = lerp(64, 44, hue) + (jit - 0.5) * 18;
+      const sun = clamp(0.44 + hh * 0.74, 0.24, 1.24);   // baked curvature shading
       r *= sun; g *= sun; b *= sun;
       const lm = smoothstep(0.60, 0.86, lichen[i] * 0.72 + wear[i] * 0.36);
       r = lerp(r, 150, lm * 0.55); g = lerp(g, 149, lm * 0.55); b = lerp(b, 128, lm * 0.55);
@@ -288,8 +288,8 @@ export function createBuildingMaterials(opts = {}) {
   // Interior-dark window glass. Kept opaque: the sky reflection off a low-roughness surface
   // plus a near-black base reads exactly like a shaded room, and costs no sorting.
   const glass = new THREE.MeshStandardMaterial({
-    name: 'bld-glass', color: 0x1b2830, vertexColors: true,
-    roughness: 0.055, metalness: 0.18, envMapIntensity: 3.0,
+    name: 'bld-glass', color: 0x2e4049, vertexColors: true,
+    roughness: 0.14, metalness: 0.0, envMapIntensity: 2.4,
   });
 
   // Painted metal / galvanised steel for solar heaters, tanks, A/C, railings.

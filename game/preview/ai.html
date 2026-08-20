@@ -1,0 +1,290 @@
+<!doctype html><html><head><meta charset="utf-8"><title>ai + race preview</title>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden}#app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}</style>
+</head><body><div id="app"></div>
+<script type="module">
+import { boot } from './common.js';
+
+const views = {};
+
+boot({
+  name: 'ai',
+  views,
+  modules: async (ctx) => {
+    const { THREE, engine, world } = ctx;
+    const scene = engine.scene;
+
+    /* ---------------------------------------------------------------- track -- */
+    let track = null;
+    try {
+      // the track module may not exist yet: keep the specifier dynamic so the dev server
+      // does not fail the whole page at transform time
+      const m = await import(/* @vite-ignore */ ('../src/track/' + 'track.js'));
+      track = m.buildTrack(world, {});
+      track.sample(0); track.nearest({ x: 0, y: 0, z: 0 });
+    } catch (e) { track = null; }
+    if (!track) {
+      const { makeFallbackTrack } = await import('../src/physics/vehicle.js');
+      track = makeFallbackTrack(world, { seed: 7 });
+    }
+
+    /* ---------------------------------------------------------------- items -- */
+    let items = null;
+    try {
+      const m = await import('../src/game/items.js');
+      items = m.createItemSystem(world, track, { scene, seed: 4242 });
+    } catch (e) { items = null; }
+
+    /* ----------------------------------------------------------------- race -- */
+    const { createRace } = await import('../src/game/race.js');
+    let roster = null;
+    try { roster = (await import('../src/characters/roster.js')).createRoster(); } catch (e) { roster = null; }
+
+    const race = createRace(world, track, {
+      field: 12, laps: 3, seed: 5150, playerIndex: 0, autopilot: true,
+      difficulty: 150, items, roster, introTime: 0, countdownTime: 3.6,
+    });
+    const line = race.line;
+    window.__race = race;
+
+    /* --------------------------------------------------------------- ribbons - */
+    const S = (s) => track.sample(((s % track.length) + track.length) % track.length);
+
+    // The terrain mesh is LOD'd (up to 24 m triangles in the distance), so its rendered surface
+    // sits above world.heightAt() on any crest. Clearing the local maximum keeps these preview
+    // ribbons visible from the overview camera without floating in the close-up shots.
+    const groundMax = (x, z, r = 7) => Math.max(
+      world.heightAt(x, z), world.heightAt(x + r, z), world.heightAt(x - r, z),
+      world.heightAt(x, z + r), world.heightAt(x, z - r));
+
+    function ribbon(width, yLift, mat, offsetFn) {
+      const N = 520;
+      const pos = new Float32Array(N * 2 * 3), uv = new Float32Array(N * 2 * 2);
+      const idx = [];
+      for (let i = 0; i < N; i++) {
+        const s = i / (N - 1) * track.length;
+        const sm = S(s);
+        const off = offsetFn ? offsetFn(s) : 0;
+        const w = typeof width === 'function' ? width(s) : width;
+        const cx = sm.pos.x + sm.normal.x * off, cz = sm.pos.z + sm.normal.z * off;
+        for (let k = 0; k < 2; k++) {
+          const sgn = k ? 1 : -1;
+          const j = (i * 2 + k) * 3;
+          const vx = cx + sm.normal.x * sgn * w * 0.5, vz = cz + sm.normal.z * sgn * w * 0.5;
+          pos[j] = vx;
+          // the ribbon has to clear the raw hillside: the course height is smoothed, the terrain is not
+          pos[j + 1] = Math.max(sm.pos.y, groundMax(vx, vz)) + yLift;
+          pos[j + 2] = vz;
+          uv[(i * 2 + k) * 2] = k;
+          uv[(i * 2 + k) * 2 + 1] = s / 6;
+        }
+        if (i < N - 1) {
+          // wound so the face normal points up: the other way round these ribbons are
+          // back-facing from every camera that matters
+          const a = i * 2;
+          idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+        }
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      const mesh = new THREE.Mesh(g, mat);
+      mesh.receiveShadow = true;
+      return mesh;
+    }
+
+    // road surface
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x3b3c40, roughness: 0.93, metalness: 0.0, side: THREE.DoubleSide });
+    scene.add(ribbon(s => S(s).width, 0.22, roadMat));
+    // white edge lines
+    const lineMat = new THREE.MeshStandardMaterial({ color: 0xe6e3da, roughness: 0.8, side: THREE.DoubleSide });
+    for (const side of [-1, 1]) {
+      scene.add(ribbon(0.26, 0.28, lineMat, s => side * (S(s).width * 0.5 - 0.30)));
+    }
+
+    // the racing line, coloured by its target speed
+    {
+      const N = 620;
+      const pos = new Float32Array(N * 2 * 3), col = new Float32Array(N * 2 * 3);
+      const idx = [];
+      const c = new THREE.Color();
+      let vmin = Infinity, vmax = 0;
+      for (let i = 0; i < line.N; i++) { vmin = Math.min(vmin, line.speed[i]); vmax = Math.max(vmax, line.speed[i]); }
+      for (let i = 0; i < N; i++) {
+        const s = i / (N - 1) * track.length;
+        const L = line.at(s, {});
+        const t = (L.speed - vmin) / Math.max(vmax - vmin, 0.1);
+        c.setHSL(0.02 + 0.32 * t, 0.95, 0.5);
+        for (let k = 0; k < 2; k++) {
+          const sgn = k ? 1 : -1, j = (i * 2 + k) * 3;
+          const vx = L.x + L.nx * sgn * 0.42, vz = L.z + L.nz * sgn * 0.42;
+          pos[j] = vx;
+          pos[j + 1] = Math.max(L.y, groundMax(vx, vz)) + 0.34;
+          pos[j + 2] = vz;
+          col[j] = c.r; col[j + 1] = c.g; col[j + 2] = c.b;
+        }
+        if (i < N - 1) { const a = i * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      g.setIndex(idx); g.computeVertexNormals();
+      scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, side: THREE.DoubleSide })));
+    }
+
+    // start / finish line
+    {
+      const sm = S(race.startS);
+      const g = new THREE.PlaneGeometry(sm.width, 1.6);
+      const cv = document.createElement('canvas'); cv.width = 128; cv.height = 16;
+      const cx2 = cv.getContext('2d');
+      for (let x = 0; x < 16; x++) for (let y = 0; y < 2; y++) {
+        cx2.fillStyle = ((x + y) % 2) ? '#f2f2ef' : '#16171a';
+        cx2.fillRect(x * 8, y * 8, 8, 8);
+      }
+      const tex = new THREE.CanvasTexture(cv);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8 }));
+      m.rotation.x = -Math.PI / 2;
+      m.rotation.z = -Math.atan2(sm.tangent.x, sm.tangent.z);
+      m.position.set(sm.pos.x, Math.max(sm.pos.y, groundMax(sm.pos.x, sm.pos.z)) + 0.30, sm.pos.z);
+      scene.add(m);
+    }
+
+    // boost pads
+    for (const p of (track.boostPads || [])) {
+      const pos = p.pos || p;
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 6.0),
+        new THREE.MeshBasicMaterial({ color: 0x35b6ff, transparent: true, opacity: 0.75, toneMapped: false }));
+      m.rotation.x = -Math.PI / 2;
+      const n = track.nearest(pos), sm = S(n.s);
+      m.rotation.z = -Math.atan2(sm.tangent.x, sm.tangent.z);
+      m.position.set(pos.x, Math.max(pos.y ?? sm.pos.y, groundMax(pos.x, pos.z)) + 0.32, pos.z);
+      scene.add(m);
+    }
+
+    /* ---------------------------------------------------------------- karts -- */
+    const visuals = [];
+    for (const r of race.racers) {
+      let obj = null, racerVis = null;
+      try {
+        const { createRacer } = await import('../src/characters/roster.js');
+        racerVis = createRacer(r.entry?.id || 'mitzi', { detail: 'low', shadows: false });
+        obj = racerVis.object3D;
+      } catch (e) { racerVis = null; }
+      if (!obj) {
+        obj = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.8, 2.1),
+          new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(r.index / 12, 0.7, 0.5), roughness: 0.6 }));
+      }
+      scene.add(obj);
+      visuals.push({ r, obj, vis: racerVis });
+    }
+    const q = new THREE.Quaternion();
+    function syncKarts(dt) {
+      for (const v of visuals) {
+        const tf = v.r.vehicle.getTransform();
+        v.obj.position.set(tf.position.x, tf.position.y - 0.28, tf.position.z);
+        q.set(tf.quaternion.x, tf.quaternion.y, tf.quaternion.z, tf.quaternion.w);
+        v.obj.quaternion.copy(q);
+        const st = v.r.vehicle.state;
+        v.vis?.update(dt, {
+          speed: st.speed, steer: st.steer, drift: st.drift.active, driftDir: st.drift.dir,
+          airborne: !st.grounded, boosting: st.boost.time > 0, place: v.r.place, hit: 0,
+        });
+      }
+    }
+
+    /* --------------------------------------------------------- ghost trail --- */
+    const ghostGeo = new THREE.BufferGeometry();
+    const ghostPos = new Float32Array(3 * 4000);
+    ghostGeo.setAttribute('position', new THREE.BufferAttribute(ghostPos, 3));
+    ghostGeo.setDrawRange(0, 0);
+    scene.add(new THREE.Line(ghostGeo, new THREE.LineBasicMaterial({ color: 0x8fe6ff, toneMapped: false })));
+    function syncGhost() {
+      const f = race.ghost.frames;
+      const n = Math.min(f.length, 4000);
+      for (let i = 0; i < n; i++) {
+        const g = f[f.length - n + i];
+        ghostPos[i * 3] = g.x; ghostPos[i * 3 + 1] = g.y + 0.6; ghostPos[i * 3 + 2] = g.z;
+      }
+      ghostGeo.attributes.position.needsUpdate = true;
+      ghostGeo.setDrawRange(0, n);
+    }
+
+    /* ------------------------------------------------------------- warm-up --- */
+    race.start(true);
+    const DT = 1 / 60;
+    const t0 = performance.now();
+    let warmed = 0;
+    while (warmed < 26 && performance.now() - t0 < 20000) { race.update(DT); warmed += DT; }
+    syncKarts(DT); syncGhost();
+
+    engine.add({
+      update(dt) {
+        const step = Math.min(dt, 1 / 30);
+        race.update(step);
+        syncKarts(step);
+        syncGhost();
+      },
+    });
+
+    /* --------------------------------------------------------------- views --- */
+    const leader = race.standings[0];
+    const tf = leader.vehicle.getTransform();
+    const packS = leader.s;
+    const smPack = S(packS);
+    const smBack = S(packS - 34);
+
+    // the tightest corner on the lap, for the out-in-out shot
+    let worst = 0, worstS = 0;
+    for (let i = 0; i < line.N; i++) {
+      const k = Math.abs(line.curvature[i]);
+      if (k > worst) { worst = k; worstS = i * line.ds; }
+    }
+    const smC = S(worstS);
+    const gridSm = S(race.startS - 14);
+
+    Object.assign(views, {
+      // 1. the whole circuit from above: racing line vs centreline
+      circuit: (() => {
+        let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, ys = 0, n = 0;
+        for (let i = 0; i < 240; i++) {
+          const sm = S(i / 240 * track.length);
+          x0 = Math.min(x0, sm.pos.x); x1 = Math.max(x1, sm.pos.x);
+          z0 = Math.min(z0, sm.pos.z); z1 = Math.max(z1, sm.pos.z);
+          ys += sm.pos.y; n++;
+        }
+        const cxm = (x0 + x1) / 2, czm = (z0 + z1) / 2, span = Math.max(x1 - x0, z1 - z0);
+        return { pos: [cxm - span * 0.28, ys / n + span * 0.62, czm + span * 0.72], look: [cxm, ys / n, czm], fov: 52 };
+      })(),
+      // 2. the optimised line through the tightest corner, out-in-out
+      apex: {
+        pos: [smC.pos.x + smC.normal.x * 46, smC.pos.y + 34, smC.pos.z + smC.normal.z * 46],
+        look: [smC.pos.x, smC.pos.y, smC.pos.z], fov: 44,
+      },
+      // 3. the field, chased from behind the leader
+      pack: {
+        pos: [smBack.pos.x - smBack.tangent.x * 12 + smBack.normal.x * 3, smBack.pos.y + 5.6, smBack.pos.z - smBack.tangent.z * 12 + smBack.normal.z * 3],
+        look: [smPack.pos.x, smPack.pos.y + 1.0, smPack.pos.z], fov: 52,
+      },
+      // 4. trackside: karts arriving at racing speed
+      trackside: {
+        pos: [smPack.pos.x + smPack.normal.x * 13 - smPack.tangent.x * 16, smPack.pos.y + 3.2, smPack.pos.z + smPack.normal.z * 13 - smPack.tangent.z * 16],
+        look: [smPack.pos.x, smPack.pos.y + 0.8, smPack.pos.z], fov: 40,
+      },
+      // 5. over the leader's shoulder, the way the player sees a race
+      chase: {
+        pos: [tf.position.x - tf.forward.x * 7.4, tf.position.y + 3.1, tf.position.z - tf.forward.z * 7.4],
+        look: [tf.position.x + tf.forward.x * 10, tf.position.y + 1.0, tf.position.z + tf.forward.z * 10],
+        fov: 58,
+      },
+    });
+
+    // a compact readout for the console, so a screenshot round also reports the race state
+    console.log('[ai] phase=' + race.state.phase + ' t=' + race.state.raceTime.toFixed(1) +
+      ' leader=' + leader.name + ' lap=' + (leader.lap + 1) +
+      ' standings=' + race.standings.map(r => r.name + ':' + r.place).join(','));
+  },
+});
+</script></body></html>

@@ -325,6 +325,38 @@ if (only === 'tiers') {
   }
 }
 
+if (only === 'checks' || only === 'all') {
+  console.log(B('\nRULE CHECKS (wrong way, shortcut, ghost, results)'));
+  const race = createRace(world, track, { field: 6, laps: 3, seed: 11, playerIndex: 0, autopilot: true, introTime: 0, countdownTime: 1.0 });
+  race.start(true);
+  for (let i = 0; i < 12 * FPS; i++) race.update(DT);
+  // spin the player's kart round and hold the throttle: the AI would just turn back, so this
+  // has to be the human-driven one
+  const a = race.player;
+  race.setInput({ throttle: 1, brake: 0, steer: 0, drift: 0, item: 0, look: 0 });
+  a.vehicle.reset({ ...a.vehicle.state.pos }, a.vehicle.state.yaw + Math.PI);
+  for (let i = 0; i < 4 * FPS; i++) race.update(DT);
+  console.log('  wrong-way detected               ' + pad(a.wrongWay ? 'YES' : 'no', 8) + ' after 4 s facing backwards');
+  race.setInput(null);
+
+  // teleport another kart a third of a lap up the road: gates it never reached
+  const b = race.racers[4];
+  const before = { cp: b.cpIndex, cuts: b.shortcuts, lap: b.lap };
+  const jump = track.sample((b.s + track.length * 0.33) % track.length);
+  b.vehicle.reset({ ...jump.pos }, Math.atan2(jump.tangent.x, jump.tangent.z));
+  for (let i = 0; i < 8 * FPS; i++) race.update(DT);
+  console.log('  shortcut flagged                 ' + pad(b.shortcuts > before.cuts ? 'YES' : 'no', 8) +
+    ' (' + before.cp + ' -> ' + b.cpIndex + ' gates, ' + (b.shortcuts - before.cuts) + ' cuts)');
+  console.log('  ghost recording                  ' + pad(race.ghost.frames.length, 8) + ' frames, ' + race.ghost.duration.toFixed(1) + ' s');
+  const g = race.ghost.sample(race.ghost.duration * 0.5);
+  console.log('  ghost sample at half distance    ' + (g ? `(${g.x.toFixed(1)}, ${g.y.toFixed(1)}, ${g.z.toFixed(1)}) ${(g.speed * 3.6).toFixed(0)} km/h` : 'none'));
+  console.log('  phase / standings                ' + race.state.phase + ' / ' + race.standings.map(r => r.place + ':' + r.name).join(' '));
+  console.log('  camera modes                     ' + ['intro', 'chase', 'results'].map(m => {
+    const c = m === 'intro' ? race.introCamera(2) : m === 'results' ? race.resultsCamera(2) : race.cameraSuggestion();
+    return m + '=' + (c && Number.isFinite(c.pos[0]) ? 'ok' : 'BAD');
+  }).join(' '));
+}
+
 if (only === 'all' || only === 'race') {
   const out = await runRace(world, track, {});
   reportRace(out);

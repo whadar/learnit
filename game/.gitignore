@@ -2,11 +2,14 @@ node_modules
 dist
 dist-*
 shots
-data/ov_building_index.json
 *.log
+data/ov_building_index.json
 data/amikam-dem.f32
-.sky-probe.mjs
-*-probe.mjs
-game/preview/_*.html
-game/tools/sim/_*.mjs
-game/shots/dbg*
+
+# agent scratch: probes, one-off analysis scripts, ad-hoc shoot wrappers
+.*probe*
+*probe*.mjs
+*analyze*.mjs
+shoot*.sh
+preview/_*.html
+tools/sim/_*.mjs

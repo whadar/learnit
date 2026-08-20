@@ -161,7 +161,7 @@ export function createRace(world, track, opts = {}) {
       lap: 0, cpIndex: 1, u: 0, prevU: 0, s: 0, lateral: 0, progress: 0, progressInit: false, distSinceCp: 0,
       lapTimes: [], bestLap: Infinity, lapStart: 0, totalTime: 0,
       finished: false, finishTime: 0, finishPlace: 0, dnf: false,
-      wrongWay: false, wrongWayT: 0, shortcuts: 0, missedCp: false,
+      wrongWay: false, wrongWayT: 0, shortcuts: 0, lapCuts: 0, missedCp: false,
       offTrack: 0, offTrackTime: 0, offTrackTrip: 0, respawns: 0, prevRespawns: 0,
       launchHold: 0, launchStart: -1, rocket: 'none', burnout: 0,
       itemsUsed: 0, hitCount: 0, ai: null,
@@ -217,9 +217,10 @@ export function createRace(world, track, opts = {}) {
   /* --------------------------------------------------------- player input -- */
   let humanInput = null, humanSeen = false;
   const playerInput = { throttle: 0, brake: 0, steer: 0, drift: 0, item: 0, look: 0 };
+  /** Hand the player's kart to a human. `setInput(null)` gives it back to the autopilot. */
   function setInput(inp) {
-    humanSeen = true;
     humanInput = inp || null;
+    humanSeen = !!inp;
     return api;
   }
   function readPlayerInput() {
@@ -316,7 +317,10 @@ export function createRace(world, track, opts = {}) {
         const prev = cps[(r.cpIndex - 1 + cps.length) % cps.length];
         const expected = prev.gap;
         const cut = r.distSinceCp < expected * O.shortcutFactor;
-        if (cut) { r.shortcuts++; emit('shortcut', { racer: r, checkpoint: r.cpIndex, travelled: r.distSinceCp, expected }); }
+        if (cut) {
+          r.shortcuts++; r.lapCuts++;
+          emit('shortcut', { racer: r, checkpoint: r.cpIndex, travelled: r.distSinceCp, expected });
+        }
         r.distSinceCp = 0;
         r.cpIndex++;
         if (r.cpIndex > cps.length) {
@@ -342,10 +346,13 @@ export function createRace(world, track, opts = {}) {
     const lapTime = t - r.lapStart;
     r.lapStart = t;
     r.lap++;
+    const clean = r.lapCuts === 0;
+    r.lapCuts = 0;
     if (r.lap > 0 && Number.isFinite(lapTime) && lapTime > 3) {
       r.lapTimes.push(lapTime);
-      if (lapTime < r.bestLap) r.bestLap = lapTime;
-      emit('lap', { racer: r, lap: r.lap, time: lapTime, best: r.bestLap });
+      // a lap with a cut in it still counts for position, but never for the record books
+      if (clean && lapTime < r.bestLap) r.bestLap = lapTime;
+      emit('lap', { racer: r, lap: r.lap, time: lapTime, best: r.bestLap, clean });
     }
     if (r.lap >= laps && !r.finished) finish(r);
     if (r.isPlayer) state.lapsLeft = Math.max(0, laps - r.lap);
@@ -604,7 +611,7 @@ export function createRace(world, track, opts = {}) {
       r.lap = 0; r.cpIndex = 1; r.lapTimes.length = 0; r.bestLap = Infinity; r.lapStart = 0;
       r.finished = false; r.finishTime = 0; r.finishPlace = 0; r.dnf = false;
       r.place = i + 1; r.prevPlace = i + 1; r.progress = 0; r.progressInit = false; r.distSinceCp = 0;
-      r.wrongWay = false; r.wrongWayT = 0; r.shortcuts = 0; r.offTrack = 0; r.offTrackTime = 0;
+      r.wrongWay = false; r.wrongWayT = 0; r.shortcuts = 0; r.lapCuts = 0; r.offTrack = 0; r.offTrackTime = 0;
       r.launchHold = 0; r.launchStart = -1; r.rocket = 'none'; r.burnout = 0;
       r.speedSum = 0; r.speedN = 0; r.topSpeed = 0;
       const n = safeNearest(r.vehicle.state.pos);

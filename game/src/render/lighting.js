@@ -147,7 +147,7 @@ export function createLighting(engine, world, sky, opts = {}) {
   // three's 'practical' split (lambda 0.5) spends far too much of cascade 0 on empty
   // distance; at kart height that shows up as stair-stepped eaves. Bias hard toward the
   // logarithmic split so the first cascade is a tight ~50 m box.
-  const splitLambda = opts.splitLambda ?? 0.86;
+  const splitLambda = opts.splitLambda ?? 0.90;
   const customSplits = (amount, near, far, target) => {
     for (let i = 1; i < amount; i++) {
       const uni = (near + (far - near) * i / amount) / far;
@@ -201,7 +201,7 @@ export function createLighting(engine, world, sky, opts = {}) {
       csm.updateFrustums();
       for (const l of csm.lights) {
         l.color.copy(pal.sunColor);
-        l.shadow.normalBias = opts.normalBias ?? 0.06;
+        l.shadow.normalBias = opts.normalBias ?? 0.11;
         l.shadow.bias = opts.shadowBias ?? -0.00008;
       }
     } catch (e) {
@@ -218,7 +218,7 @@ export function createLighting(engine, world, sky, opts = {}) {
   if (!csm) {
     sun.castShadow = true;
     sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
-    sun.shadow.normalBias = opts.normalBias ?? 0.06;
+    sun.shadow.normalBias = opts.normalBias ?? 0.11;
     sun.shadow.bias = opts.shadowBias ?? -0.00008;
     const c = sun.shadow.camera;
     c.left = -260; c.right = 260; c.top = 260; c.bottom = -260; c.near = 1; c.far = 4000;
@@ -418,7 +418,7 @@ export function createLighting(engine, world, sky, opts = {}) {
       applyPalette();
       if (csm) { csm.updateFrustums(); refreshCSMUniforms(); }
       if (rebuildEnv) api.envMap = buildEnv();
-      for (const m of adopted) m.needsUpdate = false; // uniforms are shared; no recompile needed
+      // Nothing to recompile: every patched shader holds the *same* uniform objects.
     },
     dispose() {
       csm?.remove?.(); csm?.dispose?.();
@@ -429,5 +429,3 @@ export function createLighting(engine, world, sky, opts = {}) {
   engine.lighting = api;   // discovery hook for other systems (no engine.js edit needed)
   return api;
 }
-
-export const _internal = { installFogChunks, clamp };

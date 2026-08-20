@@ -963,8 +963,7 @@ export function createItemSystem(world, track, opts = {}) {
     const m = box.mesh;
     m.visible = box.active || box.timer > O.boxRespawn * 0.72;
     const t = elapsed + box.phase;
-    m.rotation.y = t * 0.9;
-    m.rotation.x = Math.sin(t * 0.7) * 0.25;
+    m.rotation.set(0.42, t * 0.9 + 0.6, 0.30);
     m.position.set(box.base.x, box.base.y + Math.sin(t * 1.6) * 0.22, box.base.z);
     const grow = box.active ? 1 : clamp((box.timer - O.boxRespawn * 0.72) / (O.boxRespawn * 0.28), 0, 1);
     m.scale.setScalar(box.active ? 1 + Math.sin(t * 3.1) * 0.03 : grow);
