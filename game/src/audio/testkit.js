@@ -594,6 +594,34 @@ export async function runAudioTests({ quick = false } = {}) {
     `rms=${riv.analysis.rms} L=${riv.channels[0].toFixed(5)} R=${riv.channels[1].toFixed(5)} voices=${riv.voices}`);
   check('rival voice count is capped', riv.voices <= 4, `voices=${riv.voices}`);
 
+  /* -- robustness: partial, weird and hostile state must never throw or make noise blow up -- */
+  {
+    const ctx = makeCtx(2);
+    const a = createAudio({ context: ctx, offline: true });
+    let threw = null;
+    try {
+      a.init(null);
+      a.update(0.016, {});
+      a.update(0.016, { vehicle: {} });
+      a.update(0.016, { vehicle: { speed: NaN, rpm: NaN, surface: 'not_a_surface' } });
+      a.update(0.016, { vehicle: { speed: 1e6, rpm: 99, throttle: 5, drift: null, boost: null }, race: {} });
+      a.update(0, { vehicle: { speed: 20, rpm: 0.8 }, rivals: [{}, { pos: [1, 2, 3] }], race: { phase: 'racing', lap: 9, laps: 3 } });
+      a.update(-1, { vehicle: { speed: -5, rpm: -1 } });
+      a.play('does_not_exist');
+      a.play(null);
+      a.setMusicIntensity(9); a.setMusicIntensity(null); a.setMasterVolume(-2);
+      a.setCharacter('nobody');
+      a.init(null);              // second init must be a no-op
+      for (let i = 0; i < 30; i++) a.update(1 / 60, { vehicle: { speed: 20, rpm: 0.9, throttle: 1, surface: 'gravel', drift: { active: true, tier: (i / 10) | 0 }, boost: { time: i > 20 ? 1 : 0, source: 'miniturbo3' }, grounded: i % 7 !== 0, wallImpact: i % 11, bumpImpact: i % 5, landImpact: 0.5 } });
+      a.dispose();
+      a.update(0.016, {});       // after dispose, still safe
+    } catch (e) { threw = e; }
+    const buf = await ctx.startRendering();
+    const ra = analyse(buf);
+    check('hostile / partial state never throws', !threw, threw ? String(threw.message) : '');
+    check('hostile state cannot blow up the mix', ra.peak < 0.995 && Number.isFinite(ra.rms), `peak=${ra.peak} rms=${ra.rms}`);
+  }
+
   /* -- limiter holds under a pile-up -- */
   const pileCtx = makeCtx(3);
   const pile = createAudio({ context: pileCtx, offline: true, crowd: false });
