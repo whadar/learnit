@@ -216,9 +216,26 @@ export function makeFallbackTrack(world, opts = {}) {
     return { s: ((bs % length) + length) % length, lateral: blat, onTrack: Math.abs(blat) <= o.width * 0.5, surface: 'tarmac' };
   }
 
+  // Start/finish belongs on the longest straight, not two metres before a corner.
+  let startS = 0, straight = -1;
+  {
+    const step = 6, n = Math.floor(length / step), win = Math.round(120 / step);
+    const turn = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = sample(i * step - step), b = sample(i * step), c = sample(i * step + step);
+      const h0 = Math.atan2(b.pos.x - a.pos.x, b.pos.z - a.pos.z);
+      const h1 = Math.atan2(c.pos.x - b.pos.x, c.pos.z - b.pos.z);
+      turn[i] = Math.abs(wrapPi(h1 - h0));
+    }
+    for (let i = 0; i < n; i++) {
+      let sum = 0;
+      for (let j = 0; j < win; j++) sum += turn[(i + j) % n];
+      if (straight < 0 || sum < straight) { straight = sum; startS = ((i + win * 0.75) % n) * step; }
+    }
+  }
   const startGrid = [];
   for (let i = 0; i < 8; i++) {
-    const s = length - 14 - Math.floor(i / 2) * 6;
+    const s = startS - Math.floor(i / 2) * 6;
     const sm = sample(s);
     const side = (i % 2 ? 1 : -1) * 2.6;
     startGrid.push({
@@ -238,7 +255,7 @@ export function makeFallbackTrack(world, opts = {}) {
     const sm = sample((i / 12 + 0.05) * length);
     itemBoxes.push({ pos: { x: sm.pos.x, y: sm.pos.y + 1.2, z: sm.pos.z } });
   }
-  return { spline: pts, length, sample, nearest, checkpoints, startGrid, boostPads, itemBoxes, laps: o.laps, fallback: true };
+  return { spline: pts, length, sample, nearest, checkpoints, startGrid, boostPads, itemBoxes, laps: o.laps, startS, fallback: true };
 }
 
 function validTrack(t) {
@@ -257,20 +274,23 @@ export const DEFAULTS = {
   hz: 200,                     // physics substep rate
   mass: 200,                   // kg, kart + cat
   wheelBase: 1.80,
-  trackWidth: 1.30,
-  comHeight: 0.30,             // centre of mass above the wheel-anchor plane
+  trackWidth: 1.44,
+  comHeight: 0.20,             // centre of mass above the wheel-anchor plane
   wheelRadius: 0.33,
   chassisRadius: 0.92,         // collision circle
   inertia: { pitch: 74, yaw: 52, roll: 44 },
 
-  suspRest: 0.30,
-  suspTravel: 0.17,
+  suspRest: 0.26,
+  suspTravel: 0.15,
   suspFreq: 2.25,              // Hz -> spring rate
   suspDampBump: 0.52,
   suspDampRebound: 0.78,
 
   gripBase: 1.62,              // arcade friction coefficient on clean tarmac
   loadSens: 0.16,
+  antiRoll: 26000,             // N/m across each axle
+  maxWheelLoad: 5.5,           // x static load: a spike bigger than this flips karts, not helps
+  rollCouple: 0.28,            // fraction of the lateral tyre force's roll moment kept
   peakSlipRatio: 0.16,
   peakSlipAngle: 0.145,        // rad (~8.3 deg)
   tailLong: 0.74,
@@ -286,7 +306,7 @@ export const DEFAULTS = {
   maxBrakeTorque: 1500,        // Nm per axle-half
   reverseSpeed: 8.0,
   dragCdA: 0.42,               // 0.5*rho*Cd*A
-  downforce: 0.85,             // N per (m/s)^2
+  downforce: 1.05,             // N per (m/s)^2
   rollingScale: 1.0,
 
   steerMaxLow: 0.62,           // rad at standstill
@@ -307,7 +327,7 @@ export const DEFAULTS = {
   driftSteerRange: 0.45,
   driftSteerMaxLow: 0.36,      // the drift lock has its own, flatter steering curve
   driftSteerMaxHigh: 0.235,
-  driftThrust: 0.72,           // fraction of lateral tyre force fed back as forward push
+  driftThrust: 0.40,           // fraction of lateral tyre force fed back as forward push
   driftRearGrip: 0.74,
   driftFrontGrip: 0.99,
   driftYawBias: 0.35,          // extra inward rotation while the slide is still building
@@ -329,8 +349,8 @@ export const DEFAULTS = {
 
   airYawTorque: 46,
   airPitchTorque: 26,
-  airRighting: 5.5,
-  angDamp: { pitch: 2.4, yaw: 0.8, roll: 3.0 },
+  airRighting: 8.0,
+  angDamp: { pitch: 3.6, yaw: 0.8, roll: 4.2 },
   landingBite: 0.30,           // how much a bad landing costs
 
   respawnOffTrackTime: 4.0,
@@ -387,7 +407,7 @@ export function createVehicle(world, track, opts = {}) {
     return {
       index: i, steerable, front: steerable,
       local: v3(lx, -P.comHeight, lz),
-      pos: v3(), normal: v3(0, 1, 0), contactPos: v3(),
+      pos: v3(), normal: v3(0, 1, 0), contactPos: v3(), r: v3(),
       contact: false, susp: P.suspRest, compression: 0, compressionN: 0, suspVel: 0,
       load: 0, omega: 0, spin: 0, steerAngle: 0,
       slipRatio: 0, slipAngle: 0, forceLong: 0, forceLat: 0,
@@ -503,52 +523,55 @@ export function createVehicle(world, track, opts = {}) {
     vset(avgNormal, 0, 0, 0);
     const maxRay = P.suspRest + P.wheelRadius;
 
+    // pass 1: raycast every wheel and read its travel
     for (const w of wheels) {
-      // world anchor
       qrot(tmp, state.quat, w.local);
       vadd(w.pos, state.pos, tmp);
-      vcopy(rvec, tmp);
-      const prevSusp = w.susp;
+      vcopy(w.r, tmp);
       col.probe(w.pos.x, w.pos.y, w.pos.z, -up.x, -up.y, -up.z, maxRay + 0.9, probeOut);
-      let hit = probeOut.hit && probeOut.dist <= maxRay;
+      const hit = probeOut.hit && probeOut.dist <= maxRay;
       if (hit) {
-        const suspLen = clamp(probeOut.dist - P.wheelRadius, -0.06, P.suspRest);
-        w.susp = suspLen;
-        w.compression = P.suspRest - suspLen;
-        w.compressionN = clamp(w.compression / P.suspTravel, 0, 1.15);
+        w.susp = clamp(probeOut.dist - P.wheelRadius, -0.06, P.suspRest);
+        w.compression = P.suspRest - w.susp;
         vset(w.normal, probeOut.nx, probeOut.ny, probeOut.nz);
         vset(w.contactPos, probeOut.px, probeOut.py, probeOut.pz);
         w.surface = probeOut.surface;
         w.contact = true;
         contacts++;
         avgNormal.x += w.normal.x; avgNormal.y += w.normal.y; avgNormal.z += w.normal.z;
-
-        // strut velocity along the chassis up axis
-        vcross(tmp2, state.angVel, rvec);
+        vcross(tmp2, state.angVel, w.r);
         vadd(vc, state.vel, tmp2);
-        const vUp = vdot(vc, up);
-        w.suspVel = -vUp;
-        const damping = critC * (w.suspVel > 0 ? P.suspDampBump : P.suspDampRebound);
-        let Fs = springK * w.compression + damping * w.suspVel;
-        // a small progressive bump stop near the end of travel
-        if (w.compression > P.suspTravel) Fs += springK * 6 * (w.compression - P.suspTravel);
-        Fs = clamp(Fs, 0, FzNom * 9);
-        w.load = Fs;
-        // apply along the contact normal, compensated so slopes don't lose support
-        const align = Math.max(vdot(w.normal, up), 0.35);
-        vscale(tmp3, w.normal, Fs / align);
-        vadd(force, force, tmp3);
-        vcross(tmp2, rvec, tmp3);
-        vadd(torque, torque, tmp2);
+        w.suspVel = -vdot(vc, up);
       } else {
         w.contact = false;
         w.susp = damp(w.susp, P.suspRest, 12, h);
         w.compression = P.suspRest - w.susp;
-        w.compressionN = clamp(w.compression / P.suspTravel, 0, 1.15);
+        w.suspVel = 0;
         w.load = 0;
         w.surface = state.surface;
       }
+      w.compressionN = clamp(w.compression / P.suspTravel, 0, 1.15);
     }
+
+    // pass 2: spring + damper + anti-roll bar, applied along the contact normals
+    for (const w of wheels) {
+      if (!w.contact) continue;
+      const mate = wheels[w.index ^ 1];                       // the other end of this axle
+      const damping = critC * (w.suspVel > 0 ? P.suspDampBump : P.suspDampRebound);
+      let Fs = springK * w.compression + damping * w.suspVel;
+      if (w.compression > P.suspTravel) Fs += springK * 4 * (w.compression - P.suspTravel);
+      // anti-roll bar: resists the *difference* in travel across the axle, which is what
+      // keeps a light, narrow kart from tripping over its outside wheels mid-corner
+      if (mate.contact) Fs += P.antiRoll * (w.compression - mate.compression);
+      Fs = clamp(Fs, 0, FzNom * P.maxWheelLoad);
+      w.load = Fs;
+      const align = Math.max(vdot(w.normal, up), 0.35);
+      vscale(tmp3, w.normal, Fs / align);
+      vadd(force, force, tmp3);
+      vcross(tmp2, w.r, tmp3);
+      vadd(torque, torque, tmp2);
+    }
+
     if (contacts) vnorm(avgNormal); else vset(avgNormal, 0, 1, 0);
     state.groundFrac = contacts / 4;
     const grounded = contacts > 0;
@@ -673,11 +696,20 @@ export function createVehicle(world, track, opts = {}) {
       if (brakeCmd > 0.6 && Math.abs(w.omega) < 1.5) w.omega = 0;      // lock the wheel
       w.spin += w.omega * h;
 
-      // apply
-      vset(tmp3, wf.x * Fl + wr.x * Ft, wf.y * Fl + wr.y * Ft, wf.z * Fl + wr.z * Ft);
-      vadd(force, force, tmp3);
+      // Apply. Longitudinal force acts at the contact patch, so squat and dive are real.
+      // The lateral force keeps its horizontal lever (yaw moment is untouched) but only a
+      // fraction of its vertical lever: a real kart's roll couple would tip it over long
+      // before 1.6 g, and a kart game must never spend the race on its roof.
       qrot(tmp, state.quat, w.local);
-      vmad(tmp, tmp, n, -(P.suspRest - w.compression));    // apply at the contact patch
+      vmad(tmp, tmp, n, -(P.suspRest - w.compression));    // contact patch, chassis-relative
+      vset(tmp3, wf.x * Fl, wf.y * Fl, wf.z * Fl);
+      vadd(force, force, tmp3);
+      vcross(tmp2, tmp, tmp3);
+      vadd(torque, torque, tmp2);
+      vset(tmp3, wr.x * Ft, wr.y * Ft, wr.z * Ft);
+      vadd(force, force, tmp3);
+      const vert = vdot(tmp, up);
+      vmad(tmp, tmp, up, -vert * (1 - P.rollCouple));
       vcross(tmp2, tmp, tmp3);
       vadd(torque, torque, tmp2);
 
@@ -745,8 +777,8 @@ export function createVehicle(world, track, opts = {}) {
       // 3. anti-tip: keep the chassis roughly aligned with the ground it is on
       vcross(tmp, up, avgNormal);
       const tilt = vlen(tmp);
-      if (tilt > 0.18) {
-        const k = (tilt - 0.18) * 260 * gf;
+      if (tilt > 0.10) {
+        const k = (tilt - 0.10) * 520 * gf;
         vmad(torque, torque, tmp, k / (tilt || 1));
       }
     } else {
@@ -795,9 +827,13 @@ export function createVehicle(world, track, opts = {}) {
       if (d.active && wall.impact > 3) { endDrift(true); }
     }
 
-    /* ---- floor guard ---- */
+    /* ---- floor guard ----
+       Last-resort net for the case where the suspension has been out-run entirely (a huge
+       drop, a bad respawn). It must sit *above* the wheels: parked lower, the wheel rays
+       start underground, every strut reads fully compressed, and the chassis visibly sinks
+       into the road. */
     const gy = col.groundHeight(state.pos.x, state.pos.z);
-    const minY = gy + P.comHeight * 0.35;
+    const minY = gy + P.comHeight + P.wheelRadius * 0.55;
     if (state.pos.y < minY) { state.pos.y = minY; if (state.vel.y < 0) state.vel.y *= -0.15; }
 
     elapsed += h;
@@ -840,7 +876,7 @@ export function createVehicle(world, track, opts = {}) {
       } else if (d.hopTime > 1.2) { d.hop = false; d.armed = false; }
     }
     // late drift entry: hopped straight, then turned in while still holding
-    if (!d.active && !d.hop && d.armed && held && state.grounded && speed > P.driftMinSpeed && Math.abs(inp.steer) > 0.3) {
+    if (!d.active && !d.hop && d.armed && held && state.grounded && speed > P.driftMinSpeed && Math.abs(inp.steer) > 0.22) {
       d.dir = Math.sign(inp.steer); d.active = true; d.charge = 0; d.tier = 0;
     }
 

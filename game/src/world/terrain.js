@@ -247,7 +247,7 @@ function buildScatter(world, material, opts) {
   group.name = 'terrain-detail';
   const radius = opts.scatterRadius ?? 1150;
   const n = new THREE.Vector3();
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), pv = new THREE.Vector3();
+  const q = new THREE.Quaternion(), sc = new THREE.Vector3(), pv = new THREE.Vector3();
   const eu = new THREE.Euler();
 
   // --- boulders -----------------------------------------------------------------------
@@ -288,7 +288,7 @@ function buildScatter(world, material, opts) {
   // one ledge run after another, so the hillside gets long stepped lines rather than confetti.
   const terGeo = [makeTerraceGeometry(4242), makeTerraceGeometry(8484)];
   const terXf = [[], []];
-  const seedStep = opts.terraceSeedStep ?? 105;
+  const seedStep = opts.terraceSeedStep ?? 82;
   const tr = rng(70207);
   const inBand = (x, z) => {
     if (!world.inBounds(x, z)) return 0;
@@ -299,7 +299,7 @@ function buildScatter(world, material, opts) {
   for (let z = -radius; z <= radius; z += seedStep) {
     for (let x = -radius; x <= radius; x += seedStep) {
       const a = tr(), b = tr(), c = tr(), d = tr(), e = tr();
-      if (c > 0.62) continue;
+      if (c > 0.66) continue;
       let px = x + (a - 0.5) * seedStep * 0.9, pz = z + (b - 0.5) * seedStep * 0.9;
       if (!inBand(px, pz)) continue;
       const runs = 5 + ((d * 10) | 0);

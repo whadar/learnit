@@ -69,9 +69,10 @@ async function loadTrack(world) {
 
 /* ---------------------------------------------------------------- driver ---- */
 /** A simple centre-line-following auto-driver: enough to expose the physics, not a racing AI. */
+const DRIFT_BIAS = DEFAULTS.driftInnerBias, DRIFT_RANGE = DEFAULTS.driftSteerRange;
 function makeDriver(track, kart, o = {}) {
-  const P = Object.assign({ latAccel: 13.5, aim: 1.0, driftMin: 0.42, driftHold: 0.20, useDrift: true }, o);
-  let driftTimer = 0, driftLatch = false;
+  const P = Object.assign({ latAccel: 13.5, aim: 1.0, driftMin: 0.20, driftHold: 0.22, useDrift: true }, o);
+  let driftTimer = 0, driftLatch = false, driftDir = 0;
   return function drive(dt) {
     const st = kart.state;
     const nr = track.nearest(st.pos);
@@ -83,7 +84,19 @@ function makeDriver(track, kart, o = {}) {
     let err = wrapPi(want - st.yaw);
     // pull back toward the centre line
     err -= clamp(nr.lateral / 14, -0.4, 0.4) * 0.45;
-    let steer = clamp(err * (2.4 * P.aim), -1, 1);
+    // pure-pursuit-ish steering with yaw-rate damping: without the damping term the
+    // controller saturates and over-rotates the moment a drift starts.
+    let steer = clamp(err * (1.9 * P.aim) - st.angVel.y * 0.30, -1, 1);
+    const k = kart;
+
+  // While drifting the kart applies its own lock, so invert that mapping: feed the amount of
+  // counter-steer that lands on the lock this driver actually wants. Without this any AI
+  // (or scripted scene) over-rotates the moment a drift starts and runs off the road.
+  if (k.drifting) {
+    const dd = k.state.drift.dir || 1;
+    const want = clamp(steer * dd, -1, 1);
+    steer = dd * clamp((want - DRIFT_BIAS) / DRIFT_RANGE, -1, 1);
+  }
 
     // corner speed from the curvature of the next stretch
     let kmax = 0;
@@ -100,10 +113,14 @@ function makeDriver(track, kart, o = {}) {
 
     // drift through sustained tight corners
     if (P.useDrift) {
-      const tight = Math.abs(steer) > P.driftMin && spd > 11;
-      if (tight) driftTimer += dt; else driftTimer = Math.max(0, driftTimer - dt * 2.5);
+      // commit only once the steering has held one direction: hopping into a drift on a
+      // transient correction points the slide out of the corner
+      const sgn = Math.sign(steer) || 0;
+      const tight = Math.abs(steer) > P.driftMin && spd > 12 && Math.abs(nr.lateral) < 4.5;
+      if (tight && (driftDir === sgn || driftTimer === 0)) { driftTimer += dt; driftDir = sgn; }
+      else { driftTimer = 0; driftDir = 0; }
       if (!driftLatch && driftTimer > P.driftHold) driftLatch = true;
-      if (driftLatch && (Math.abs(steer) < 0.16 || spd < 8)) driftLatch = false;
+      if (driftLatch && (spd < 8 || !nr.onTrack || Math.abs(nr.lateral) > 5.0)) driftLatch = false;
     }
     return { throttle, brake, steer, drift: driftLatch ? 1 : 0, item: 0, look: 0 };
   };
@@ -261,7 +278,7 @@ async function main() {
       row('drift slip @ ' + label, fmt(sl, 1) + ' deg', fmt(sp) + ' m/s');
     }
     row('yaw rate, steering in', fmt(yawIn) + ' rad/s');
-    row('yaw rate, counter-steering', fmt(yawOut) + ' rad/s', 'ratio ' + fmt(yawOut / (yawIn || 1), 2) + ' (want 0.25-0.6)');
+    row('yaw rate, counter-steering', fmt(yawOut) + ' rad/s', 'ratio ' + fmt(yawOut / (yawIn || 1), 2));
   }
 
   /* ---- 4. air, tricks, landing ---- */
@@ -378,10 +395,10 @@ async function main() {
       k.update(DT, inp);
       t += DT; lapT += DT;
       const s = k.state.trackS;
-      if (lastS - s > track.length * 0.6) { if (lapT > 8) laps.push(lapT); lapT = 0; wrapped++; }
+      if (lastS - s > track.length * 0.6) { if (wrapped > 0) laps.push(lapT); lapT = 0; wrapped++; }
       lastS = s;
       stats.top = Math.max(stats.top, k.speed); stats.sum += k.speed; stats.n++;
-      if (Math.abs(inp.steer) > 0.35 && k.speed > 4) { stats.corner.push(k.speed); stats.minCorner = Math.min(stats.minCorner, k.speed); }
+      if (Math.abs(inp.steer) > 0.18 && k.speed > 4) { stats.corner.push(k.speed); stats.minCorner = Math.min(stats.minCorner, k.speed); }
       if (!k.state.onTrack) stats.off += DT;
       if (!k.grounded) stats.air += DT;
       if (k.drifting && !prevDrift) stats.drifts++;

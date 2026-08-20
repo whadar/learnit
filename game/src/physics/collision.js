@@ -12,7 +12,7 @@
  * No Three.js dependency: this runs identically in the browser and in the headless sim.
  * World convention: +X east, +Z south, +Y up, metres. Vehicle local forward is +Z.
  */
-import { clamp } from '../core/mathx.js';
+import { clamp, smoothstep } from '../core/mathx.js';
 
 /* ------------------------------------------------------------------ vec/quat */
 
@@ -117,29 +117,61 @@ export const SURFACES = {
 for (const k of Object.keys(SURFACES)) SURFACES[k].name = k;
 export const surfaceInfo = s => SURFACES[s] || SURFACES.dirt;
 
-/** Map raw Overture class/subclass strings onto our surface table. */
-function classifySurface(cls, sub, surface) {
-  const s = String(surface || '').toLowerCase();
+/**
+ * Map raw Overture class/subclass strings onto our surface table.
+ * `surface` arrives as an array of linear-referenced values, e.g. [{value:'paved',between:null}].
+ */
+function surfaceValue(surface) {
+  if (!surface) return '';
+  if (Array.isArray(surface)) {
+    for (const e of surface) { const v = e && (e.value ?? e); if (typeof v === 'string') return v; }
+    return '';
+  }
+  return typeof surface === 'string' ? surface : (surface.value || '');
+}
+/** Road classes -> driving surface (Overture puts the useful value in `cls`, sub is always "road"). */
+const ROAD_SURFACE = {
+  motorway: 'tarmac', trunk: 'tarmac', primary: 'tarmac', secondary: 'tarmac', tertiary: 'tarmac',
+  residential: 'tarmac', living_street: 'tarmac', unclassified: 'tarmac', service: 'tarmac',
+  unknown: 'dirt_track', track: 'dirt_track', path: 'dirt', footway: 'dirt', steps: 'dirt',
+  cycleway: 'tarmac', driveway: 'gravel', parking_aisle: 'gravel',
+};
+/** Land-use / land-cover classes -> driving surface. A moshav's "residential" land is
+ *  gardens, gravel drives and packed yard, not a paved city block. */
+const AREA_SURFACE = {
+  forest: 'forest', wood: 'forest', tree: 'orchard',
+  shrub: 'scrub', scrub: 'scrub', heath: 'scrub', nature_reserve: 'scrub', protected: 'scrub',
+  military: 'scrub', training_area: 'scrub',
+  grass: 'grass', meadow: 'grass', park: 'grass', pitch: 'grass', recreation: 'grass',
+  cemetery: 'grass', garden: 'grass', village_green: 'grass',
+  crop: 'crop', farmland: 'crop', agriculture: 'crop', field: 'crop', greenhouse_horticulture: 'soil',
+  orchard: 'orchard', vineyard: 'orchard', horticulture: 'orchard', plant_nursery: 'orchard',
+  farmyard: 'farmyard', barn: 'farmyard', urban: 'gravel', residential: 'grass',
+  industrial: 'concrete', commercial: 'concrete', retail: 'concrete', quarry: 'gravel',
+  barren: 'dirt', bare: 'dirt', rock: 'dirt', desert: 'sand', sand: 'sand', beach: 'sand',
+  water: 'water', river: 'water', stream: 'water', canal: 'water', pond: 'water',
+  reservoir: 'water', spring: 'water', swimming_pool: 'water', human_made: 'concrete',
+  wetland: 'water', glacier: 'concrete',
+};
+
+/**
+ * Map raw Overture class/subclass onto our surface table.
+ * `kind` is 'road' for linear ways and 'area' for land-use / land-cover / water polygons —
+ * without it, a "residential" *land-use* polygon would pave the whole village.
+ */
+function classifySurface(kind, cls, sub, surface) {
+  const s = surfaceValue(surface).toLowerCase();
   if (SURFACES[s]) return s;
-  if (/asphalt|paved|tarmac|chipseal/.test(s)) return 'tarmac';
-  if (/gravel|compacted|fine_gravel/.test(s)) return 'gravel';
-  if (/ground|earth|mud|unpaved|dirt/.test(s)) return 'dirt';
-  if (/sand/.test(s)) return 'sand';
-  if (/grass/.test(s)) return 'grass';
-  const c = String(sub || cls || '').toLowerCase();
-  if (SURFACES[c]) return c;
-  if (/motorway|trunk|primary|secondary|tertiary|residential|living|service|unclassified/.test(c)) return 'tarmac';
-  if (/track/.test(c)) return 'dirt_track';
-  if (/path|footway|cycleway|steps/.test(c)) return 'dirt';
-  if (/forest|wood|tree/.test(c)) return 'forest';
-  if (/shrub|scrub|heath/.test(c)) return 'scrub';
-  if (/grass|meadow|park|pitch/.test(c)) return 'grass';
-  if (/crop|farmland|field/.test(c)) return 'crop';
-  if (/orchard|vineyard|plant_nursery/.test(c)) return 'orchard';
-  if (/farmyard|yard/.test(c)) return 'farmyard';
-  if (/barren|bare|rock|desert/.test(c)) return 'dirt';
-  if (/water|river|stream|pond|reservoir/.test(c)) return 'water';
-  return null;
+  if (s) {
+    if (/asphalt|paved|tarmac|chipseal|concrete:plates/.test(s)) return 'tarmac';
+    if (/gravel|compacted|fine_gravel|pebble/.test(s)) return 'gravel';
+    if (/ground|earth|mud|unpaved|dirt/.test(s)) return 'dirt';
+    if (/sand/.test(s)) return 'sand';
+    if (/grass/.test(s)) return 'grass';
+  }
+  const c = String(cls || '').toLowerCase(), b = String(sub || '').toLowerCase();
+  if (kind === 'road') return ROAD_SURFACE[c] || ROAD_SURFACE[b] || 'dirt_track';
+  return AREA_SURFACE[b] || AREA_SURFACE[c] || SURFACES[b] && b || SURFACES[c] && c || null;
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -180,6 +212,7 @@ export function createCollisionWorld(world, track, opts = {}) {
     flattenTrack: true,      // blend terrain height toward the track ribbon's own height
     banking: true,
     kerbWidth: 1.4,          // width of the rumble strip either side of the racing surface
+    shoulder: 7.0,           // metres over which the ribbon fades into raw terrain
     maxBlockerRange: 900,    // only hash blockers within this radius of the track/world centre
   }, opts);
 
@@ -207,8 +240,10 @@ export function createCollisionWorld(world, track, opts = {}) {
       const name = classifySurface(f.cls, f.sub, f.surface);
       if (!name) continue;
       const id = idOf(name);
-      const rings = f.rings || (f.poly ? f.paths : null) || (f.poly ? [f.poly] : null) || f.paths;
-      if (!rings) continue;
+      // Overture marks closed areas with `poly`. Filling an open polyline (a seasonal stream,
+      // say) as if it were a ring floods everything inside its meander — so never do that.
+      const rings = f.rings || (f.poly ? f.paths : null);
+      if (!rings) { stampPaths([{ ...f, kind: 'area' }]); continue; }
       for (const ring of rings) {
         if (!ring || ring.length < 3) continue;
         let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
@@ -224,13 +259,16 @@ export function createCollisionWorld(world, track, opts = {}) {
     }
   }
 
+  const ROAD_W = { motorway: 12, trunk: 10, primary: 9, secondary: 7.5, tertiary: 6.5,
+                   residential: 5.5, living_street: 5, unclassified: 5, service: 4,
+                   track: 3.2, path: 1.6, footway: 1.6, cycleway: 2.0, steps: 1.4 };
   function stampPaths(list) {
     if (!Array.isArray(list)) return;
     for (const f of list) {
-      const name = classifySurface(f.cls, f.sub, f.surface);
+      const name = classifySurface(f.kind || 'road', f.cls, f.sub, f.surface);
       if (!name) continue;
       const id = idOf(name);
-      const w = Math.max(2.5, (f.width || 4)) * 0.5 + 0.6;
+      const w = (f.width || ROAD_W[f.cls] || ROAD_W[f.sub] || 4.5) * 0.5 + 0.4;
       const r = Math.ceil(w / cell);
       for (const path of (f.paths || [])) {
         for (let k = 1; k < path.length; k++) {
@@ -253,7 +291,7 @@ export function createCollisionWorld(world, track, opts = {}) {
   try {
     stampPolys(world.landcover, 0);
     stampPolys(world.landuse, 1);
-    stampPolys(world.water, 2);
+    stampPolys(world.water, 2);   // open stream lines fall through to stampPaths
     stampPaths(world.roads);
   } catch (e) { /* raster is an optimisation, never fatal */ }
 
@@ -390,8 +428,9 @@ export function createCollisionWorld(world, track, opts = {}) {
     const tl = Math.hypot(sm.tangent?.x ?? 0, sm.tangent?.z ?? 1) || 1;
     _sd.tanX = (sm.tangent?.x ?? 0) / tl; _sd.tanZ = (sm.tangent?.z ?? 1) / tl;
     _sd.onTrack = (nr.onTrack !== undefined) ? !!nr.onTrack : Math.abs(lat) <= hw;
-    // fade the ribbon influence out over ~4 m past the edge so there is no cliff
-    const blend = 1 - clamp((Math.abs(lat) - hw) / 4, 0, 1);
+    // Fade the ribbon into the terrain over a wide shoulder. A short fade leaves a lip at
+    // the road edge that trips the kart into a somersault when it runs wide at speed.
+    const blend = smoothstep(0, 1, 1 - clamp((Math.abs(lat) - hw) / o.shoulder, 0, 1));
     _sd.blend = blend;
     if (blend <= 0) return _sd;
     const bank = o.banking ? (sm.banking || 0) : 0;
@@ -443,8 +482,8 @@ export function createCollisionWorld(world, track, opts = {}) {
       if (a <= hw) {
         let name = null;
         const nr = trackNearest(x, z);
-        name = classifySurface(null, null, nr?.surface) || (nr?.surface && SURFACES[nr.surface] ? nr.surface : null);
-        if (!name) { let sm = null; try { sm = track.sample(sd.s); } catch (e) {} name = classifySurface(null, null, sm?.surface); }
+        name = classifySurface('road', null, null, nr?.surface) || (nr?.surface && SURFACES[nr.surface] ? nr.surface : null);
+        if (!name) { let sm = null; try { sm = track.sample(sd.s); } catch (e) {} name = classifySurface('road', null, null, sm?.surface); }
         if (a > hw - o.kerbWidth && a > hw * 0.55) return 'kerb';
         return name || 'tarmac';
       }

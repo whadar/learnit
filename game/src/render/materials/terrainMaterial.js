@@ -332,14 +332,14 @@ export function buildSplatTexture(world, size = 1024) {
   // then woodland, then cultivation, then rough grazing) so the shader gets a clean signal.
   const data = new Uint8Array(size * size * 4);
   for (let i = 0, n = size * size; i < n; i++) {
-    const bare = clamp01(B[i]);
-    const wood = clamp01(W[i]) * (1 - bare);
-    const farm = clamp01(R[i] + C[i] * 0.8) * (1 - bare) * (1 - wood * 0.85);
-    const grass = clamp01(G[i] * 0.95 + C[i] * 0.3) * (1 - bare) * (1 - wood) * (1 - farm);
-    data[i * 4] = farm * 255;
-    data[i * 4 + 1] = grass * 255;
-    data[i * 4 + 2] = wood * 255;
-    data[i * 4 + 3] = bare * 255;
+    const wBare = clamp01(B[i]);
+    const wWood = clamp01(W[i]) * (1 - wBare);
+    const wFarm = clamp01(R[i] + C[i] * 0.8) * (1 - wBare) * (1 - wWood * 0.85);
+    const wGrass = clamp01(G[i] * 0.95 + C[i] * 0.3) * (1 - wBare) * (1 - wWood) * (1 - wFarm);
+    data[i * 4] = wFarm * 255;
+    data[i * 4 + 1] = wGrass * 255;
+    data[i * 4 + 2] = wWood * 255;
+    data[i * 4 + 3] = wBare * 255;
   }
   const t = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
   t.colorSpace = THREE.NoColorSpace;
@@ -363,22 +363,29 @@ export function buildInfoTexture(world, size = 512) {
     for (let i = 0; i < size; i++) h[j * size + i] = world.heightAt(-half + (i + 0.5) * s, z);
   }
   const at = (i, j) => h[Math.max(0, Math.min(size - 1, j)) * size + Math.max(0, Math.min(size - 1, i))];
-  const wide = Math.max(2, Math.round(14 / s));
+  // Curvature has to be measured at landform scale (~50 m). Sampled tightly it just picks up
+  // DEM noise, and the shader then paints the hillside in leopard spots.
+  const wide = Math.max(3, Math.round(50 / s));
   const varField = fbmField(size, { octaves: 4, period: 3, seed: 20240 });
-  const data = new Uint8Array(size * size * 4);
-  const range = Math.max(1, world.maxH - world.minH);
+  const curv = new Float32Array(size * size);
+  const slope = new Float32Array(size * size);
   for (let j = 0; j < size; j++) {
     for (let i = 0; i < size; i++) {
       const k = j * size + i;
       const hl = at(i - 1, j), hr = at(i + 1, j), hd = at(i, j - 1), hu = at(i, j + 1);
       const nx = hl - hr, nz = hd - hu, ny = 2 * s;
-      const inv = 1 / Math.hypot(nx, ny, nz);
-      const lap = (at(i - wide, j) + at(i + wide, j) + at(i, j - wide) + at(i, j + wide)) * 0.25 - h[k];
-      data[k * 4] = clamp01((h[k] - world.minH) / range) * 255;
-      data[k * 4 + 1] = clamp01(ny * inv) * 255;
-      data[k * 4 + 2] = clamp01(0.5 - lap * 0.5) * 255;      // <0.5 hollow, >0.5 crest
-      data[k * 4 + 3] = clamp01(varField[k]) * 255;
+      slope[k] = ny / Math.hypot(nx, ny, nz);
+      curv[k] = (at(i - wide, j) + at(i + wide, j) + at(i, j - wide) + at(i, j + wide)) * 0.25 - h[k];
     }
+  }
+  const curvS = blurField(curv, size, Math.max(2, Math.round(18 / s)));
+  const data = new Uint8Array(size * size * 4);
+  const range = Math.max(1, world.maxH - world.minH);
+  for (let k = 0; k < size * size; k++) {
+    data[k * 4] = clamp01((h[k] - world.minH) / range) * 255;
+    data[k * 4 + 1] = clamp01(slope[k]) * 255;
+    data[k * 4 + 2] = clamp01(0.5 - curvS[k] * 0.13) * 255;   // <0.5 hollow, >0.5 crest
+    data[k * 4 + 3] = clamp01(varField[k]) * 255;
   }
   const t = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
   t.colorSpace = THREE.NoColorSpace;
@@ -455,9 +462,11 @@ export function createStoneMaterial(stone, size) {
     return t;
   };
   const map = mk(stone.alb, true), normalMap = mk(stone.nrm, false), armMap = mk(stone.arm, false);
+  // No aoMap here on purpose: on objects this small a baked cavity term mostly just drags the
+  // shaded faces towards black under a hard single-sun rig.
   return new THREE.MeshStandardMaterial({
-    map, normalMap, roughnessMap: armMap, aoMap: armMap, aoMapIntensity: 0.45,
-    normalScale: new THREE.Vector2(0.9, 0.9), roughness: 0.9, metalness: 0,
+    map, normalMap, roughnessMap: armMap,
+    normalScale: new THREE.Vector2(0.85, 0.85), roughness: 0.88, metalness: 0,
     color: 0xffffff, dithering: true,
   });
 }
@@ -482,10 +491,9 @@ vec3 kWpG; vec3 kWnG; vec3 kBwG; bool kTriG; vec2 kWarpG;
 vec2 kDyx, kDyy, kDxx, kDxy, kDzx, kDzy;
 
 void kFetch(int li, float inv, out vec4 A, out vec3 nW, out float rgh, out float ao) {
-  // Every layer reads a slowly warped, per-layer-offset world position, which is what stops
-  // an 8 m tile from reading as an 8 m grid on a hillside 200 m away.
-  // The anti-tiling warp is great on stochastic layers and terrible on the ploughed field,
-  // where it bends what should be straight furrows into swirls — so it is damped there.
+  // Every layer reads a slowly warped, per-layer-offset world position: that is what stops an
+  // 8 m tile from reading as an 8 m grid on a hillside 200 m away. The warp is damped on the
+  // ploughed field, where it would bend what should be straight furrows into swirls.
   float warpAmt = (li == 4) ? 0.10 : 1.0;
   vec2 wxz = kWpG.xz + kWarpG * warpAmt + vec2(float(li) * 13.7, float(li) * -21.3);
   vec2 uvY = wxz * inv;
@@ -506,9 +514,9 @@ void kFetch(int li, float inv, out vec4 A, out vec3 nW, out float rgh, out float
     vec2 gx = (nX.xy * 2.0 - 1.0) * kNormalStr;
     vec2 gz = (nZ.xy * 2.0 - 1.0) * kNormalStr;
     // whiteout blend of the three tangent-space normals into world space
-    vec3 tX = vec3(gx + kWnG.zy, abs(1.0) * kWnG.x);
-    vec3 tY = vec3(gy + kWnG.xz, abs(1.0) * kWnG.y);
-    vec3 tZ = vec3(gz + kWnG.xy, abs(1.0) * kWnG.z);
+    vec3 tX = vec3(gx + kWnG.zy, kWnG.x);
+    vec3 tY = vec3(gy + kWnG.xz, kWnG.y);
+    vec3 tZ = vec3(gz + kWnG.xy, kWnG.z);
     nW = normalize(tX.zyx * kBwG.x + tY.xzy * kBwG.y + tZ.xyz * kBwG.z);
   } else {
     nW = normalize(vec3(kWnG.x + gy.x, kWnG.y, kWnG.z + gy.y));
@@ -539,6 +547,10 @@ const BODY = /* glsl */`
   kBwG = kBw / max(kBw.x + kBw.y + kBw.z, 1e-4);
   kTriG = kBwG.y < 0.90 && kQuality > 0.35;
 
+  float kDist = length(cameraPosition - kWpG);
+  // Patch-scale breakup is a near-field cue. Left on at range it turns a hillside into
+  // camouflage, so it fades out over the first few hundred metres.
+  float kNear = 1.0 - smoothstep(55.0, 300.0, kDist);
   float kSlope  = 1.0 - kWnG.y;
   float kSteep  = smoothstep(0.030, 0.165, kSlope + (kMac2.z - 0.5) * 0.045);
   float kReg    = 1.0 - kInf.g;
@@ -550,13 +562,18 @@ const BODY = /* glsl */`
   float kPatch2 = clamp(kMac4.x + (kMac2.y - 0.5) * 0.35, 0.0, 1.0);
 
   float kW[6];
-  kW[1] = 0.55 + 0.55 * kBig + 0.40 * kCrest + 0.25 * kVar + 0.85 * smoothstep(0.52, 0.92, kPatch);
-  kW[3] = kSp.g * (1.15 + 0.9 * kPatch2) + 0.45 * smoothstep(0.42, 0.84, kBig) * (1.0 - kSp.a);
-  kW[4] = kSp.r * (1.75 + 0.35 * kFineN);
-  kW[2] = kSp.b * (0.62 + 0.45 * kFineN) + kHollow * (0.42 + 0.45 * kFineN) + 0.14 * smoothstep(0.62, 0.95, 1.0 - kVar);
-  kW[0] = kSteep * kSteep * 2.4 + kSp.a * 0.40 * kFineN + 0.16 * smoothstep(0.80, 0.99, kPatch) * kReg;
-  kW[5] = kSp.a * (1.1 + 0.5 * kFineN) + smoothstep(0.014, 0.075, kSlope) * (0.55 + 0.45 * kFineN)
-        + 0.30 * kCrest + 0.75 * smoothstep(0.55, 0.95, 1.0 - kPatch);
+  // Beyond a few hundred metres the mix is driven purely by land cover, slope and curvature —
+  // the noise-driven patchiness is a near-field cue and turns a distant hillside into
+  // camouflage if it is left switched on.
+  float kNz = kNear * 0.9;
+  kW[1] = 0.62 + 0.50 * kBig + 0.26 * kCrest + 0.22 * kVar + 1.15 * kNz * smoothstep(0.50, 0.90, kPatch);
+  kW[3] = kSp.g * (1.30 + 0.85 * kNz * kPatch2) + 0.45 * smoothstep(0.42, 0.84, kBig) * (1.0 - kSp.a);
+  kW[4] = kSp.r * (1.85 + 0.30 * kNz * kFineN);
+  kW[2] = kSp.b * (0.78 + 0.35 * kNz * kFineN) + kHollow * (0.30 + 0.30 * kNz * kFineN)
+        + 0.12 * smoothstep(0.62, 0.95, 1.0 - kVar);
+  kW[0] = kSteep * kSteep * 2.4 + kSp.a * 0.40 * kFineN + 0.16 * kNz * smoothstep(0.80, 0.99, kPatch) * kReg;
+  kW[5] = kSp.a * (1.15 + 0.45 * kNz * kFineN) + smoothstep(0.014, 0.075, kSlope) * (0.55 + 0.40 * kNz * kFineN)
+        + 0.20 * kCrest + 1.15 * kNz * smoothstep(0.50, 0.92, 1.0 - kPatch);
 
   float kSoft = 1.0 - 0.94 * kSteep;
   kW[1] *= kSoft; kW[3] *= kSoft * kSoft;
@@ -585,15 +602,17 @@ const BODY = /* glsl */`
   float kAO = mix(kO0, kO1, kMix);
 
   // Two frequencies of detail that fade in near the camera so close ground never looks smooth.
-  float kDist = length(cameraPosition - kWpG);
   float kFmed = (1.0 - smoothstep(kDetail.z, kDetail.w, kDist)) * kQuality;
   float kFfine = (1.0 - smoothstep(kDetail.x, kDetail.y, kDist)) * kQuality;
-  if (kFmed > 0.01) {                    // mid range: colour breakup at ~1/3 of the tile
+  if (kFmed > 0.01) {
+    // Mid range is most of the frame from a kart, and it is where a splat map alone looks
+    // like painted cardboard — so this band gets relief and cavity shading, not just colour.
     float inv = kInvScale[kDom] * 3.1;
     vec2 uv = (kWpG.xz + kWarpG * 0.35) * inv;
-    vec4 dA = textureGrad(kAlb, vec3(uv, float(kDom)), kDyx * inv, kDyy * inv);
-    float l = dot(dA.rgb, vec3(0.3333));
-    kAlbedo *= mix(1.0, 0.46 + l * 1.6, kFmed * 0.7);
+    vec4 dN = textureGrad(kNra, vec3(uv, float(kDom)), kDyx * inv, kDyy * inv);
+    kNormalW = normalize(kNormalW + vec3(dN.x * 2.0 - 1.0, 0.0, dN.y * 2.0 - 1.0) * kFmed * 0.75);
+    kAlbedo *= mix(1.0, 0.74 + dN.w * 0.44, kFmed * 0.55);
+    kRough = mix(kRough, dN.z, kFmed * 0.3);
   }
   if (kFfine > 0.01) {                   // close up: micro relief and cavity shading
     float inv = kInvScale[kDom] * 10.0;
@@ -607,8 +626,8 @@ const BODY = /* glsl */`
   // Large-scale colour drift, sun bleaching on crests, damp shading in the hollows.
   kAlbedo *= mix(vec3(1.0), vec3(1.10, 1.04, 0.90), (kMid - 0.5) * 0.85);
   kAlbedo *= 0.90 + 0.20 * kBig;
-  kAlbedo *= mix(1.0, 0.86, kHollow * 0.7);
-  kAlbedo = mix(kAlbedo, kAlbedo * vec3(1.09, 1.05, 0.95), kCrest * 0.55);
+  kAlbedo *= mix(1.0, 0.90, kHollow * 0.7);
+  kAlbedo = mix(kAlbedo, kAlbedo * vec3(1.07, 1.04, 0.96), kCrest * 0.45);
   kAlbedo = mix(kAlbedo, kAlbedo * vec3(1.04, 0.99, 0.92), smoothstep(0.55, 1.0, kInf.r) * 0.5);
   kAlbedo = mix(kAlbedo, kAlbedo * vec3(0.80, 0.82, 0.70), kSp.b * 0.55);   // shaded forest duff
   kAO = clamp(kAO * (0.82 + 0.18 * (1.0 - kHollow)), 0.25, 1.0);

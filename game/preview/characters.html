@@ -9,6 +9,7 @@ import { createKart, kartEnv, LIVERIES } from '../src/characters/kart.js';
 
 /* ---------------------------------------------------------------- staging */
 const GROUPS = {};
+const PADS = [];
 const DRIVEN = [];
 const env = kartEnv();
 
@@ -38,8 +39,18 @@ function studio(scene) {
   gt.wrapS = gt.wrapT = THREE.RepeatWrapping; gt.repeat.set(60, 60);
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(900, 900),
     new THREE.MeshStandardMaterial({ map: gt, color: 0xa79d86, roughness: 0.95, metalness: 0 }));
-  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.position.y = -0.002;
+  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.position.y = -0.004;
   scene.add(ground);
+
+  // paddock pad: gives the karts something to sit on and makes shadows read
+  const pad = new THREE.Mesh(new THREE.CircleGeometry(11, 56),
+    new THREE.MeshStandardMaterial({ color: 0x6c675d, roughness: 0.97, metalness: 0 }));
+  pad.rotation.x = -Math.PI / 2; pad.position.y = 0.004; pad.receiveShadow = true;
+  scene.add(pad);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(10.55, 11.0, 56),
+    new THREE.MeshStandardMaterial({ color: 0xe6dfd0, roughness: 0.9 }));
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.006; scene.add(ring);
+  PADS.push(pad, ring);
 
   scene.add(new THREE.HemisphereLight(0xbcd8ff, 0x8f8060, 0.42));
   const key = new THREE.DirectionalLight(0xfff2dc, 2.45);
@@ -135,10 +146,10 @@ function build(scene, engine) {
 
 /* ------------------------------------------------------------------ views */
 const VIEWS = {
-  lineup:  { pos: [0.15, 2.15, 6.35],   look: [0.05, 0.78, -1.9],  fov: 40 },
-  closeup: { pos: [100.82, 0.98, 1.92], look: [100.00, 0.83, 0.00], fov: 32 },
+  lineup:  { pos: [0.15, 1.72, 5.55],   look: [0.05, 0.74, -2.3],  fov: 42 },
+  closeup: { pos: [100.86, 1.00, 1.88], look: [100.02, 0.84, -0.04], fov: 34 },
   faces:   { pos: [200.25, 0.86, 3.25], look: [200.20, 0.52, -0.5], fov: 31 },
-  karts:   { pos: [300.05, 1.30, 5.20],  look: [300.0, 0.46, -0.9],  fov: 40 },
+  karts:   { pos: [300.05, 1.45, 6.30],  look: [300.0, 0.44, -0.85], fov: 38 },
   action:  { pos: [400.15, 1.70, 4.85],  look: [400.15, 0.78, -0.85], fov: 44 },
 };
 const SHOW = { lineup: ['lineup'], closeup: ['closeup'], faces: ['faces'], karts: ['karts'], action: ['action'] };
@@ -154,6 +165,8 @@ function updateAll(dt) {
 function applyVisibility(name) {
   const keep = SHOW[name] || [];
   for (const k in GROUPS) GROUPS[k].visible = keep.includes(k);
+  const g = GROUPS[keep[0]];
+  for (const p of PADS) { p.position.x = g ? g.position.x : 0; p.position.z = name === 'lineup' ? -2.4 : -0.8; }
 }
 
 async function main() {

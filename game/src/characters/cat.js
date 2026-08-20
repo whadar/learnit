@@ -463,7 +463,8 @@ export function createCat(id, opts = {}) {
   const detail = opts.detail || 'high';
   const shells = opts.shells ?? (detail === 'high' ? 6 : detail === 'med' ? 3 : 0);
   const tex = detail === 'low' ? 96 : detail === 'med' ? 160 : 256;
-  const seg = detail === 'high' ? 1 : 0.72;                       // geometry density scale
+  const seg = detail === 'high' ? 1 : 0.72;
+  const fine = detail !== 'low';                                   // draw-call budget for far LOD                       // geometry density scale
   const shadows = opts.shadows !== false;
   const R = rng(spec.seed | 0);
 
@@ -479,10 +480,10 @@ export function createCat(id, opts = {}) {
   B.head = bone('head', 0, 0.125, 0.012); B.neck.add(B.head);
   B.shoulderL = bone('shoulderL', -0.150, 0.045, 0.020); B.chest.add(B.shoulderL);
   B.shoulderR = bone('shoulderR', 0.150, 0.045, 0.020); B.chest.add(B.shoulderR);
-  B.elbowL = bone('elbowL', 0, -0.165, 0); B.shoulderL.add(B.elbowL);
-  B.elbowR = bone('elbowR', 0, -0.165, 0); B.shoulderR.add(B.elbowR);
-  B.handL = bone('handL', 0, -0.150, 0); B.elbowL.add(B.handL);
-  B.handR = bone('handR', 0, -0.150, 0); B.elbowR.add(B.handR);
+  B.elbowL = bone('elbowL', 0, -0.175, 0); B.shoulderL.add(B.elbowL);
+  B.elbowR = bone('elbowR', 0, -0.175, 0); B.shoulderR.add(B.elbowR);
+  B.handL = bone('handL', 0, -0.160, 0); B.elbowL.add(B.handL);
+  B.handR = bone('handR', 0, -0.160, 0); B.elbowR.add(B.handR);
   B.tail = [];
   let tparent = B.hips;
   for (let i = 0; i < 5; i++) { const b = bone('tail' + i, 0, i === 0 ? 0.02 : 0.115, i === 0 ? -0.155 : 0); tparent.add(b); B.tail.push(b); tparent = b; }
@@ -541,9 +542,9 @@ export function createCat(id, opts = {}) {
   add(B.chest, xform(new THREE.TorusGeometry(0.191, 0.011, 6, Math.round(20 * seg) + 6), { pos: [0, -0.055, 0], rot: [Math.PI / 2, 0, 0], scale: [1, 1, 0.55] }), M.trim);
   // chest number, hugging the torso
   if (DOM) {
-    const nGeo = new THREE.CylinderGeometry(0.196, 0.193, 0.110, 12, 1, true, -0.34, 0.68);
+    const nGeo = new THREE.CylinderGeometry(0.216, 0.212, 0.125, 14, 1, true, -0.36, 0.72);
     const nMat = new THREE.MeshStandardMaterial({ map: numberTexture(spec.num, '#1b1b20', '#f4f1e6'), transparent: true, alphaTest: 0.35, roughness: 0.5, side: THREE.DoubleSide });
-    add(B.chest, xform(nGeo, { pos: [0, 0.034, 0] }), nMat, false);
+    add(B.chest, xform(nGeo, { pos: [0, 0.028, 0] }), nMat, false);
   }
 
   /* ---- head */
@@ -580,18 +581,20 @@ export function createCat(id, opts = {}) {
     add(B.muzzle, xform(extrudeShape(ns, 0.016, 0.004), { pos: [0, 0.034, 0.050], rot: [-0.02, 0, 0], scale: [0.92, 0.92, 1] }), M.pink, false);
   }
   // mouth: philtrum + two arcs, plus an openable cavity for cheering
-  add(B.jaw, xform(new THREE.BoxGeometry(0.006, 0.020, 0.006), { pos: [0, 0.002, 0.062] }), M.dark, false);
-  for (const s of [-1, 1]) {
-    add(B.jaw, xform(new THREE.TorusGeometry(0.020, 0.0040, 5, 10, Math.PI * 0.95), { pos: [s * 0.019, -0.008, 0.056], rot: [0.30, 0, Math.PI + s * 0.10] }), M.dark, false);
+  if (fine) {
+    add(B.jaw, xform(new THREE.BoxGeometry(0.006, 0.020, 0.006), { pos: [0, 0.002, 0.062] }), M.dark, false);
+    for (const s of [-1, 1]) {
+      add(B.jaw, xform(new THREE.TorusGeometry(0.020, 0.0040, 5, 10, Math.PI * 0.95), { pos: [s * 0.019, -0.008, 0.056], rot: [0.30, 0, Math.PI + s * 0.10] }), M.dark, false);
+    }
   }
-  const mouthOpen = add(B.jaw, xform(new THREE.SphereGeometry(0.030, 12, 8), { scale: [1.0, 0.85, 0.6] }), M.dark, false);
+  const mouthOpen = add(fine ? B.jaw : B.jaw, xform(new THREE.SphereGeometry(0.030, 12, 8), { scale: [1.0, 0.85, 0.6] }), M.dark, false);
   mouthOpen.position.set(0, -0.016, 0.040);
   mouthOpen.scale.setScalar(0.01);
   const tongue = add(B.jaw, xform(new THREE.SphereGeometry(0.016, 10, 7), { scale: [1.1, 0.55, 1.0] }), M.pink, false);
   tongue.position.set(0, -0.024, 0.052);
   tongue.scale.setScalar(0.01);
   // whiskers: muzzle set + brow set
-  {
+  if (fine) {
     const muz = [], brow = [];
     for (const s of [-1, 1]) {
       for (let i = 0; i < 4; i++) {
@@ -627,7 +630,7 @@ export function createCat(id, opts = {}) {
     add(b, outer, M.ear);
     const inner = planarUV(extrudeShape(shape, 0.010, 0.004));
     add(b, xform(inner, { pos: [0, 0.008, 0.015], scale: [0.74, 0.78, 1] }), M.pink, false);
-    if (earKind === 'tuft') {
+    if (earKind === 'tuft' && fine) {
       for (let i = 0; i < 3; i++) {
         const g = new THREE.CylinderGeometry(0.0012, 0.006, 0.055, 4);
         g.translate(0, 0.028, 0);
@@ -651,9 +654,12 @@ export function createCat(id, opts = {}) {
     planarUV(irisG);
     add(g, irisG, M.iris, false);
     const h1 = add(g, new THREE.SphereGeometry(r * 0.26, 8, 6), M.hi, false);
+    // (second highlight and brow are fine-detail only)
     h1.position.set(s * -0.012 - 0.006, 0.021, r * 0.95);
-    const h2 = add(g, new THREE.SphereGeometry(r * 0.11, 6, 5), M.hi, false);
-    h2.position.set(0.014, -0.020, r * 0.96);
+    if (fine) {
+      const h2 = add(g, new THREE.SphereGeometry(r * 0.11, 6, 5), M.hi, false);
+      h2.position.set(0.014, -0.020, r * 0.96);
+    }
     const lidUp = new THREE.Group(); g.add(lidUp);
     const lidGeo = new THREE.SphereGeometry(r * 1.10, 16, 9, 0, TAU, 0, 1.30);
     add(lidUp, lidGeo.clone(), M.head, false);
@@ -718,12 +724,12 @@ export function createCat(id, opts = {}) {
     const sh = s < 0 ? B.shoulderL : B.shoulderR;
     const el = s < 0 ? B.elbowL : B.elbowR;
     const hd = s < 0 ? B.handL : B.handR;
-    const upG = new THREE.CapsuleGeometry(0.062, 0.115, 4, Math.round(12 * seg) + 4);
-    add(sh, xform(upG, { pos: [0, -0.078, 0] }), M.suit);
-    add(sh, xform(new THREE.SphereGeometry(0.070, 12, 9), { pos: [0, 0.005, 0] }), M.suit, false);
-    const foG = new THREE.CapsuleGeometry(0.052, 0.100, 4, Math.round(12 * seg) + 4);
-    add(el, xform(foG, { pos: [0, -0.070, 0] }), M.limb);
-    add(el, xform(new THREE.TorusGeometry(0.056, 0.014, 6, 14), { pos: [0, -0.128, 0], rot: [Math.PI / 2, 0, 0] }), M.trim, false);
+    const upG = new THREE.CapsuleGeometry(0.062, 0.125, 4, Math.round(12 * seg) + 4);
+    add(sh, xform(upG, { pos: [0, -0.086, 0] }), M.suit);
+    if (fine) add(sh, xform(new THREE.SphereGeometry(0.070, 12, 9), { pos: [0, 0.005, 0] }), M.suit, false);
+    const foG = new THREE.CapsuleGeometry(0.052, 0.110, 4, Math.round(12 * seg) + 4);
+    add(el, xform(foG, { pos: [0, -0.078, 0] }), M.limb);
+    if (fine) add(el, xform(new THREE.TorusGeometry(0.056, 0.014, 6, 14), { pos: [0, -0.138, 0], rot: [Math.PI / 2, 0, 0] }), M.trim, false);
     // paw
     const paw = mergeGeos([
       xform(new THREE.SphereGeometry(0.052, 12, 9), { scale: [1.0, 1.15, 0.95] }),
@@ -750,7 +756,7 @@ export function createCat(id, opts = {}) {
       xform(new THREE.SphereGeometry(0.030, 8, 6), { pos: [0, -0.005, 0.070], scale: [1.1, 0.7, 0.9] }),
     ]);
     foot.computeVertexNormals();
-    add(sn, xform(foot, { pos: [0, -0.100, 0.030] }), M.trim, false);
+    if (fine) add(sn, xform(foot, { pos: [0, -0.100, 0.030] }), M.trim, false);
   }
 
   /* ---- tail */
@@ -762,7 +768,7 @@ export function createCat(id, opts = {}) {
     for (let k = 0; k < uv.count; k++) uv.setY(k, (i + uv.getY(k)) / B.tail.length);
     add(B.tail[i], g, M.tail, shadows && i < 2);
     if (i === B.tail.length - 1) add(B.tail[i], xform(new THREE.SphereGeometry(0.050, 10, 8), { pos: [0, 0.118, 0], scale: [1, 1.25, 1] }), M.tail, false);
-    else add(B.tail[i], xform(new THREE.SphereGeometry(0.058 - i * 0.006, 10, 8), { pos: [0, 0.120, 0] }), M.tail, false);
+    else if (fine) add(B.tail[i], xform(new THREE.SphereGeometry(0.058 - i * 0.006, 10, 8), { pos: [0, 0.120, 0] }), M.tail, false);
   }
   B.tail[0].rotation.set(-0.55, 0, 0);
   for (let i = 1; i < B.tail.length; i++) B.tail[i].rotation.set(0.22, 0, 0);
@@ -784,6 +790,7 @@ export function createCat(id, opts = {}) {
   const phase = R() * TAU;
   let poseOverride = null;
   const _tv = new THREE.Vector3();
+  const gripFrame = () => ((opts.gripParent && root.parent) ? root.parent : rig);
 
   function update(dt, st = {}) {
     dt = clamp(dt || 0, 0, 0.1);
@@ -797,10 +804,10 @@ export function createCat(id, opts = {}) {
     S.air = damp(S.air, st.airborne ? 1 : 0, 9, dt);
     S.boost = damp(S.boost, st.boosting ? 1 : 0, 8, dt);
 
+    S.flinch = Math.max(0, S.flinch - dt * 1.9);
     const hit = !!st.hit;
     if (hit && !S.prevHit) S.flinch = 1;
     S.prevHit = hit;
-    S.flinch = Math.max(0, S.flinch - dt * 1.9);
 
     let cheerT = 0, slumpT = 0;
     if (st.finished || st.place != null) {
@@ -924,9 +931,9 @@ export function createCat(id, opts = {}) {
           grip.center[2] - sa * grip.radius * stl - tuck * 0.03);
         if (ch > 0.02) { _tv.x += arm.side * ch * 0.16; _tv.y += ch * 0.30; _tv.z -= ch * 0.10; }
         if (fl > 0.02) { _tv.y -= fl * 0.02; }
-        rig.localToWorld(_tv);
+        gripFrame().localToWorld(_tv);
         B.chest.worldToLocal(_tv);
-        solveArm(arm.sh, arm.el, 0.165, 0.150, _tv, arm.side);
+        solveArm(arm.sh, arm.el, 0.175, 0.160, _tv, arm.side);
       }
     }
   }

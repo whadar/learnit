@@ -15,7 +15,7 @@ import * as THREE from 'three';
 import { Engine } from '../src/core/engine.js';
 import { WorldData } from '../src/world/worldData.js';
 import { clamp, lerp, smoothstep, wrapPi, rng } from '../src/core/mathx.js';
-import { createVehicle, makeFallbackTrack } from '../src/physics/vehicle.js';
+import { createVehicle, makeFallbackTrack, DEFAULTS } from '../src/physics/vehicle.js';
 
 const hud = document.getElementById('hud');
 
@@ -37,7 +37,18 @@ const game = window.__game = {
 
 function applyView(name, v) {
   const s = SCENES[name];
-  if (s) { runScene(s); Object.assign(v, s.cam()); }
+  if (s) {
+    runScene(s);
+    const c = s.cam();
+    let gy = kart.collision.groundHeight(c.pos[0], c.pos[2]);
+    for (let q = 1; q <= 10; q++) {                   // sample the line of sight too
+      const f = q / 11;
+      gy = Math.max(gy, kart.collision.groundHeight(
+        lerp(c.pos[0], kart.state.pos.x, f), lerp(c.pos[2], kart.state.pos.z, f)) - f * 0.9);
+    }
+    c.pos[1] = Math.max(c.pos[1], gy + 1.25);         // never film from inside the hillside
+    Object.assign(v, c);
+  }
   engine.camera.position.set(...v.pos);
   engine.camera.up.set(0, 1, 0);
   engine.camera.lookAt(new THREE.Vector3(...v.look));
@@ -64,8 +75,8 @@ async function main() {
     const sun = new THREE.DirectionalLight(0xfff2dc, 3.3);
     sun.position.set(-420, 520, 300); sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
-    const c = sun.shadow.camera; c.left = -26; c.right = 26; c.top = 26; c.bottom = -26; c.near = 1; c.far = 1400;
-    sun.shadow.bias = -0.0009; sun.shadow.normalBias = 0.03;
+    const c = sun.shadow.camera; c.left = -34; c.right = 34; c.top = 34; c.bottom = -34; c.near = 1; c.far = 1400;
+    sun.shadow.bias = -0.0009; sun.shadow.normalBias = 0.06;
     engine.scene.add(sun, sun.target);
     engine.scene.add(new THREE.HemisphereLight(0xcfe2f5, 0x77653f, 0.95));
     engine.scene.fog = new THREE.Fog(0x9dc0dc, 90, 430);
@@ -110,32 +121,41 @@ async function main() {
 /** Local ground patch over the real heightfield, tinted by the physics surface raster:
     dry limestone, wheat stubble, olive-grove soil and grass, the way Amikam actually looks. */
 function buildGround() {
-  const seg = 240, size = 760;
+  const seg = 300, size = 760;
   const geo = new THREE.PlaneGeometry(size, size, seg, seg);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
   const col = new Float32Array(pos.count * 3);
   const c = new THREE.Color();
   const PAL = {
-    grass: 0x8a9450, crop: 0xc3b072, scrub: 0x7f8452, forest: 0x4d6440,
-    orchard: 0x86804d, soil: 0xa07c52, farmyard: 0xa89a7c, dirt: 0xb0a075,
-    gravel: 0xa9a094, sand: 0xd6c49a, water: 0x51707a, tarmac: 0x4a4a4c,
-    dirt_track: 0xb09a70, kerb: 0xb5b0a4, concrete: 0x9a978f, unpaved: 0xb09a70,
+    grass: 0xb6c46a, crop: 0xe8d494, scrub: 0xa9ad68, forest: 0x62864f,
+    orchard: 0xacA55f, soil: 0xd2a068, farmyard: 0xd8c69c, dirt: 0xdcc894,
+    gravel: 0xd0c5b4, sand: 0xf0dcae, water: 0x6a94a2, tarmac: 0x6d6d76,
+    dirt_track: 0xdcbe86, kerb: 0xd6d0c0, concrete: 0xc2beb2, unpaved: 0xdcbe86,
   };
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
-    pos.setY(i, world.heightAt(x, z));
+    // Use the *physics* ground, not the raw heightfield: the track ribbon is a smoothed drape
+    // and the raw terrain pokes through it near the road, burying the kart in the render.
+    pos.setY(i, kart.collision.groundHeight(x, z));
     const sn = kart.collision.surfaceAt(x, z);
     c.setHex(PAL[sn] ?? 0xb0a075);
     // a little deterministic mottling so big fields do not read as flat paint
-    const n = (Math.sin(x * 0.21) * Math.cos(z * 0.17) + Math.sin(x * 0.06 + z * 0.05)) * 0.045;
-    col[i * 3] = c.r * (1 + n); col[i * 3 + 1] = c.g * (1 + n * 0.8); col[i * 3 + 2] = c.b * (1 + n * 0.6);
+    const n = (Math.sin(x * 0.21) * Math.cos(z * 0.17) + Math.sin(x * 0.06 + z * 0.05)) * 0.05
+            + (Math.sin(x * 1.13 + z * 0.71) * Math.sin(z * 1.31 - x * 0.53)) * 0.055
+            + (Math.sin(x * 3.7) * Math.sin(z * 4.1)) * 0.028;
+    col[i * 3] = c.r * (1 + n); col[i * 3 + 1] = c.g * (1 + n * 0.72); col[i * 3 + 2] = c.b * (1 + n * 0.5);
   }
   geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   geo.computeVertexNormals();
   const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.97 }));
   m.receiveShadow = true;
   engine.scene.add(m);
+  const skirt = new THREE.Mesh(new THREE.RingGeometry(size * 0.46, 3000, 64, 1),
+    new THREE.MeshBasicMaterial({ color: 0x9dc0dc, fog: false }));
+  skirt.rotation.x = -Math.PI / 2;
+  skirt.position.y = (world.minH ?? world.heightAt(0, 0)) - 30;   // below every hill, never in front of the kart
+  engine.scene.add(skirt);
 }
 
 /* ---------------------------------------------------------------- ribbon ---- */
@@ -144,8 +164,8 @@ function buildRibbon() {
   const col = kart.collision;
   const L = track.length, along = Math.max(160, Math.round(L / 1.1)), across = 15;
   const pos = [], nrm = [], uv = [], idx = [], colr = [];
-  const c0 = new THREE.Color(0x53535a), c1 = new THREE.Color(0x494950);
-  const ck = new THREE.Color(0xd8412f), cw = new THREE.Color(0xe9e5dd);
+  const c0 = new THREE.Color(0x76767f), c1 = new THREE.Color(0x6a6a73);
+  const ck = new THREE.Color(0xef5b45), cw = new THREE.Color(0xf6f2ea);
   const tmp = new THREE.Color();
   for (let i = 0; i <= along; i++) {
     const s = i / along * L, sm = track.sample(s);
@@ -163,7 +183,12 @@ function buildRibbon() {
       const a = Math.abs(u) * (hw + 1.5);
       if (a > hw) tmp.copy((i & 1) ? ck : cw);                     // kerb stripes
       else if (a > hw - 0.35) tmp.copy(cw);                        // white edge line
-      else { const n = 0.94 + 0.12 * (((i * 13 + j * 7) % 11) / 11); tmp.copy(((i * 7 + j) % 4) ? c0 : c1).multiplyScalar(n); }
+      else {
+        const grain = 0.955 + 0.09 * (Math.sin(i * 2.7 + j * 5.3) * 0.5 + 0.5) + 0.03 * (Math.sin(i * 11.3 - j * 7.1));
+        const line = 1 - 0.10 * Math.exp(-((Math.abs(u) - 0.30) ** 2) / 0.012)      // racing-line polish
+                       - 0.06 * Math.exp(-((Math.abs(u)) ** 2) / 0.02);
+        tmp.copy(c0).lerp(c1, (j % 3) * 0.10).multiplyScalar(grain * line);
+      }
       colr.push(tmp.r, tmp.g, tmp.b);
     }
   }
@@ -248,9 +273,14 @@ function buildKart() {
     engine.scene.add(g); wheelMeshes.push({ g, spoke });
   }
 
-  boostFlame = new THREE.Mesh(new THREE.ConeGeometry(0.28, 1.1, 10, 1, true),
-    new THREE.MeshBasicMaterial({ color: 0x6fd8ff, transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
-  boostFlame.rotation.x = Math.PI / 2; boostFlame.visible = false;
+  // cone geometry baked to point along -Z (out of the back of the kart)
+  const flameGeo = new THREE.ConeGeometry(0.26, 1.15, 12, 1, true);
+  flameGeo.translate(0, -0.58, 0);
+  flameGeo.rotateX(Math.PI / 2);
+  boostFlame = new THREE.Mesh(flameGeo, new THREE.MeshBasicMaterial({
+    color: 0x6fd8ff, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false,
+    blending: THREE.AdditiveBlending }));
+  boostFlame.visible = false;
   engine.scene.add(boostFlame);
 }
 
@@ -276,13 +306,14 @@ function buildFX() {
     });
     const p = new THREE.Points(g, m); p.frustumCulled = false; engine.scene.add(p); return p;
   };
-  puffPoints = mk(PUFF_MAX, softTex('rgba(255,255,255,.95)'), 1.5, 0.62, THREE.NormalBlending);
-  sparkPoints = mk(SPARK_MAX, softTex('rgba(255,255,255,1)'), 0.55, 0.95, THREE.AdditiveBlending);
+  puffPoints = mk(PUFF_MAX, softTex('rgba(255,255,255,.95)'), 2.1, 0.62, THREE.NormalBlending);
+  sparkPoints = mk(SPARK_MAX, softTex('rgba(255,255,255,1)'), 0.20, 0.9, THREE.AdditiveBlending);
 }
 
 const TIER_COLOR = [null, new THREE.Color(0x49b7ff), new THREE.Color(0xff9d24), new THREE.Color(0xff5adf)];
 
 /* ---------------------------------------------------------------- driver ---- */
+const DRIFT_BIAS = DEFAULTS.driftInnerBias, DRIFT_RANGE = DEFAULTS.driftSteerRange;
 function autoDrive(k, dt, over) {
   const st = k.state;
   const nr = track.nearest(st.pos);
@@ -291,7 +322,7 @@ function autoDrive(k, dt, over) {
   const a = track.sample(nr.s + look);
   let err = wrapPi(Math.atan2(a.pos.x - st.pos.x, a.pos.z - st.pos.z) - st.yaw);
   err -= clamp(nr.lateral / 14, -0.4, 0.4) * 0.45;
-  let steer = clamp(err * 2.4, -1, 1);
+  let steer = clamp(err * 1.9 - st.angVel.y * 0.30, -1, 1);
   let kmax = 0;
   for (let d = 8; d < 60; d += 8) {
     const p0 = track.sample(nr.s + d - 6), p1 = track.sample(nr.s + d), p2 = track.sample(nr.s + d + 6);
@@ -303,27 +334,50 @@ function autoDrive(k, dt, over) {
   let throttle = 1, brake = 0;
   if (spd > vmax * 1.06) { throttle = 0; brake = clamp((spd - vmax) / 5, 0, 1); }
   else if (spd > vmax * 0.98) throttle = 0.35;
-  const tight = Math.abs(steer) > 0.42 && spd > 11;
-  autoDrive.hold = tight ? (autoDrive.hold || 0) + dt : 0;
-  let drift = (autoDrive.hold > 0.2 || (k.drifting && Math.abs(steer) > 0.16)) ? 1 : 0;
+  // While drifting the kart applies its own lock, so invert that mapping: feed the amount of
+  // counter-steer that lands on the lock this driver actually wants. Without this any AI
+  // (or scripted scene) over-rotates the moment a drift starts and runs off the road.
+  if (k.drifting) {
+    const dd = k.state.drift.dir || 1;
+    const want = clamp(steer * dd, -1, 1);
+    steer = dd * clamp((want - DRIFT_BIAS) / DRIFT_RANGE, -1, 1);
+  }
+
+  // Only commit to a drift once the steering has held the *same* direction for a while:
+  // hopping into a drift on a transient correction points the slide out of the corner.
+  const sgn = Math.sign(steer) || 0;
+  const tight = Math.abs(steer) > 0.20 && spd > 12 && Math.abs(nr.lateral) < 4.5;
+  if (tight && (autoDrive.dir === sgn || !autoDrive.hold)) { autoDrive.hold = (autoDrive.hold || 0) + dt; autoDrive.dir = sgn; }
+  else { autoDrive.hold = 0; autoDrive.dir = 0; }
+  let drift = (autoDrive.hold > 0.22 || (k.drifting && Math.abs(err) > 0.04)) ? 1 : 0;
+  if (k.drifting && (!k.state.onTrack || Math.abs(nr.lateral) > 5.0 || k.state.drift.dir !== (autoDrive.dir || k.state.drift.dir))) drift = 0;
   const inp = { throttle, brake, steer, drift, item: 0, look: 0 };
   return over ? over(inp, k) : inp;
 }
 
 /* --------------------------------------------------------------- scenes ---- */
 const trail = [];                          // recorded dust/smoke puffs
+let puffAcc = 0;
 function record(k, dt) {
   const st = k.state;
-  const strength = Math.max(st.dust, st.skid);
-  if (strength > 0.14) {
-    const back = k.getTransform().forward;
-    trail.push({
-      x: st.pos.x - back.x * 0.9 + (trail.length % 3 - 1) * 0.22,
-      y: st.pos.y - 0.28,
-      z: st.pos.z - back.z * 0.9,
-      s: strength, dust: st.dust, t: 0,
-    });
-    if (trail.length > PUFF_MAX) trail.shift();
+  puffAcc += dt;
+  const rate = 1 / 55;
+  while (puffAcc > rate) {
+    puffAcc -= rate;
+    const tf = k.getTransform();
+    for (const w of k.wheels) {
+      const strength = Math.max(w.dust, w.skid);
+      if (strength < 0.10 || !w.contact) continue;
+      const j = trail.length;
+      trail.push({
+        x: w.pos.x - tf.forward.x * 0.35 + tf.right.x * ((j % 3) - 1) * 0.12,
+        y: w.pos.y - w.radius * 0.75,
+        z: w.pos.z - tf.forward.z * 0.35 + tf.right.z * ((j % 3) - 1) * 0.12,
+        s: strength, dust: w.dust, surf: w.surface, t: 0,
+        drift: (j % 5) * 0.06,
+      });
+      if (trail.length > PUFF_MAX) trail.shift();
+    }
   }
   for (const p of trail) p.t += dt;
 }
@@ -331,23 +385,38 @@ function record(k, dt) {
 const DIR = () => SPOTS.dir || 1;    // the tightest corner's actual turn direction
 
 /* Interesting places on the course, found once from the geometry itself (after boot). */
-let SPOTS = { corner: 0, crest: 0, bump: 0 };
+let SPOTS = { corner: 0, crest: 0, bump: 0, dir: 1 };
 function findSpots() {
-  const L = track.length;
-  let corner = 0, ck = 0, crest = 0, cc = -1e9, bump = 0, bk = 0, cdir = 1;
-  for (let s = 0; s < L; s += 4) {
-    const a = track.sample(s - 8), b = track.sample(s), c = track.sample(s + 8);
+  const L = track.length, STEP = 4, WIN = 90;
+  const n = Math.floor(L / STEP);
+  const turn = new Float64Array(n);        // signed heading change per step
+  const ys = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = i * STEP;
+    const a = track.sample(s - STEP), b = track.sample(s), c = track.sample(s + STEP);
     const h0 = Math.atan2(b.pos.x - a.pos.x, b.pos.z - a.pos.z);
     const h1 = Math.atan2(c.pos.x - b.pos.x, c.pos.z - b.pos.z);
-    const k = Math.abs(wrapPi(h1 - h0));
-    if (k > ck) { ck = k; corner = s; cdir = Math.sign(wrapPi(h1 - h0)) || 1; }
-    const d = track.sample(s - 26), e = track.sample(s + 26);
-    const conv = 2 * b.pos.y - d.pos.y - e.pos.y;              // positive = crest
-    if (conv > cc) { cc = conv; crest = s; }
-    const rough = Math.abs(kart.collision.groundHeight(b.pos.x, b.pos.z) - b.pos.y);
-    if (rough > bk) { bk = rough; bump = s; }
+    turn[i] = wrapPi(h1 - h0);
+    ys[i] = b.pos.y;
   }
-  SPOTS = { corner, crest, bump, cornerK: ck, crestConv: cc, dir: cdir, radius: 8 / (ck || 1e-6) };
+  // the stretch of WIN metres with the largest *net* turn: a long sweeper, not a kink
+  const w = Math.round(WIN / STEP);
+  let corner = 0, best = 0;
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < w; j++) sum += turn[(i + j) % n];
+    if (Math.abs(sum) > Math.abs(best)) { best = sum; corner = i * STEP; }
+  }
+  // biggest crest, and the roughest patch (ribbon furthest from the raw terrain)
+  let crest = 0, cc = -1e9, bump = 0, bk = 0;
+  for (let i = 0; i < n; i++) {
+    const conv = 2 * ys[i] - ys[(i - 7 + n) % n] - ys[(i + 7) % n];
+    if (conv > cc) { cc = conv; crest = i * STEP; }
+    const b = track.sample(i * STEP);
+    const rough = Math.abs(kart.collision.groundHeight(b.pos.x, b.pos.z) - b.pos.y);
+    if (rough > bk) { bk = rough; bump = i * STEP; }
+  }
+  SPOTS = { corner, crest, bump, dir: Math.sign(best) || 1, netTurn: best, crestConv: cc };
   console.log('[spots]', JSON.stringify(SPOTS));
 }
 
@@ -381,11 +450,21 @@ function runScene(scene) {
   scene.t = t;
 }
 
-const camOf = (dist, height, side, aheadY = 1.05, ahead = 3.0, fov = 58) => () => {
+/**
+ * Chase framing. The camera sits behind a blend of the kart's heading and its direction of
+ * travel — exactly why a Mario Kart drift *looks* like a drift: the kart yaws inside the
+ * frame while the camera keeps following the line the kart is actually taking.
+ */
+const camOf = (dist, height, side, aheadY = 1.05, ahead = 3.0, fov = 58, velMix = 0.45) => () => {
   const tf = kart.getTransform(), p = tf.position, f = tf.forward, r = tf.right;
+  const v = kart.state.vel, vl = Math.hypot(v.x, v.z);
+  let bx = f.x, bz = f.z;
+  if (vl > 4) { bx = lerp(f.x, v.x / vl, velMix); bz = lerp(f.z, v.z / vl, velMix); }
+  const bl = Math.hypot(bx, bz) || 1; bx /= bl; bz /= bl;
+  const sx = bz, sz = -bx;
   return {
-    pos: [p.x - f.x * dist + r.x * side, p.y + height, p.z - f.z * dist + r.z * side],
-    look: [p.x + f.x * ahead, p.y + aheadY, p.z + f.z * ahead],
+    pos: [p.x - bx * dist + sx * side, p.y + height, p.z - bz * dist + sz * side],
+    look: [p.x + bx * ahead, p.y + aheadY, p.z + bz * ahead],
     fov,
   };
 };
@@ -393,22 +472,22 @@ const camOf = (dist, height, side, aheadY = 1.05, ahead = 3.0, fov = 58) => () =
 const SCENES = {
   // behind the kart, super mini-turbo charged into the tightest corner on the course
   chase: {
-    start: () => SPOTS.corner - 110, speed: 23, minT: 3.2, maxT: 9,
-    input: (i, k, t) => { if (t > 1.5) { i.drift = 1; i.throttle = 1; i.brake = 0; i.steer = clamp(i.steer * 1.5 + 0.55 * DIR(), -1, 1); } return i; },
-    until: k => k.driftTier >= 2,
-    cam: camOf(5.3, 1.85, 0.35, 0.95, 6.0, 68),
+    start: () => SPOTS.corner - 30, speed: 20, minT: 0.8, maxT: 22,
+    input: (i, k, t) => { i.drift = (k.drifting || Math.abs(i.steer) > 0.15) ? 1 : 0; i.throttle = Math.max(i.throttle, 0.85); i.brake = 0; return i; },
+    until: k => k.driftTier >= 1 && k.state.drift.charge > 0.9 && k.state.onTrack && k.grounded,
+    cam: camOf(6.2, 2.25, 0.3, 1.25, 8.0, 66),
   },
   // low three-quarter, deep in an ultra charge: reads the slip angle and the sparks
   drift: {
-    start: () => SPOTS.corner - 130, speed: 24, minT: 3.6, maxT: 11,
-    input: (i, k, t) => { if (t > 1.2) { i.drift = 1; i.throttle = 1; i.brake = 0; i.steer = clamp(i.steer * 1.5 + 0.70 * DIR()(), -1, 1); } return i; },
-    until: k => k.driftTier >= 3,
+    start: () => SPOTS.corner - 40, speed: 20, minT: 1.0, maxT: 26,
+    input: (i, k, t) => { i.drift = (k.drifting || Math.abs(i.steer) > 0.15) ? 1 : 0; i.throttle = Math.max(i.throttle, 0.9); i.brake = 0; return i; },
+    until: k => k.driftTier >= 2 && k.state.onTrack && k.grounded,
     cam: () => {
       const tf = kart.getTransform(), p = tf.position, f = tf.forward, r = tf.right;
       const d = kart.state.drift.dir || 1;
       return {
-        pos: [p.x + f.x * 5.2 + r.x * 4.6 * d, p.y + 1.25, p.z + f.z * 5.2 + r.z * 4.6 * d],
-        look: [p.x - f.x * 0.4, p.y + 0.30, p.z - f.z * 0.4], fov: 46,
+        pos: [p.x + f.x * 6.4 + r.x * 5.4 * d, p.y + 2.15, p.z + f.z * 6.4 + r.z * 5.4 * d],
+        look: [p.x - f.x * 0.3, p.y + 0.45, p.z - f.z * 0.3], fov: 46,
       };
     },
   },
@@ -419,7 +498,7 @@ const SCENES = {
     until: (k, t) => k.grounded && (Math.abs(k.state.pitch) > 0.05 || Math.abs(k.state.roll) > 0.07),
     cam: () => {
       const tf = kart.getTransform(), p = tf.position, r = tf.right;
-      return { pos: [p.x + r.x * 6.6 + 0.2, p.y + 0.95, p.z + r.z * 6.6], look: [p.x, p.y + 0.10, p.z], fov: 38 };
+      return { pos: [p.x + r.x * 7.4, p.y + 1.75, p.z + r.z * 7.4], look: [p.x, p.y + 0.18, p.z], fov: 38 };
     },
   },
   // launched off the biggest crest with a trick armed: wheels hang on full droop
@@ -432,14 +511,18 @@ const SCENES = {
       return i;
     },
     until: (k) => !k.grounded && k.state.airTime > 0.26,
-    cam: camOf(6.4, 1.25, 2.8, 1.5, 4.5, 62),
+    cam: camOf(6.8, 1.55, 2.9, 1.7, 5.0, 62, 0.2),
   },
   // dropped off the ribbon into the field: dust, and the speed it costs
   offroad: {
-    start: () => SPOTS.corner + 200, speed: 25, minT: 1.4, maxT: 7,
-    input: (i, k, t) => { if (t > 0.9) { i.steer = clamp(i.steer + 0.70 * DIR(), -1, 1); i.throttle = 1; i.brake = 0; i.drift = 0; } return i; },
-    until: (k, t) => !k.state.onTrack && k.state.dust > 0.30 && t > 2.0,
-    cam: camOf(5.6, 1.9, -1.7 * DIR(), 0.95, 5.0, 66),
+    start: () => SPOTS.corner + 260, speed: 23, minT: 1.4, maxT: 7,
+    input: (i, k, t) => {
+      i.throttle = 1; i.brake = 0; i.drift = 0;
+      if (t > 0.9) { const off = Math.abs(k.state.lateral); i.steer = off < 10 ? 0.34 : -0.05; }
+      return i;
+    },
+    until: (k, t) => !k.state.onTrack && Math.abs(k.state.lateral) > 10 && k.state.dust > 0.2 && t > 2.4,
+    cam: camOf(5.4, 1.95, 3.2, 1.0, 6.0, 68),
   },
 };
 
@@ -466,12 +549,11 @@ function syncVisuals() {
   boostFlame.visible = b.time > 0;
   if (boostFlame.visible) {
     const f = tf.forward, u = tf.up;
-    boostFlame.position.set(tf.position.x - f.x * 1.05 - u.x * 0.12,
-      tf.position.y - f.y * 1.05 - u.y * 0.12 + 0.05,
-      tf.position.z - f.z * 1.05 - u.z * 0.12);
-    boostFlame.quaternion.copy(_q.set(tf.quaternion.x, tf.quaternion.y, tf.quaternion.z, tf.quaternion.w));
-    boostFlame.rotateX(-Math.PI / 2);
-    boostFlame.scale.setScalar(0.7 + b.power * 1.5);
+    boostFlame.position.set(tf.position.x - f.x * 0.95 - u.x * 0.02,
+      tf.position.y - f.y * 0.95 - u.y * 0.02,
+      tf.position.z - f.z * 0.95 - u.z * 0.02);
+    boostFlame.quaternion.set(tf.quaternion.x, tf.quaternion.y, tf.quaternion.z, tf.quaternion.w);
+    boostFlame.scale.set(0.8 + b.power, 0.8 + b.power, 0.9 + b.power * 2.0);
     boostFlame.material.color.setHex(b.power > 0.3 ? 0xff77e0 : 0x6fd8ff);
   }
 
@@ -479,18 +561,20 @@ function syncVisuals() {
   const pp = puffPoints.geometry.attributes.position.array;
   const pc = puffPoints.geometry.attributes.color.array;
   const n = Math.min(trail.length, PUFF_MAX);
-  const surf = kart.surface;
-  const dustCol = new THREE.Color(surf === 'grass' || surf === 'crop' ? 0x9aa86a
-    : surf === 'sand' ? 0xd9c396 : surf === 'orchard' || surf === 'soil' ? 0xb08c63 : 0xc9c2b4);
-  const smokeCol = new THREE.Color(0xe8e8e8);
+  const DUST = {
+    grass: 0xb9c47e, crop: 0xd8c489, scrub: 0xbcbc86, forest: 0x9aae86,
+    orchard: 0xcfae7d, soil: 0xd2a878, farmyard: 0xd9cba6, sand: 0xeedaaf,
+    gravel: 0xd6cec2, dirt: 0xd8c79a, dirt_track: 0xdcc79a,
+  };
+  const cc = new THREE.Color(), smokeCol = new THREE.Color(0xf0f0f0);
   for (let i = 0; i < PUFF_MAX; i++) {
     const k = trail.length - n + i;
     if (i >= n || k < 0) { pp[i * 3] = 0; pp[i * 3 + 1] = -9999; pp[i * 3 + 2] = 0; continue; }
-    const p = trail[k], age = clamp(p.t / 1.5, 0, 1);
-    pp[i * 3] = p.x; pp[i * 3 + 1] = p.y + age * 0.9; pp[i * 3 + 2] = p.z;
-    const c = p.dust > 0.25 ? dustCol : smokeCol;
-    const f = (1 - age) * clamp(p.s, 0, 1);
-    pc[i * 3] = c.r * f + 0.02; pc[i * 3 + 1] = c.g * f + 0.02; pc[i * 3 + 2] = c.b * f + 0.02;
+    const p = trail[k], age = clamp(p.t / 1.35, 0, 1);
+    pp[i * 3] = p.x; pp[i * 3 + 1] = p.y + age * age * 1.5 + p.drift; pp[i * 3 + 2] = p.z;
+    if (p.dust > 0.22) cc.setHex(DUST[p.surf] ?? 0xd8c79a); else cc.copy(smokeCol);
+    const f = (1 - age) * (1 - age) * clamp(p.s * 1.4, 0, 1);
+    pc[i * 3] = cc.r * f; pc[i * 3 + 1] = cc.g * f; pc[i * 3 + 2] = cc.b * f;
   }
   puffPoints.geometry.attributes.position.needsUpdate = true;
   puffPoints.geometry.attributes.color.needsUpdate = true;
@@ -504,11 +588,11 @@ function syncVisuals() {
   for (let i = 0; i < SPARK_MAX; i++) {
     if (!tier || !kart.drifting) { sp[i * 3 + 1] = -9999; continue; }
     const w = ws[2 + (i & 1)];
-    const spread = 0.35 + (i / SPARK_MAX) * 1.5;
+    const spread = 0.18 + (i / SPARK_MAX) * 0.9;
     const f = tf.forward;
-    sp[i * 3] = w.pos.x - f.x * spread + (r() - 0.5) * 0.5;
-    sp[i * 3 + 1] = w.pos.y - 0.22 + r() * 0.42 * (i / SPARK_MAX);
-    sp[i * 3 + 2] = w.pos.z - f.z * spread + (r() - 0.5) * 0.5;
+    sp[i * 3] = w.pos.x - f.x * spread + (r() - 0.5) * 0.22;
+    sp[i * 3 + 1] = w.pos.y - 0.26 + r() * 0.30 * (i / SPARK_MAX);
+    sp[i * 3 + 2] = w.pos.z - f.z * spread + (r() - 0.5) * 0.22;
     const fade = 1 - i / SPARK_MAX;
     sc[i * 3] = col.r * fade; sc[i * 3 + 1] = col.g * fade; sc[i * 3 + 2] = col.b * fade;
   }

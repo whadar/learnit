@@ -103,6 +103,9 @@ function installFogChunks() {
     // Haze colour follows the sky: warm and bright looking into the sun, cooler up high.
     float apUp   = smoothstep( -0.05, 0.42, apDir.y );
     vec3  apCol  = mix( apHorizon, apZenith, apUp );
+    // Airlight looking down at the ground is dimmer than the horizon sky; without this the
+    // hills bleach into the skyline instead of receding behind it.
+    apCol *= mix( 0.74, 1.0, smoothstep( -0.30, 0.02, apDir.y ) );
     float apCos  = max( dot( apDir, apSunDir ), 0.0 );
     apCol = mix( apCol, apSunTint, pow( apCos, 5.0 ) * apSunAmount );
 
@@ -154,7 +157,7 @@ export function createLighting(engine, world, sky, opts = {}) {
     apFalloff:   { value: opts.hazeFalloff ?? 0.0075 },
     apBase:      { value: groundY },
     apSunAmount: { value: 0.55 },
-    apMax:       { value: opts.hazeMax ?? 0.94 },
+    apMax:       { value: opts.hazeMax ?? 0.88 },
   };
   const csmUniforms = {
     CSM_cascades: { value: [] },
@@ -238,7 +241,7 @@ export function createLighting(engine, world, sky, opts = {}) {
       scene.environment = envMap;
       // The dome already renders in exposed units (sky.uExposure), so the IBL lands at a
       // sane fraction of the sun without any extra normalisation.
-      scene.environmentIntensity = opts.envIntensity ?? 1.0;
+      scene.environmentIntensity = opts.envIntensity ?? 0.70;
       return envMap;
     } catch (e) {
       console.warn('[lighting] environment map generation failed:', e);
@@ -300,9 +303,18 @@ export function createLighting(engine, world, sky, opts = {}) {
     adopted.add(mat);
   }
 
+  // Landscape self-shadowing is most of what sells a low sun, but terrain systems often
+  // ship with castShadow off (it costs nothing when the sun is overhead). Opt them in here,
+  // where the lighting decision belongs; `terrainShadows: false` restores their choice.
+  const terrainShadows = opts.terrainShadows !== false;
+  const TERRAIN_RE = /terrain|ground|hill|apron|plateau/i;
+
   let dirty = false;
   function scan(root = scene) {
     root.traverse(o => {
+      if (terrainShadows && o.isMesh && o.receiveShadow && !o.castShadow && TERRAIN_RE.test(o.name)) {
+        o.castShadow = true; dirty = true;
+      }
       const m = o.material; if (!m) return;
       if (Array.isArray(m)) { for (const mm of m) { const b = adopted.has(mm); setupMaterial(mm); if (!b) dirty = true; } }
       else { const b = adopted.has(m); setupMaterial(m); if (!b) dirty = true; }

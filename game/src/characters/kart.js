@@ -17,6 +17,8 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const lerp = (a, b, t) => a + (b - a) * t;
 const damp = (a, b, l, dt) => lerp(a, b, 1 - Math.exp(-l * dt));
 const TAU = Math.PI * 2;
+/** How far the steering wheel (and therefore the driver's paws) sweeps at full lock. */
+export const WHEEL_TURN = 0.78;
 const DOM = typeof document !== 'undefined' && typeof document.createElement === 'function';
 
 /* ------------------------------------------------------------ environment */
@@ -303,10 +305,10 @@ function mergeSimple(list) {
 
 /* -------------------------------------------------------------- kart specs */
 export const KART_SPECS = {
-  standard: { name: 'Moshav Standard', wf: 0.235, wr: 0.285, ww: [0.20, 0.26], track: [1.18, 1.24], wb: [0.66, -0.62], seat: [0, 0.345, -0.10], hub: [0, 0.660, 0.235], tilt: 0.60 },
-  sport:    { name: 'Carmel Sport',    wf: 0.225, wr: 0.300, ww: [0.20, 0.30], track: [1.22, 1.30], wb: [0.70, -0.66], seat: [0, 0.315, -0.14], hub: [0, 0.630, 0.215], tilt: 0.72 },
-  buggy:    { name: 'Wadi Buggy',      wf: 0.290, wr: 0.345, ww: [0.24, 0.32], track: [1.24, 1.32], wb: [0.68, -0.64], seat: [0, 0.430, -0.10], hub: [0, 0.755, 0.225], tilt: 0.52 },
-  pipe:     { name: 'Pipe Frame',      wf: 0.230, wr: 0.290, ww: [0.19, 0.28], track: [1.16, 1.26], wb: [0.68, -0.60], seat: [0, 0.330, -0.08], hub: [0, 0.645, 0.245], tilt: 0.64 },
+  standard: { name: 'Moshav Standard', wf: 0.235, wr: 0.285, ww: [0.20, 0.26], track: [1.18, 1.24], wb: [0.66, -0.62], seat: [0, 0.345, -0.10], hub: [0, 0.678, 0.175], tilt: 0.60 },
+  sport:    { name: 'Carmel Sport',    wf: 0.225, wr: 0.300, ww: [0.20, 0.30], track: [1.22, 1.30], wb: [0.70, -0.66], seat: [0, 0.315, -0.14], hub: [0, 0.648, 0.150], tilt: 0.72 },
+  buggy:    { name: 'Wadi Buggy',      wf: 0.290, wr: 0.345, ww: [0.24, 0.32], track: [1.24, 1.32], wb: [0.68, -0.64], seat: [0, 0.430, -0.10], hub: [0, 0.773, 0.168], tilt: 0.52 },
+  pipe:     { name: 'Pipe Frame',      wf: 0.230, wr: 0.290, ww: [0.19, 0.28], track: [1.16, 1.26], wb: [0.68, -0.60], seat: [0, 0.330, -0.08], hub: [0, 0.663, 0.188], tilt: 0.64 },
 };
 
 function buildStandard(G, M, add, seg) {
@@ -342,15 +344,15 @@ function buildSport(G, M, add, seg) {
   add(G, xf(box(0.88, 0.30, 1.30, 0.16), { pos: [0, 0.255, -0.16] }), M.paint);
   // sculpted nose: three tapering blocks
   add(G, xf(box(0.80, 0.28, 0.58, 0.20), { pos: [0, 0.290, 0.44] }), M.paint);
-  add(G, xf(box(0.66, 0.24, 0.50, 0.20), { pos: [0, 0.265, 0.90] }), M.paint);
-  add(G, xf(box(0.44, 0.18, 0.30, 0.14), { pos: [0, 0.245, 1.20] }), M.paint);
-  add(G, xf(box(1.08, 0.05, 0.30, 0.025), { pos: [0, 0.135, 1.06], rot: [0.05, 0, 0] }), M.dark);
+  add(G, xf(box(0.64, 0.24, 0.52, 0.20), { pos: [0, 0.268, 0.90] }), M.paint);
+  add(G, xf(box(0.40, 0.17, 0.28, 0.13), { pos: [0, 0.250, 1.20] }), M.trim);
+  add(G, xf(box(0.96, 0.045, 0.26, 0.022), { pos: [0, 0.128, 1.06], rot: [0.05, 0, 0] }), M.dark);
   add(G, xf(box(0.54, 0.10, 0.36, 0.05), { pos: [0, 0.430, 0.48], rot: [-0.16, 0, 0] }), M.trim);
   for (const s of [-1, 1]) {
     add(G, xf(box(0.28, 0.30, 1.12, 0.13), { pos: [s * 0.500, 0.270, -0.10] }), M.paint);
     add(G, xf(box(0.30, 0.07, 1.16, 0.035), { pos: [s * 0.500, 0.440, -0.10] }), M.trim);
-    add(G, xf(new THREE.TorusGeometry(0.30, 0.075, 6, 14, Math.PI * 0.72), { pos: [s * 0.60, 0.225, 0.70], rot: [0, Math.PI / 2, Math.PI * 0.14], scale: [1, 1, 1.9] }), M.paint);
-    add(G, xf(new THREE.TorusGeometry(0.345, 0.085, 6, 14, Math.PI * 0.72), { pos: [s * 0.63, 0.255, -0.66], rot: [0, Math.PI / 2, Math.PI * 0.14], scale: [1, 1, 2.0] }), M.paint);
+    add(G, xf(box(0.30, 0.16, 0.52, 0.07), { pos: [s * 0.585, 0.415, 0.70] }), M.paint);
+    add(G, xf(box(0.34, 0.18, 0.60, 0.08), { pos: [s * 0.615, 0.460, -0.66] }), M.paint);
   }
   add(G, xf(box(0.66, 0.36, 0.46, 0.09), { pos: [0, 0.330, -0.86] }), M.dark);
   add(G, xf(new THREE.CylinderGeometry(0.11, 0.13, 0.18, 12), { pos: [0, 0.560, -0.84] }), M.chrome);
@@ -442,7 +444,25 @@ function headlights(G, M, add, z, y, sx) {
     add(G, xf(new THREE.SphereGeometry(0.066, 12, 8, 0, TAU, 0, 1.1), { pos: [s * sx, y, z + 0.005], rot: [Math.PI / 2, 0, 0], scale: [1, 0.7, 1] }), M.lamp, false);
   }
 }
-function mesh(g, m) { const o = new THREE.Mesh(g, m); o.castShadow = true; return o; }
+function mesh(g, m) { const o = new THREE.Mesh(g, m); o.castShadow = true; o.userData.merge = true; return o; }
+/** Collapse pre-baked static children into one mesh per material — keeps draw calls down. */
+function mergeByMaterial(parent) {
+  const buckets = new Map();
+  for (const c of parent.children.slice()) {
+    if (!c.isMesh || !c.userData.merge) continue;
+    if (c.position.lengthSq() > 0 || c.rotation.x || c.rotation.y || c.rotation.z) continue;
+    const b = buckets.get(c.material) || [];
+    b.push(c); buckets.set(c.material, b);
+  }
+  for (const [mat, list] of buckets) {
+    if (list.length < 2) continue;
+    const geo = mergeSimple(list.map(m => m.geometry));
+    for (const m of list) { parent.remove(m); m.geometry.dispose(); }
+    const merged = new THREE.Mesh(geo, mat);
+    merged.castShadow = list.some(m => m.castShadow);
+    parent.add(merged);
+  }
+}
 
 /* ------------------------------------------------------------- createKart */
 export function createKart(id, opts = {}) {
@@ -477,6 +497,7 @@ export function createKart(id, opts = {}) {
   const add = (parent, geo, mat, cast = shadows) => {
     const m = new THREE.Mesh(geo, mat);
     m.castShadow = cast; m.receiveShadow = false;
+    m.userData.merge = true;                 // geometry is already baked in body space
     parent.add(m); return m;
   };
   const metrics = (K === 'sport' ? buildSport : K === 'buggy' ? buildBuggy : K === 'pipe' ? buildPipe : buildStandard)(chassis, M, add, seg);
@@ -497,6 +518,8 @@ export function createKart(id, opts = {}) {
     pl.rotation.y = Math.PI;
     chassis.add(pl);
   }
+
+  mergeByMaterial(chassis);                  // one draw call per material for the static body
 
   /* steering column + wheel */
   const hub = new THREE.Group();
@@ -569,6 +592,7 @@ export function createKart(id, opts = {}) {
       w.spin.rotation.x = S.spin * (0.28 / w.radius);
     }
     steerPivot.rotation.y = -S.steer * 0.44 - S.drift * 0.10;
+    swheel.rotation.z = -S.steer * WHEEL_TURN;
 
     const rollAmt = clamp(S.steer * (0.35 + Math.min(1, Math.abs(S.speed) / 18) * 0.65), -1, 1);
     const pitch = -accel * 0.055 + S.air * 0.05;
@@ -597,7 +621,8 @@ export function createKart(id, opts = {}) {
     hub: { center: spec.hub.slice(), radius: 0.132, tilt: spec.tilt },
     /** Grip config in the driver's local space (cat root sits at `seat`). */
     gripForDriver() {
-      return { center: [spec.hub[0] - spec.seat[0], spec.hub[1] - spec.seat[1], spec.hub[2] - spec.seat[2]], radius: 0.132, tilt: spec.tilt, maxTurn: 1.0 };
+      // expressed in the CHASSIS frame: the paws stay bolted to the rim while the driver leans
+      return { center: spec.hub.slice(), radius: 0.132, tilt: spec.tilt, maxTurn: WHEEL_TURN };
     },
     update,
     dispose() {

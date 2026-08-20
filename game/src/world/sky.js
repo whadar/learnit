@@ -261,7 +261,7 @@ void main() {
   vec3 sky = Lin * 0.04 + vec3( 0.0, 0.0006, 0.0016 );
 
   // --- dry Mediterranean horizon haze: whiten and desaturate the bottom of the dome ------
-  float hz = 1.0 - smoothstep( -0.015, 0.185, direction.y );
+  float hz = 1.0 - smoothstep( -0.012, 0.135, direction.y );
   vec3 hazeCol = mix( sky, uHazeTint * ( 0.35 + 0.65 * dot( sky, vec3( 0.33 ) ) ), 0.75 );
   hazeCol = mix( hazeCol, uHazeTint * 1.25, pow( max( cosTheta, 0.0 ), 4.0 ) * 0.45 );
   sky = mix( sky, hazeCol, hz * uHorizonHaze );
@@ -316,8 +316,8 @@ void main() {
   float disc = smoothstep( sunR, sunR * 0.82, ang ) * limb;
   vec3 sunCol = vSunE * Fex;
   float glow = pow( max( cosTheta, 0.0 ), 1600.0 ) * 6.0
-             + pow( max( cosTheta, 0.0 ), 110.0 ) * 0.30
-             + pow( max( cosTheta, 0.0 ), 14.0 ) * 0.055;
+             + pow( max( cosTheta, 0.0 ), 220.0 ) * 0.16
+             + pow( max( cosTheta, 0.0 ), 18.0 ) * 0.030;
   #ifdef ENV_PASS
     // The directional light already carries the beam; a sun in the IBL would blow out
     // every diffuse surface in the scene.
@@ -382,7 +382,7 @@ export function createSky(engine, world, opts = {}) {
     uMie:         { value: o.mie },
     uMieG:        { value: o.mieG },
     uGroundHaze:  { value: new THREE.Color(0.34, 0.30, 0.25) },
-    uHorizonHaze: { value: 0.42 },
+    uHorizonHaze: { value: 0.30 },
     uHazeTint:    { value: new THREE.Color(0.72, 0.74, 0.76) },
     uExposure:    { value: o.exposure },
     uCloudTex:    { value: cloudTex },
@@ -463,7 +463,7 @@ export function createSky(engine, world, opts = {}) {
       lerp(warm[2], 1, mixBack * 1.25),
       THREE.LinearSRGBColorSpace);
     const up = clamp(Math.sin(Math.max(elev, 0) * D2R), 0, 1);
-    palette.sunIntensity = (opts.sunIntensity ?? 3.5) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
+    palette.sunIntensity = (opts.sunIntensity ?? 4.3) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
 
     // Sky colours straight out of the same scattering model the dome renders.
     const ex = uniforms.uExposure.value;
@@ -495,13 +495,13 @@ export function createSky(engine, world, opts = {}) {
     const skyLum = 0.2126 * palette.skyAmbient.r + 0.7152 * palette.skyAmbient.g + 0.0722 * palette.skyAmbient.b;
     palette.skyAmbient.multiplyScalar(1 / Math.max(skyLum, 1e-3));
     palette.groundAmbient.setRGB(0.42, 0.30, 0.20, THREE.LinearSRGBColorSpace);
-    palette.hemiIntensity = (opts.hemiIntensity ?? 0.30) * lerp(0.55, 1, smoothstep(-2, 18, elev));
+    palette.hemiIntensity = (opts.hemiIntensity ?? 0.22) * lerp(0.55, 1, smoothstep(-2, 18, elev));
 
     palette.bounceColor.setRGB(0.55, 0.34, 0.22, THREE.LinearSRGBColorSpace)
       .lerp(palette.sunColor, 0.25);
-    palette.bounceIntensity = (opts.bounceIntensity ?? 0.42) * lerp(0.3, 1, smoothstep(0, 25, elev));
+    palette.bounceIntensity = (opts.bounceIntensity ?? 0.30) * lerp(0.3, 1, smoothstep(0, 25, elev));
 
-    palette.hazeDensity = opts.hazeDensity ?? 0.0023;
+    palette.hazeDensity = opts.hazeDensity ?? 0.00145;
     palette.hazeSunAmount = 0.35 + 0.35 * smoothstep(30, 4, elev);
 
     // Cloud lighting tracks the sun so the deck never looks pasted on. Values are given in
@@ -515,7 +515,7 @@ export function createSky(engine, world, opts = {}) {
       .lerp(new THREE.Color(0.52, 0.58, 0.72).multiplyScalar(gain * 0.6), 0.6)
       .lerp(palette.sunColor.clone().multiplyScalar(gain * 0.55), 0.12 + 0.22 * smoothstep(20, 0, elev));
     uniforms.uShine.value = lerp(0.35, 0.8, smoothstep(25, 3, elev));
-    uniforms.uHorizonHaze.value = 0.38 + 0.20 * smoothstep(25, 3, elev);
+    uniforms.uHorizonHaze.value = 0.26 + 0.22 * smoothstep(25, 3, elev);
   }
 
   /** @param {number|string} h local decimal hour, or a key of TIME_PRESETS. */

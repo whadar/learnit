@@ -46,7 +46,7 @@ export function createRacer(id, opts = {}) {
   });
   const cat = createCat(entry.id, {
     detail: opts.detail, shadows: opts.shadows, env: opts.env,
-    grip: kart.gripForDriver(), spec: opts.spec, seatY: kart.seat[1],
+    grip: kart.gripForDriver(), gripParent: true, spec: opts.spec, seatY: kart.seat[1],
   });
   const root = new THREE.Group();
   root.name = 'racer:' + entry.id;
