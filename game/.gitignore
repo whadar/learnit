@@ -5,3 +5,5 @@ shots
 data/ov_building_index.json
 *.log
 data/amikam-dem.f32
+.sky-probe.mjs
+*-probe.mjs

@@ -1,23 +1,590 @@
 import * as THREE from 'three';
-import { Sky } from 'three/examples/jsm/objects/Sky.js';
-/** Sky dome + sun. Baseline atmospheric scattering; replaced by the full sky/atmosphere system. */
-export function createSky(engine, world, opts = {}) {
-  const sky = new Sky(); sky.scale.setScalar(20000); engine.scene.add(sky);
-  const u = sky.material.uniforms;
-  u.turbidity.value = 4.5; u.rayleigh.value = 1.6;
-  u.mieCoefficient.value = 0.004; u.mieDirectionalG.value = 0.82;
-  const elev = opts.elevation ?? 34, azim = opts.azimuth ?? 122;
-  const phi = THREE.MathUtils.degToRad(90 - elev), theta = THREE.MathUtils.degToRad(azim);
-  const sunPos = new THREE.Vector3().setFromSphericalCoords(1, phi, theta);
-  u.sunPosition.value.copy(sunPos);
+import { rng, clamp, lerp, smoothstep } from '../core/mathx.js';
+import { createLighting } from '../render/lighting.js';
 
-  const sun = new THREE.DirectionalLight(0xfff2dc, 3.4);
-  sun.position.copy(sunPos).multiplyScalar(1200);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  const c = sun.shadow.camera; c.left = -300; c.right = 300; c.top = 300; c.bottom = -300; c.near = 1; c.far = 3000;
-  engine.scene.add(sun); engine.scene.add(sun.target);
-  const hemi = new THREE.HemisphereLight(0xbcd6ff, 0xb09a6d, 0.75);
-  engine.scene.add(hemi);
-  return { sky, sun, hemi, sunPos };
+/**
+ * Atmosphere for Kat Racing — Amikam Village Circuit, Ramot Menashe, Israel (32.5636 N).
+ *
+ * Owns: the scattering sky dome (Preetham base, retuned for a dry hazy Mediterranean
+ * afternoon), procedural cumulus + cirrus cover, the real solar position for the site, and
+ * the palette that `src/render/lighting.js` turns into sun / IBL / aerial perspective.
+ *
+ *   const sky = createSky(engine, world);
+ *   sky.setTimeOfDay('golden');   // or a decimal local hour, e.g. 17.2
+ *
+ * Everything is deterministic: cloud fields come from rng(seed), never Math.random().
+ */
+
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+
+// ---------------------------------------------------------------------------------------
+// Solar position (NOAA low-precision algorithm) for a fixed site and local clock time.
+// ---------------------------------------------------------------------------------------
+
+/** @returns {{elevation:number, azimuth:number}} degrees; azimuth clockwise from north. */
+export function solarPosition(lat, lon, dayOfYear, localHour, tzOffset) {
+  const g = (2 * Math.PI / 365) * (dayOfYear - 1 + (localHour - 12) / 24);
+  const eqTime = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g)
+    - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));           // minutes
+  const decl = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g)
+    - 0.006758 * Math.cos(2 * g) + 0.000907 * Math.sin(2 * g)
+    - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);             // radians
+  const timeOffset = eqTime + 4 * lon - 60 * tzOffset;                     // minutes
+  const tst = localHour * 60 + timeOffset;                                 // true solar time
+  const ha = (tst / 4 - 180) * D2R;                                        // hour angle
+  const la = lat * D2R;
+  const cosZ = Math.sin(la) * Math.sin(decl) + Math.cos(la) * Math.cos(decl) * Math.cos(ha);
+  const zenith = Math.acos(clamp(cosZ, -1, 1));
+  let az = Math.acos(clamp((Math.sin(la) * Math.cos(zenith) - Math.sin(decl)) /
+    (Math.cos(la) * Math.sin(zenith) || 1e-6), -1, 1));
+  az = ha > 0 ? (Math.PI + az) : (Math.PI - az);        // 0 = north, clockwise
+  return { elevation: 90 - zenith * R2D, azimuth: (az * R2D + 360) % 360 };
+}
+
+/** Compass azimuth (deg from north, cw) + elevation -> world direction (+X east, +Z south). */
+export function sunDirection(elevationDeg, azimuthDeg, out = new THREE.Vector3()) {
+  const el = elevationDeg * D2R, az = azimuthDeg * D2R, c = Math.cos(el);
+  return out.set(c * Math.sin(az), Math.sin(el), -c * Math.cos(az)).normalize();
+}
+
+// ---------------------------------------------------------------------------------------
+// Preetham scattering, evaluated on the CPU with exactly the shader's constants so the
+// fog / ambient palette really matches the pixels in the sky.
+// ---------------------------------------------------------------------------------------
+
+const BETA_R0 = [5.804542996261093e-6, 1.3562911419845635e-5, 3.0265902468824876e-5];
+const MIE_K = [1.8399918514433978e14, 2.7798023919660528e14, 4.0790479543861094e14];
+const RAY_ZENITH = 8.4e3, MIE_ZENITH = 1.25e3;
+const CUTOFF = 1.6110731556870734, STEEP = 1.5, EE = 1000;
+
+function sunE(cosZ) {
+  cosZ = clamp(cosZ, -1, 1);
+  return EE * Math.max(0, 1 - Math.exp(-((CUTOFF - Math.acos(cosZ)) / STEEP)));
+}
+function opticalInverse(cosZenith) {
+  const za = Math.acos(Math.max(0, cosZenith));
+  return 1 / (Math.cos(za) + 0.15 * Math.pow(93.885 - za * R2D, -1.253));
+}
+function coefficients(p) {
+  const sunfade = 1 - clamp(1 - Math.exp(p.sunY / 450000), 0, 1);
+  const rc = p.rayleigh - (1 - sunfade);
+  const c = 0.2 * p.turbidity * 1e-17;
+  return {
+    betaR: BETA_R0.map(v => v * rc),
+    betaM: MIE_K.map(v => 0.434 * c * v * p.mie),
+    sunE: sunE(p.sunElevationCos),
+  };
+}
+/** Linear radiance of the sky in `dir` (matches the fragment shader, pre-tonemap). */
+function skyRadiance(dir, sunDir, p) {
+  const { betaR, betaM, sunE: E } = coefficients(p);
+  const inv = opticalInverse(dir.y);
+  const sR = RAY_ZENITH * inv, sM = MIE_ZENITH * inv;
+  const Fex = [0, 1, 2].map(i => Math.exp(-(betaR[i] * sR + betaM[i] * sM)));
+  const cosT = dir.dot(sunDir);
+  const rPhase = 0.05968310365946075 * (1 + Math.pow(cosT * 0.5 + 0.5, 2));
+  const g = p.mieG, g2 = g * g;
+  const mPhase = 0.07957747154594767 * ((1 - g2) / Math.pow(1 - 2 * g * cosT + g2, 1.5));
+  const out = [0, 0, 0];
+  const upDotSun = clamp(Math.pow(1 - sunDir.y, 5), 0, 1);
+  for (let i = 0; i < 3; i++) {
+    const bR = betaR[i] * rPhase, bM = betaM[i] * mPhase;
+    const ratio = (bR + bM) / (betaR[i] + betaM[i]);
+    let Lin = Math.pow(E * ratio * (1 - Fex[i]), 1.5);
+    Lin *= lerp(1, Math.pow(Math.max(E * ratio * Fex[i], 0), 0.5), upDotSun);
+    out[i] = Lin * 0.04;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------
+// Deterministic tileable value-noise cloud field baked to a texture.
+// R base density | G billow | B fine detail | A large-scale clump/coverage modulation
+// ---------------------------------------------------------------------------------------
+
+function noiseSampler(seed) {
+  const r = rng(seed);
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) { const j = (r() * (i + 1)) | 0; const t = p[i]; p[i] = p[j]; p[j] = t; }
+  const perm = new Uint8Array(512);
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+  const val = new Float32Array(256);
+  for (let i = 0; i < 256; i++) val[i] = r();
+  const lat = (x, y, per) => {
+    x = ((x % per) + per) % per; y = ((y % per) + per) % per;
+    return val[perm[(x + perm[y & 255]) & 255]];
+  };
+  // u,v in [0,1); `per` is the lattice period so the result tiles seamlessly.
+  return function noise(u, v, per) {
+    const x = u * per, y = v * per;
+    const ix = Math.floor(x), iy = Math.floor(y);
+    let fx = x - ix, fy = y - iy;
+    fx = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+    fy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+    const a = lat(ix, iy, per), b = lat(ix + 1, iy, per);
+    const c = lat(ix, iy + 1, per), d = lat(ix + 1, iy + 1, per);
+    return lerp(lerp(a, b, fx), lerp(c, d, fx), fy);
+  };
+}
+
+function makeCloudTexture(size = 512, seed = 20250815) {
+  const n = noiseSampler(seed);
+  const fbm = (u, v, per, oct, gain = 0.5) => {
+    let s = 0, amp = 1, norm = 0, f = per;
+    for (let i = 0; i < oct && f <= 256; i++) { s += amp * n(u, v, f); norm += amp; amp *= gain; f *= 2; }
+    return s / norm;
+  };
+  const data = new Uint8Array(size * size * 4);
+  const inv = 1 / size;
+  for (let y = 0; y < size; y++) {
+    const v = y * inv;
+    for (let x = 0; x < size; x++) {
+      const u = x * inv;
+      // domain warp gives cauliflower edges instead of woolly blobs
+      const wx = fbm(u + 0.13, v + 0.71, 4, 3) - 0.5;
+      const wy = fbm(u + 0.57, v + 0.29, 4, 3) - 0.5;
+      const uu = u + wx * 0.09, vv = v + wy * 0.09;
+      const base = fbm(uu, vv, 4, 6);
+      let bill = 0, amp = 1, norm = 0, f = 8;
+      for (let i = 0; i < 4; i++) { bill += amp * (1 - Math.abs(2 * n(uu, vv, f) - 1)); norm += amp; amp *= 0.5; f *= 2; }
+      bill /= norm;
+      const detail = fbm(u, v, 32, 3);
+      const clump = fbm(u * 0.5 + 0.11, v * 0.5 + 0.83, 2, 3);
+      const i4 = (y * size + x) * 4;
+      data[i4] = clamp(base * 255, 0, 255);
+      data[i4 + 1] = clamp(bill * 255, 0, 255);
+      data[i4 + 2] = clamp(detail * 255, 0, 255);
+      data[i4 + 3] = clamp(clump * 255, 0, 255);
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// ---------------------------------------------------------------------------------------
+// Sky shader
+// ---------------------------------------------------------------------------------------
+
+const SKY_VERT = /* glsl */`
+uniform vec3 uSunDir;
+uniform float uRayleigh, uTurbidity, uMie;
+varying vec3 vWorldPosition, vSunDirection, vBetaR, vBetaM;
+varying float vSunE, vSunfade;
+
+const vec3 totalRayleigh = vec3( 5.804542996261093E-6, 1.3562911419845635E-5, 3.0265902468824876E-5 );
+const vec3 MieConst = vec3( 1.8399918514433978E14, 2.7798023919660528E14, 4.0790479543861094E14 );
+const float cutoffAngle = 1.6110731556870734;
+const float steepness = 1.5;
+const float EE = 1000.0;
+
+void main() {
+  vec4 wp = modelMatrix * vec4( position, 1.0 );
+  vWorldPosition = wp.xyz;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+  gl_Position.z = gl_Position.w;
+
+  vSunDirection = normalize( uSunDir );
+  float zc = clamp( vSunDirection.y, -1.0, 1.0 );
+  vSunE = EE * max( 0.0, 1.0 - exp( -( ( cutoffAngle - acos( zc ) ) / steepness ) ) );
+  vSunfade = 1.0 - clamp( 1.0 - exp( vSunDirection.y * 1000.0 / 450.0 ), 0.0, 1.0 );
+
+  vBetaR = totalRayleigh * ( uRayleigh - ( 1.0 - vSunfade ) );
+  vBetaM = 0.434 * ( 0.2 * uTurbidity * 10E-18 ) * MieConst * uMie;
+}`;
+
+const SKY_FRAG = /* glsl */`
+varying vec3 vWorldPosition, vSunDirection, vBetaR, vBetaM;
+varying float vSunE, vSunfade;
+
+uniform float uMieG;
+uniform vec3  uGroundHaze;
+uniform float uHorizonHaze;
+uniform vec3  uHazeTint;
+uniform float uExposure;
+
+uniform sampler2D uCloudTex;
+uniform float uCoverage, uCloudScale, uCloudOpacity, uShine, uCirrus;
+uniform vec2  uDrift;
+uniform vec3  uCloudLit, uCloudDark;
+
+const float pi = 3.141592653589793;
+const float rayleighZenithLength = 8.4E3;
+const float mieZenithLength = 1.25E3;
+const float THREE_OVER_SIXTEENPI = 0.05968310365946075;
+const float ONE_OVER_FOURPI = 0.07957747154594767;
+
+float hg( float c, float g ) {
+  float g2 = g * g;
+  return ONE_OVER_FOURPI * ( ( 1.0 - g2 ) / pow( 1.0 - 2.0 * g * c + g2, 1.5 ) );
+}
+
+// density of the cumulus deck at a cloud-plane uv
+float cloudField( vec2 uv ) {
+  vec4 a = texture2D( uCloudTex, uv * 0.55 );
+  vec4 b = texture2D( uCloudTex, uv * 1.43 + vec2( 0.31, 0.67 ) );
+  float clump = a.a * 0.62 + b.a * 0.38;
+  float base  = a.r * 0.60 + b.g * 0.40;
+  clump = clump * clump * ( 3.0 - 2.0 * clump );          // punch holes of clear blue
+  float d = base * ( 0.30 + 1.45 * clump );
+  #ifndef ENV_PASS
+    d -= 0.22 * b.b * ( 1.0 - clump );                     // erode the edges into cauliflower
+  #endif
+  return d;
+}
+
+void main() {
+  vec3 direction = normalize( vWorldPosition - cameraPosition );
+
+  float zenithAngle = acos( max( 0.0, direction.y ) );
+  float inv = 1.0 / ( cos( zenithAngle ) + 0.15 * pow( 93.885 - ( zenithAngle * 180.0 / pi ), -1.253 ) );
+  float sR = rayleighZenithLength * inv;
+  float sM = mieZenithLength * inv;
+  vec3 Fex = exp( -( vBetaR * sR + vBetaM * sM ) );
+
+  float cosTheta = dot( direction, vSunDirection );
+  vec3 betaRTheta = vBetaR * ( THREE_OVER_SIXTEENPI * ( 1.0 + pow( cosTheta * 0.5 + 0.5, 2.0 ) ) );
+  vec3 betaMTheta = vBetaM * hg( cosTheta, uMieG );
+  vec3 ratio = ( betaRTheta + betaMTheta ) / ( vBetaR + vBetaM );
+
+  vec3 Lin = pow( vSunE * ratio * ( 1.0 - Fex ), vec3( 1.5 ) );
+  Lin *= mix( vec3( 1.0 ), pow( vSunE * ratio * Fex, vec3( 0.5 ) ),
+              clamp( pow( 1.0 - vSunDirection.y, 5.0 ), 0.0, 1.0 ) );
+
+  vec3 sky = Lin * 0.04 + vec3( 0.0, 0.0006, 0.0016 );
+
+  // --- dry Mediterranean horizon haze: whiten and desaturate the bottom of the dome ------
+  float hz = 1.0 - smoothstep( -0.015, 0.185, direction.y );
+  vec3 hazeCol = mix( sky, uHazeTint * ( 0.35 + 0.65 * dot( sky, vec3( 0.33 ) ) ), 0.75 );
+  hazeCol = mix( hazeCol, uHazeTint * 1.25, pow( max( cosTheta, 0.0 ), 4.0 ) * 0.45 );
+  sky = mix( sky, hazeCol, hz * uHorizonHaze );
+
+  // --- clouds ----------------------------------------------------------------------------
+  float above = smoothstep( 0.0, 0.055, direction.y );
+  if ( above > 0.001 ) {
+    vec2 pl = direction.xz / max( direction.y, 0.018 );
+
+    #ifndef ENV_PASS
+    // high cirrus first, they sit behind the cumulus deck
+    if ( uCirrus > 0.001 ) {
+      vec2 cu = pl * uCloudScale * 0.26 * vec2( 0.42, 1.7 ) + uDrift * 0.35;
+      float w = texture2D( uCloudTex, cu ).r * 0.7 + texture2D( uCloudTex, cu * 2.3 + 0.4 ).g * 0.3;
+      float wisp = smoothstep( 0.52, 0.86, 1.0 - abs( 2.0 * w - 1.0 ) );
+      vec3 cirrusCol = mix( uCloudLit * 0.9, uCloudLit * 1.35, pow( max( cosTheta, 0.0 ), 6.0 ) );
+      sky = mix( sky, mix( cirrusCol, sky, 0.25 ), wisp * uCirrus * above );
+    }
+    #endif
+
+    vec2 uv = pl * uCloudScale + uDrift;
+    float d = cloudField( uv );
+    float dens = smoothstep( uCoverage, uCoverage + 0.075, d );
+
+    if ( dens > 0.001 ) {
+      // fake self-shadowing: step toward the sun in the cloud plane
+      vec2 toSun = normalize( vSunDirection.xz + vec2( 1e-4, 0.0 ) );
+      float d2 = cloudField( uv + toSun * 0.030 );
+      float d3 = cloudField( uv + toSun * 0.075 );
+      float shade = clamp( 0.30 + 5.5 * ( d - d2 ) + 2.6 * ( d - d3 ), 0.0, 1.0 );
+      shade = shade * shade * ( 3.0 - 2.0 * shade );
+      // tops catch the sun, bases stay in their own shadow
+      shade = mix( shade, 1.0, 0.30 * smoothstep( 0.25, 0.0, vSunDirection.y ) );
+
+      vec3 col = mix( uCloudDark, uCloudLit, shade );
+      float fwd = pow( max( cosTheta, 0.0 ), 8.0 );
+      col += uCloudLit * fwd * ( 0.25 + 0.85 * ( 1.0 - dens ) ) * uShine;
+
+      // distant clouds sink into the same haze the hills do
+      float far = 1.0 - smoothstep( 0.03, 0.42, direction.y );
+      col = mix( col, mix( sky, uHazeTint * 0.9, 0.45 ), far * 0.85 );
+
+      sky = mix( sky, col, dens * uCloudOpacity * above );
+    }
+  }
+
+  // --- solar disc with limb darkening + glow ---------------------------------------------
+  float ang = acos( clamp( cosTheta, -1.0, 1.0 ) );
+  const float sunR = 0.0082;
+  float u = clamp( ang / sunR, 0.0, 1.0 );
+  float limb = 1.0 - 0.62 * ( 1.0 - sqrt( max( 0.0, 1.0 - u * u ) ) );
+  float disc = smoothstep( sunR, sunR * 0.82, ang ) * limb;
+  vec3 sunCol = vSunE * Fex;
+  float glow = pow( max( cosTheta, 0.0 ), 1600.0 ) * 6.0
+             + pow( max( cosTheta, 0.0 ), 110.0 ) * 0.30
+             + pow( max( cosTheta, 0.0 ), 14.0 ) * 0.055;
+  #ifdef ENV_PASS
+    // The directional light already carries the beam; a sun in the IBL would blow out
+    // every diffuse surface in the scene.
+    disc = 0.0;
+    glow *= 0.10;
+  #endif
+  sky += sunCol * 900.0 * disc;
+  sky += sunCol * glow * 0.04;
+
+  // --- below the horizon: dusty ground haze so terrain edges never show black ------------
+  float below = smoothstep( 0.0, -0.09, direction.y );
+  sky = mix( sky, uGroundHaze, below );
+
+  sky *= uExposure;
+
+  gl_FragColor = vec4( max( sky, 0.0 ), 1.0 );
+
+#ifndef ENV_PASS
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+#endif
+}`;
+
+// ---------------------------------------------------------------------------------------
+
+export const TIME_PRESETS = {
+  dawn:    6.4,    //  ~7 deg  — long cold shadows, pink east
+  morning: 8.6,    //  ~34 deg
+  noon:    12.6,   //  ~79 deg — flat and hot
+  after:   15.4,   //  ~53 deg
+  golden:  17.15,  //  ~31 deg — the default: warm, long readable shadows
+  evening: 18.4,   //  ~16 deg
+  dusk:    19.4,   //  ~4 deg
+};
+
+const DEFAULTS = {
+  lat: 32.5636, lon: 35.0208, tz: 3, dayOfYear: 196,   // mid-July, Israel summer time
+  hour: 17.15,
+  turbidity: 3.1, rayleigh: 2.75, mie: 0.0035, mieG: 0.80,
+  coverage: 0.52, cloudScale: 0.36, cloudOpacity: 1.0, cirrus: 0.10,
+  cloudSeed: 20250815, cloudSpeed: 0.0022,
+  exposure: 0.34,
+};
+
+/**
+ * @param {Engine} engine
+ * @param {WorldData} world
+ * @param {object} [opts]
+ * @returns {{sky:THREE.Mesh, sun:THREE.DirectionalLight, hemi:THREE.HemisphereLight,
+ *            sunPos:THREE.Vector3, csm:object, envMap:THREE.Texture,
+ *            setTimeOfDay:(h:number|string)=>void, update:(dt:number)=>void}}
+ */
+export function createSky(engine, world, opts = {}) {
+  const o = { ...DEFAULTS, ...opts };
+
+  const cloudTex = makeCloudTexture(opts.cloudRes ?? 512, o.cloudSeed);
+
+  const uniforms = {
+    uSunDir:      { value: new THREE.Vector3(0.4, 0.5, -0.7).normalize() },
+    uRayleigh:    { value: o.rayleigh },
+    uTurbidity:   { value: o.turbidity },
+    uMie:         { value: o.mie },
+    uMieG:        { value: o.mieG },
+    uGroundHaze:  { value: new THREE.Color(0.34, 0.30, 0.25) },
+    uHorizonHaze: { value: 0.42 },
+    uHazeTint:    { value: new THREE.Color(0.72, 0.74, 0.76) },
+    uExposure:    { value: o.exposure },
+    uCloudTex:    { value: cloudTex },
+    uCoverage:    { value: o.coverage },
+    uCloudScale:  { value: o.cloudScale },
+    uCloudOpacity:{ value: o.cloudOpacity },
+    uShine:       { value: 0.55 },
+    uCirrus:      { value: o.cirrus },
+    uDrift:       { value: new THREE.Vector2(0, 0) },
+    uCloudLit:    { value: new THREE.Color(1, 1, 1) },
+    uCloudDark:   { value: new THREE.Color(0.4, 0.45, 0.55) },
+  };
+
+  const makeMat = env => new THREE.ShaderMaterial({
+    name: env ? 'KatSkyEnv' : 'KatSky',
+    uniforms,                                   // shared object: one update drives both
+    vertexShader: SKY_VERT,
+    fragmentShader: SKY_FRAG,
+    defines: env ? { ENV_PASS: '' } : {},
+    side: THREE.BackSide,
+    depthWrite: false,
+    depthTest: true,
+    fog: false,
+    toneMapped: false,
+  });
+
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const skyMat = makeMat(false);
+  const skyMesh = new THREE.Mesh(geo, skyMat);
+  skyMesh.name = 'sky';
+  skyMesh.scale.setScalar(60000);
+  skyMesh.frustumCulled = false;
+  skyMesh.renderOrder = 900;      // draw after opaque geometry: far fewer sky pixels shaded
+  skyMesh.matrixAutoUpdate = false;
+  skyMesh.updateMatrix();
+  engine.scene.add(skyMesh);
+
+  // A second dome, un-tonemapped, used only as the source for the PMREM environment map.
+  const envScene = new THREE.Scene();
+  const envMesh = new THREE.Mesh(geo, makeMat(true));
+  envMesh.scale.setScalar(600);
+  envMesh.frustumCulled = false;
+  envScene.add(envMesh);
+
+  // ---- palette (recomputed on every time-of-day change) --------------------------------
+  const palette = {
+    sunColor: new THREE.Color(1, 0.95, 0.86), sunIntensity: 3.4,
+    skyAmbient: new THREE.Color(0.45, 0.6, 0.9), groundAmbient: new THREE.Color(0.35, 0.26, 0.18),
+    hemiIntensity: 0.45,
+    bounceColor: new THREE.Color(0.5, 0.32, 0.22), bounceIntensity: 0.35,
+    horizon: new THREE.Color(0.6, 0.63, 0.66), zenith: new THREE.Color(0.3, 0.45, 0.7),
+    hazeSun: new THREE.Color(1, 0.85, 0.65),
+    hazeDensity: 0.0016, hazeSunAmount: 0.55,
+  };
+
+  const state = { sunDir: uniforms.uSunDir.value, palette, envScene, elevation: 0, azimuth: 0, hour: o.hour };
+
+  const _d = new THREE.Vector3();
+  const _dust = new THREE.Color();
+  function computePalette() {
+    const p = {
+      rayleigh: o.rayleigh, turbidity: o.turbidity, mie: o.mie, mieG: o.mieG,
+      sunY: state.sunDir.y * 1000, sunElevationCos: state.sunDir.y,
+    };
+    const elev = state.elevation;
+    // Direct-beam transmittance through the real air mass at this elevation.
+    const { betaR, betaM } = coefficients(p);
+    const inv = opticalInverse(Math.max(state.sunDir.y, 0.02));
+    const Fex = [0, 1, 2].map(i => Math.exp(-(betaR[i] * RAY_ZENITH * inv + betaM[i] * MIE_ZENITH * inv)));
+    const lum = 0.2126 * Fex[0] + 0.7152 * Fex[1] + 0.0722 * Fex[2] || 1e-4;
+    // Keep it luminous: normalise the beam to unit luminance, but keep the hue shift and
+    // pull a little saturation back so low sun is warm, never brown.
+    const warm = [Fex[0] / lum, Fex[1] / lum, Fex[2] / lum];
+    const mixBack = clamp(0.30 + 0.35 * smoothstep(4, 22, elev), 0, 1);
+    palette.sunColor.setRGB(
+      lerp(warm[0], 1, mixBack * 0.15),
+      lerp(warm[1], 1, mixBack),
+      lerp(warm[2], 1, mixBack * 1.25),
+      THREE.LinearSRGBColorSpace);
+    const up = clamp(Math.sin(Math.max(elev, 0) * D2R), 0, 1);
+    palette.sunIntensity = (opts.sunIntensity ?? 3.5) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
+
+    // Sky colours straight out of the same scattering model the dome renders.
+    const ex = uniforms.uExposure.value;
+    const zen = skyRadiance(_d.set(0, 1, 0), state.sunDir, p).map(v => v * ex);
+    const side = sunDirection(4, (state.azimuth + 100) % 360, _d);
+    const hor = skyRadiance(side, state.sunDir, p).map(v => v * ex);
+    const towardSun = sunDirection(5, state.azimuth, _d);
+    const hsun = skyRadiance(towardSun, state.sunDir, p).map(v => v * ex);
+
+    const clampCol = (c, arr, boost = 1) => c.setRGB(
+      clamp(arr[0] * boost, 0, 4), clamp(arr[1] * boost, 0, 4), clamp(arr[2] * boost, 0, 4),
+      THREE.LinearSRGBColorSpace);
+
+    clampCol(palette.zenith, zen, 1.0);
+    clampCol(palette.horizon, hor, 1.0);
+    clampCol(palette.hazeSun, hsun, 1.05);
+    // Dust over the Menashe plateau: desaturate the horizon toward its own luminance and
+    // warm it slightly, without adding energy (that is what washed the frame out before).
+    {
+      const hl = 0.2126 * palette.horizon.r + 0.7152 * palette.horizon.g + 0.0722 * palette.horizon.b;
+      _dust.setRGB(hl * 1.06, hl * 1.0, hl * 0.90, THREE.LinearSRGBColorSpace);
+      palette.horizon.lerp(_dust, 0.40);
+    }
+    uniforms.uHazeTint.value.copy(palette.horizon).multiplyScalar(1.05);
+    uniforms.uGroundHaze.value.copy(palette.horizon).lerp(new THREE.Color(0.34, 0.27, 0.20), 0.45);
+
+    // Ambient: sky dome above, warm terra-rossa / dry-stubble bounce below.
+    palette.skyAmbient.copy(palette.zenith).lerp(palette.horizon, 0.35);
+    const skyLum = 0.2126 * palette.skyAmbient.r + 0.7152 * palette.skyAmbient.g + 0.0722 * palette.skyAmbient.b;
+    palette.skyAmbient.multiplyScalar(1 / Math.max(skyLum, 1e-3));
+    palette.groundAmbient.setRGB(0.42, 0.30, 0.20, THREE.LinearSRGBColorSpace);
+    palette.hemiIntensity = (opts.hemiIntensity ?? 0.30) * lerp(0.55, 1, smoothstep(-2, 18, elev));
+
+    palette.bounceColor.setRGB(0.55, 0.34, 0.22, THREE.LinearSRGBColorSpace)
+      .lerp(palette.sunColor, 0.25);
+    palette.bounceIntensity = (opts.bounceIntensity ?? 0.42) * lerp(0.3, 1, smoothstep(0, 25, elev));
+
+    palette.hazeDensity = opts.hazeDensity ?? 0.0023;
+    palette.hazeSunAmount = 0.35 + 0.35 * smoothstep(30, 4, elev);
+
+    // Cloud lighting tracks the sun so the deck never looks pasted on. Values are given in
+    // pre-exposure radiance (the dome multiplies by uExposure at the end), so a sunlit top
+    // lands well above 1.0 after tonemapping — cumulus must read as white, not putty.
+    const gain = 1 / Math.max(ex, 1e-3);
+    uniforms.uCloudLit.value.copy(palette.sunColor)
+      .lerp(new THREE.Color(1, 1, 1), 0.45)
+      .multiplyScalar(gain * lerp(1.5, 2.6, smoothstep(2, 30, elev)));
+    uniforms.uCloudDark.value.copy(palette.zenith).multiplyScalar(1 / Math.max(ex, 1e-3))
+      .lerp(new THREE.Color(0.52, 0.58, 0.72).multiplyScalar(gain * 0.6), 0.6)
+      .lerp(palette.sunColor.clone().multiplyScalar(gain * 0.55), 0.12 + 0.22 * smoothstep(20, 0, elev));
+    uniforms.uShine.value = lerp(0.35, 0.8, smoothstep(25, 3, elev));
+    uniforms.uHorizonHaze.value = 0.38 + 0.20 * smoothstep(25, 3, elev);
+  }
+
+  /** @param {number|string} h local decimal hour, or a key of TIME_PRESETS. */
+  function setSunAngles(elevation, azimuth) {
+    state.elevation = elevation; state.azimuth = azimuth;
+    sunDirection(elevation, azimuth, uniforms.uSunDir.value);
+    computePalette();
+  }
+
+  function resolveTime(h) {
+    if (typeof h === 'string') h = TIME_PRESETS[h] ?? DEFAULTS.hour;
+    state.hour = h;
+    return solarPosition(o.lat, o.lon, o.dayOfYear, h, o.tz);
+  }
+
+  if (opts.elevation != null || opts.azimuth != null) {
+    setSunAngles(opts.elevation ?? 31, opts.azimuth ?? 283);
+  } else {
+    const s = resolveTime(o.hour);
+    setSunAngles(s.elevation, s.azimuth);
+  }
+
+  // ---- lighting rig ---------------------------------------------------------------------
+  let lighting = null;
+  try {
+    lighting = createLighting(engine, world, state, opts);
+  } catch (e) {
+    console.warn('[sky] lighting rig failed, using a plain sun:', e);
+    const sun = new THREE.DirectionalLight(palette.sunColor, palette.sunIntensity);
+    sun.position.copy(state.sunDir).multiplyScalar(1500);
+    sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+    const c = sun.shadow.camera; c.left = -300; c.right = 300; c.top = 300; c.bottom = -300; c.far = 3000;
+    const hemi = new THREE.HemisphereLight(palette.skyAmbient, palette.groundAmbient, 0.6);
+    engine.scene.add(sun, sun.target, hemi);
+    lighting = { sun, hemi, csm: null, envMap: null, refresh() {}, update() {} };
+  }
+
+  function setTimeOfDay(h) {
+    if (typeof h === 'number' || typeof h === 'string') {
+      const s = resolveTime(h);
+      setSunAngles(s.elevation, s.azimuth);
+    }
+    lighting.refresh(true);
+    return { elevation: state.elevation, azimuth: state.azimuth, hour: state.hour };
+  }
+
+  const drift = uniforms.uDrift.value;
+  const api = {
+    sky: skyMesh,
+    material: skyMat,
+    uniforms,
+    sun: lighting.sun,
+    hemi: lighting.hemi,
+    bounce: lighting.bounce,
+    csm: lighting.csm,
+    lighting,
+    palette,
+    sunDir: state.sunDir,
+    sunPos: state.sunDir,                        // legacy name kept for callers
+    get envMap() { return lighting.envMap; },
+    get elevation() { return state.elevation; },
+    get azimuth() { return state.azimuth; },
+    setTimeOfDay,
+    setSunAngles,
+    update(dt) {
+      drift.x += o.cloudSpeed * dt;
+      drift.y += o.cloudSpeed * 0.35 * dt;
+    },
+  };
+  engine.add({ update: dt => api.update(dt) });
+  return api;
 }

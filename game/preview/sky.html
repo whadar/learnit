@@ -1,0 +1,140 @@
+<!doctype html><html><head><meta charset="utf-8"><title>sky — Kat Racing</title>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden}#app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}</style>
+</head><body><div id="app"></div>
+<script>
+// Preview-only: half a dozen agents edit this repo at the same time, and Vite's HMR
+// full-reload lands in the middle of a screenshot run. Stub out the HMR socket (and the
+// reload it triggers) so a capture cannot be torn down under it.
+(function () {
+  const Native = window.WebSocket;
+  window.WebSocket = function (url, protocols) {
+    if (protocols === 'vite-hmr' || (Array.isArray(protocols) && protocols.includes('vite-hmr'))) {
+      const stub = new EventTarget();
+      stub.readyState = 0; stub.send = () => {}; stub.close = () => {};
+      return stub;
+    }
+    return new Native(url, protocols);
+  };
+  window.WebSocket.prototype = Native.prototype;
+  try { Object.defineProperty(location, 'reload', { value: () => {}, configurable: true }); } catch (e) {}
+})();
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { boot } from './common.js';
+import { rng } from '../src/core/mathx.js';
+
+// Stand-in geometry so light, shadow and haze have something honest to fall on:
+// plaster boxes with pantile roofs, cypress spires, olive domes. Deterministic.
+function props(ctx) {
+  const { world, engine } = ctx;
+  const scene = engine.scene;
+  const r = rng(4242);
+  const h = (x, z) => world.heightAt(x, z);
+
+  const plaster = new THREE.MeshStandardMaterial({ color: 0xe8dfcd, roughness: 0.88 });
+  const stone   = new THREE.MeshStandardMaterial({ color: 0xcfc0a2, roughness: 0.92 });
+  const tile    = new THREE.MeshStandardMaterial({ color: 0xa4462a, roughness: 0.72 });
+  const trunk   = new THREE.MeshStandardMaterial({ color: 0x5a4632, roughness: 0.95 });
+  const cyp     = new THREE.MeshStandardMaterial({ color: 0x2c4326, roughness: 0.9 });
+  const oliv    = new THREE.MeshStandardMaterial({ color: 0x6f7a55, roughness: 0.95 });
+  const metal   = new THREE.MeshStandardMaterial({ color: 0xb9c2c6, roughness: 0.28, metalness: 0.85 });
+
+  const box = new THREE.BoxGeometry(1, 1, 1);
+  const roofGeo = (() => {
+    const s = new THREE.Shape();
+    s.moveTo(-0.5, 0); s.lineTo(0.5, 0); s.lineTo(0, 0.5); s.lineTo(-0.5, 0);
+    const g = new THREE.ExtrudeGeometry(s, { depth: 1, bevelEnabled: false });
+    g.translate(0, 0, -0.5); g.rotateY(0); return g;
+  })();
+
+  const g = new THREE.Group(); scene.add(g);
+  const add = (geo, mat, x, y, z, sx, sy, sz, ry = 0) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.rotation.y = ry;
+    m.castShadow = true; m.receiveShadow = true; g.add(m); return m;
+  };
+
+  // A street of houses running roughly east-west so the low sun rakes across them.
+  for (let i = 0; i < 26; i++) {
+    const side = i % 2 ? 1 : -1;
+    const x = -170 + i * 14 + r() * 4;
+    const z = side * (16 + r() * 5);
+    const y = h(x, z);
+    const w = 8 + r() * 4, d = 7 + r() * 3, ht = r() < 0.35 ? 6.4 : 3.4;
+    const ry = (r() - 0.5) * 0.25;
+    add(box, r() < 0.4 ? stone : plaster, x, y + ht / 2, z, w, ht, d, ry);
+    const roof = add(roofGeo, tile, x, y + ht, z, w * 1.16, w * 0.46, d * 1.16, ry);
+    roof.rotation.y = ry;
+    // dud shemesh — the tank catches a specular kick from the env map
+    const tk = add(new THREE.CylinderGeometry(0.5, 0.5, 1.8, 12), metal,
+      x + (r() - 0.5) * 2, y + ht + w * 0.30, z + (r() - 0.5) * 2, 1, 1, 1, ry);
+    tk.rotation.z = Math.PI / 2;
+  }
+
+  // Cypress line along the north side, olive grove on the slope to the south.
+  const cypGeo = new THREE.ConeGeometry(1, 1, 9);
+  const cypMesh = new THREE.InstancedMesh(cypGeo, cyp, 40);
+  const trGeo = new THREE.CylinderGeometry(0.16, 0.22, 1, 6);
+  const trMesh = new THREE.InstancedMesh(trGeo, trunk, 40);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), s3 = new THREE.Vector3();
+  for (let i = 0; i < 40; i++) {
+    const x = -190 + i * 9.6 + (r() - 0.5) * 2, z = -42 + (r() - 0.5) * 3;
+    const y = h(x, z), ht = 9 + r() * 5;
+    cypMesh.setMatrixAt(i, m4.compose(v.set(x, y + ht * 0.5 + 1, z), q, s3.set(1.5 + r() * 0.4, ht, 1.5 + r() * 0.4)));
+    trMesh.setMatrixAt(i, m4.compose(v.set(x, y + 1, z), q, s3.set(1, 2.4, 1)));
+  }
+  cypMesh.castShadow = trMesh.castShadow = true;
+  cypMesh.receiveShadow = trMesh.receiveShadow = true;
+  scene.add(cypMesh, trMesh);
+
+  const oliveGeo = new THREE.SphereGeometry(1, 8, 6);
+  const olive = new THREE.InstancedMesh(oliveGeo, oliv, 120);
+  const oTr = new THREE.InstancedMesh(trGeo, trunk, 120);
+  for (let i = 0; i < 120; i++) {
+    const gx = i % 12, gz = (i / 12) | 0;
+    const x = -60 + gx * 11 + (r() - 0.5) * 3, z = 70 + gz * 11 + (r() - 0.5) * 3;
+    const y = h(x, z), rad = 2.6 + r() * 1.1;
+    olive.setMatrixAt(i, m4.compose(v.set(x, y + 2.4 + rad * 0.6, z), q, s3.set(rad * 1.25, rad * 0.85, rad * 1.25)));
+    oTr.setMatrixAt(i, m4.compose(v.set(x, y + 1.4, z), q, s3.set(1.6, 2.8, 1.6)));
+  }
+  olive.castShadow = oTr.castShadow = true;
+  olive.receiveShadow = oTr.receiveShadow = true;
+  scene.add(olive, oTr);
+
+  // A kart-sized reference block so eye-level views have scale.
+  add(box, new THREE.MeshStandardMaterial({ color: 0xd6402f, roughness: 0.35, metalness: 0.1 }),
+      -6, h(-6, 6) + 0.6, 6, 2.0, 1.1, 3.2, 0.3);
+}
+
+// ?flat=1 kills every indirect term so direct sun + shadows can be judged on their own.
+const FLAT = new URLSearchParams(location.search).has('flat');
+const views = {};
+boot({
+  name: 'sky',
+  views,
+  modules: async (ctx) => {
+    props(ctx);
+    if (FLAT) {
+      ctx.engine.scene.environmentIntensity = 0;
+      ctx.sky.hemi.intensity = 0;
+      if (ctx.sky.bounce) ctx.sky.bounce.intensity = 0;
+    }
+    const h = (x, z) => ctx.world.heightAt(x, z);
+    Object.assign(views, {
+      // wide establishing 3/4 aerial, looking NW with the low sun off to the left so the
+      // whole plateau is raked by long shadows
+      establish: { pos: [430, h(430, 430) + 165, 430], look: [-90, h(-90, -90) + 10, -90], fov: 44 },
+      // eye level at kart height (1.6 m), straight into the WNW sun
+      intosun:   { pos: [150, h(150, 8) + 1.6, 8], look: [-320, h(-320, -60) + 46, -60], fov: 60 },
+      // eye level looking north up the street: the sun rakes in from the left and throws
+      // house and cypress shadows right across the frame
+      lane:      { pos: [-8, h(-8, 62) + 1.6, 62], look: [10, h(10, -240) + 10, -240], fov: 62 },
+      // tilted up: cumulus deck, cirrus and the zenith gradient
+      cloudscape:{ pos: [0, h(0, 120) + 3, 120], look: [-150, h(-150, -320) + 430, -320], fov: 66 },
+      // long range to the SE, sun behind: aerial perspective stacking on the far ridges
+      haze:      { pos: [-520, h(-520, -520) + 130, -520], look: [780, h(780, 820) + 40, 820], fov: 38 },
+    });
+  },
+});
+</script></body></html>
