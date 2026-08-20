@@ -127,14 +127,14 @@ function stoneMaps(size) {
       const sid2 = hash2i(s + 3, row + 7, 313);
       const warm = 0.94 + sid * 0.14;
       const grey = sid2 * 0.5;
-      let r = 232 * warm - grey * 14 + ch * 14 + (coarse[i] - 0.5) * 17;
-      let g = 199 * warm - grey * 12 + ch * 12 + (coarse[i] - 0.5) * 14;
-      let b = 143 * warm + grey * 22 + ch * 10 + (coarse[i] - 0.5) * 11;
+      let r = 241 * warm - grey * 10 + ch * 14 + (coarse[i] - 0.5) * 17;
+      let g = 204 * warm - grey * 12 + ch * 12 + (coarse[i] - 0.5) * 14;
+      let b = 134 * warm + grey * 26 + ch * 10 + (coarse[i] - 0.5) * 11;
       const gm = smoothstep(0.52, 0.85, grime[i]) * 0.16;         // weather staining
       r *= 1 - gm * 1.05; g *= 1 - gm; b *= 1 - gm * 0.8;
       const jm = 1 - face;                                        // mortar joint: cool grey, in shade
-      r = lerp(r, 146, jm * 0.9); g = lerp(g, 134, jm * 0.9); b = lerp(b, 114, jm * 0.9);
-      const ao = lerp(0.62, 1, face);
+      r = lerp(r, 128, jm * 0.92); g = lerp(g, 114, jm * 0.92); b = lerp(b, 92, jm * 0.92);
+      const ao = lerp(0.52, 1, face);
       col[i * 4] = clamp(r * ao, 0, 255);
       col[i * 4 + 1] = clamp(g * ao, 0, 255);
       col[i * 4 + 2] = clamp(b * ao, 0, 255);
@@ -288,8 +288,8 @@ export function createBuildingMaterials(opts = {}) {
   // Interior-dark window glass. Kept opaque: the sky reflection off a low-roughness surface
   // plus a near-black base reads exactly like a shaded room, and costs no sorting.
   const glass = new THREE.MeshStandardMaterial({
-    name: 'bld-glass', color: 0x2e4049, vertexColors: true,
-    roughness: 0.14, metalness: 0.0, envMapIntensity: 2.4,
+    name: 'bld-glass', color: 0x51707f, vertexColors: true,
+    roughness: 0.13, metalness: 0.0, envMapIntensity: 2.6,
   });
 
   // Painted metal / galvanised steel for solar heaters, tanks, A/C, railings.

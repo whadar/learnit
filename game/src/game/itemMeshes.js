@@ -615,7 +615,7 @@ export function makePardes() {
 export function makeKhamsin(height = 3.4, scale = 1) {
   const g = new THREE.Group(); g.name = 'item:khamsin';
   const m = mat('khamsin-shell', () => new THREE.MeshBasicMaterial({
-    color: 0xdfba82, map: dustSwirl(), transparent: true, opacity: 0.50,
+    color: 0xe6c48c, map: dustSwirl(), transparent: true, opacity: 0.62,
     depthWrite: false, side: THREE.DoubleSide,
   }));
   const shells = [];
@@ -623,8 +623,8 @@ export function makeKhamsin(height = 3.4, scale = 1) {
   const SEG = 6;
   for (let i = 0; i < SEG; i++) {
     const t0 = i / SEG, t1 = (i + 1) / SEG;
-    const rBot = lerp(0.16, 1.05, t0 * t0 * 0.55 + t0 * 0.45);
-    const rTop = lerp(0.16, 1.05, t1 * t1 * 0.55 + t1 * 0.45);
+    const rBot = lerp(0.20, 1.75, t0 * t0 * 0.55 + t0 * 0.45);
+    const rTop = lerp(0.20, 1.75, t1 * t1 * 0.55 + t1 * 0.45);
     const h = height / SEG;
     const cone = mesh(new THREE.CylinderGeometry(rTop * 1.06, rBot, h * 1.25, 16, 1, true), m,
       { pos: [Math.sin(t0 * 7) * 0.10, h * (i + 0.5), Math.cos(t0 * 7) * 0.10], shadow: false });
@@ -635,15 +635,15 @@ export function makeKhamsin(height = 3.4, scale = 1) {
   }
   // grit spiralling up the column
   const gr = rng(15);
-  const N = 34;
-  const grit = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 0.055, 0.035),
+  const N = 46;
+  const grit = new THREE.InstancedMesh(new THREE.BoxGeometry(0.11, 0.075, 0.05),
     std('grit', { color: 0x9c7a4c, roughness: 0.95 }), N);
   const m4 = new THREE.Matrix4();
   const gritData = [];
   for (let i = 0; i < N; i++) {
     const y = (i / N) * height * 0.98 + gr() * 0.1;
     const a = y * 2.6 + gr() * 0.8;
-    const rad = lerp(0.20, 1.15, y / height) * (0.85 + gr() * 0.35);
+    const rad = lerp(0.24, 1.75, y / height) * (0.85 + gr() * 0.35);
     gritData.push({ a, y, rad, sp: 2.4 + gr() * 2.6 });
     m4.makeTranslation(Math.cos(a) * rad, y, Math.sin(a) * rad);
     grit.setMatrixAt(i, m4);
@@ -651,7 +651,7 @@ export function makeKhamsin(height = 3.4, scale = 1) {
   grit.instanceMatrix.needsUpdate = true;
   g.add(grit);
   // ground dust
-  g.add(mesh(new THREE.CircleGeometry(1.5, 24), mat('khamsin-base', () => new THREE.MeshBasicMaterial({
+  g.add(mesh(new THREE.CircleGeometry(2.2, 24), mat('khamsin-base', () => new THREE.MeshBasicMaterial({
     map: glowSprite(), color: 0xcfa568, transparent: true, opacity: 0.42, depthWrite: false,
   })), { rot: [-Math.PI / 2, 0, 0], pos: [0, 0.05, 0], shadow: false }));
   g.scale.setScalar(scale);

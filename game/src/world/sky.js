@@ -607,7 +607,17 @@ export function createSky(engine, world, opts = {}) {
     const c = sun.shadow.camera; c.left = -300; c.right = 300; c.top = 300; c.bottom = -300; c.far = 3000;
     const hemi = new THREE.HemisphereLight(palette.skyAmbient, palette.groundAmbient, 0.6);
     engine.scene.add(sun, sun.target, hemi);
-    lighting = { sun, hemi, csm: null, envMap: null, refresh() {}, update() {} };
+    engine.scene.fog = new THREE.FogExp2(palette.horizon.clone(), 0.00055);
+    lighting = {
+      sun, hemi, bounce: null, csm: null, envMap: null, apUniforms: null,
+      setupMaterial() {}, scan() {}, update() {},
+      refresh() {
+        sun.color.copy(palette.sunColor); sun.intensity = palette.sunIntensity;
+        sun.position.copy(state.sunDir).multiplyScalar(1500);
+        hemi.color.copy(palette.skyAmbient); hemi.groundColor.copy(palette.groundAmbient);
+        engine.scene.fog.color.copy(palette.horizon);
+      },
+    };
   }
 
   function setTimeOfDay(h) {

@@ -657,7 +657,7 @@ export function createItemSystem(world, track, opts = {}) {
       item: 'catnap', kind: 'hunter', owner: rec, grace: 0.4,
       pos: start, s: n.s, lateral: n.lateral, dir: 1,
       speed: ITEMS.catnap.speed, life: ITEMS.catnap.life, radius: ITEMS.catnap.radius,
-      hit: 'stall', hover: 6.0, scale: 1.0, trailWidth: 0.2, phase: 'cruise',
+      hit: 'stall', hover: 6.0, scale: 1.7, trailWidth: 0.2, phase: 'cruise',
     });
   }
 
@@ -951,7 +951,7 @@ export function createItemSystem(world, track, opts = {}) {
         item: def.fires || def.id, from: def.id, kind: 'orbit', owner: rec, slot: i, slots: def.orbit,
         pos: V(rec.pos.x, rec.pos.y + 0.55, rec.pos.z), s: rec.s, lateral: rec.lateral,
         radius: def.radius ?? 1.2, hit: def.hit || 'spin', life: 999, hover: 0.55,
-        trail: false, scale: 0.8, orbitA: i * 0.1, grace: 999,
+        trail: false, scale: 0.7, orbitA: i * 0.1, grace: 999,
       });
       rec.orbiters.push(p);
     }

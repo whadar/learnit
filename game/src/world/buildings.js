@@ -19,7 +19,8 @@ import * as THREE from 'three';
 import { rng, clamp, lerp, smoothstep } from '../core/mathx.js';
 import { createBuildingMaterials } from '../render/materials/buildingMaterials.js';
 
-const CHUNK = 256;
+const CHUNK = 256;        // shell / far tiles
+const DCHUNK = 128;       // detail tiles: trim, joinery, roof furniture
 const EPS = 1e-6;
 
 /* ====================================================================== ring math == */
@@ -262,9 +263,10 @@ const PLASTER_TINTS = [
 ];
 // clay pantiles run from fresh orange to sun-bleached brown; a few roofs are re-laid grey.
 const ROOF_TINTS = [
-  [1.00, 0.95, 0.90], [0.86, 0.78, 0.73], [1.12, 1.00, 0.88],
-  [0.76, 0.70, 0.68], [1.05, 0.90, 0.79], [0.94, 0.88, 0.84],
-  [1.08, 0.97, 0.85], [0.82, 0.74, 0.68], [0.90, 0.84, 0.80],
+  [1.02, 0.94, 0.88], [0.80, 0.70, 0.64], [1.18, 1.02, 0.86],
+  [0.68, 0.62, 0.60], [1.10, 0.88, 0.72], [0.96, 0.90, 0.86],
+  [1.14, 0.98, 0.82], [0.74, 0.66, 0.60], [0.88, 0.80, 0.76],
+  [1.06, 0.86, 0.66], [0.92, 0.86, 0.86], [1.00, 0.80, 0.62],
 ];
 // fibre-cement / galvanised sheeting on the farm buildings
 const SHEET_TINTS = [[0.60, 0.64, 0.68], [0.70, 0.71, 0.70], [0.52, 0.56, 0.60], [0.66, 0.66, 0.64]];
@@ -368,7 +370,7 @@ function design(b, world, idx) {
 
 /* ==================================================================== wall bands === */
 
-const WINDOW_W = 1.18, WINDOW_H = 1.42, SILL_H = 0.94, REVEAL = 0.155;
+const WINDOW_W = 1.18, WINDOW_H = 1.42, SILL_H = 0.94, REVEAL = 0.115;
 const DOOR_W = 1.00, DOOR_H = 2.14;
 
 function edgeFrame(a, b) {
@@ -750,22 +752,29 @@ export function createBuildings(engine, world, opts = {}) {
   world.buildings.forEach((b, i) => { const d = design(b, world, i); if (d) designs.push(d); });
 
   // ---- chunking -------------------------------------------------------------------
-  const chunks = new Map();
-  const key = d => `${Math.floor(d.cx / CHUNK)},${Math.floor(d.cz / CHUNK)}`;
-  for (const d of designs) {
-    let c = chunks.get(key(d));
+  // Three buckets: the masses that define the silhouette (shell), the close-range dressing
+  // (detail) and the cheap distant stand-in (far). Detail is tiled twice as finely, because
+  // it is four times the triangles and needs to switch off within a block or two.
+  const chunks = new Map(), dchunks = new Map();
+  const keyOf = (x, z, g) => `${Math.floor(x / g)},${Math.floor(z / g)}`;
+  function chunkFor(d) {
+    const k = keyOf(d.cx, d.cz, CHUNK);
+    let c = chunks.get(k);
     if (!c) {
-      // three buckets per chunk: the masses that define the silhouette (shell), the close
-      // range dressing (detail), and the cheap distant stand-in (far).
-      c = {
-        shell: { plaster: new Surf(), stone: new Surf(), tile: new Surf(), sheeting: new Surf() },
-        detail: { plaster: new Surf(), shutter: new Surf(), glass: new Surf(), metal: new Surf(), foliage: new Surf() },
-        far: { farSurface: new Surf(), farRoof: new Surf() },
-      };
-      chunks.set(key(d), c);
+      c = { shell: { plaster: new Surf(), stone: new Surf(), tile: new Surf(), sheeting: new Surf() },
+            far: { farSurface: new Surf(), farRoof: new Surf() } };
+      chunks.set(k, c);
     }
-    c.list = c.list || [];
-    c.list.push(d);
+    return c;
+  }
+  function dchunkFor(d) {
+    const k = keyOf(d.cx, d.cz, DCHUNK);
+    let c = dchunks.get(k);
+    if (!c) {
+      c = { detail: { plaster: new Surf(), shutter: new Surf(), glass: new Surf(), metal: new Surf(), foliage: new Surf() } };
+      dchunks.set(k, c);
+    }
+    return c;
   }
 
   // Roof furniture is merged into its own chunk rather than instanced globally: the props
@@ -774,7 +783,7 @@ export function createBuildings(engine, world, opts = {}) {
   const _n3 = new THREE.Matrix3(), _vv = new THREE.Vector3(), _ww = new THREE.Vector3();
   const _fw = new THREE.Vector3(), _rt = new THREE.Vector3();
 
-  function makePlacer(chunk) {
+  function makePlacer(dchunk) {
     /** Place a prop with its local +Y along `normal` and local +Z along `fwd`. */
     return function place(kind, x, y, z, normal, fwd, scale = 1) {
       const def = kit[kind];
@@ -790,40 +799,45 @@ export function createBuildings(engine, world, opts = {}) {
       if (scale !== 1) m.scale(new THREE.Vector3(scale, scale, scale));
       m.setPosition(x, y, z);
       _n3.getNormalMatrix(m);
-      if (def.metal) chunk.detail.metal.addGeo(def.metal, m, _n3, _ww, new THREE.Vector3());
-      if (def.glass) chunk.detail.glass.addGeo(def.glass, m, _n3, _ww, new THREE.Vector3());
+      if (def.metal) dchunk.detail.metal.addGeo(def.metal, m, _n3, _ww, new THREE.Vector3());
+      if (def.glass) dchunk.detail.glass.addGeo(def.glass, m, _n3, _ww, new THREE.Vector3());
     };
   }
 
-  for (const [, chunk] of chunks) {
-    const place = makePlacer(chunk);
-    for (const d of chunk.list) buildOne(d, chunk, world, M, place);
+  for (const d of designs) {
+    const sc = chunkFor(d), dc = dchunkFor(d);
+    buildOne(d, sc, dc, world, M, makePlacer(dc));
   }
 
   // ---- meshes ----------------------------------------------------------------------
   let drawCalls = 0;
-  const chunkList = [];
+  const chunkList = [], detailList = [];
   const NO_SHADOW = { glass: 1, shutter: 1, sheeting: 1, foliage: 1 };
+  const emit = (bucket, tag, k, list, bb, shadow) => {
+    for (const [name, surf] of Object.entries(bucket)) {
+      if (surf.empty) continue;
+      const g = surf.geometry();
+      const mesh = new THREE.Mesh(g, M[name]);
+      mesh.name = tag + '-' + name + '-' + k;
+      mesh.castShadow = shadow && !NO_SHADOW[name];
+      mesh.receiveShadow = true;
+      list.push(mesh); group.add(mesh); drawCalls++;
+      bb.union(new THREE.Box3().setFromBufferAttribute(g.attributes.position));
+    }
+  };
   for (const [k, c] of chunks) {
     const bb = new THREE.Box3();
-    const rec = { key: k, shell: [], detail: [], far: [], box: bb };
-    const emit = (bucket, tag, list, shadow) => {
-      for (const [name, surf] of Object.entries(bucket)) {
-        if (surf.empty) continue;
-        const g = surf.geometry();
-        const mesh = new THREE.Mesh(g, M[name]);
-        mesh.name = tag + '-' + name + '-' + k;
-        mesh.castShadow = shadow && !NO_SHADOW[name];
-        mesh.receiveShadow = true;
-        list.push(mesh); group.add(mesh); drawCalls++;
-        bb.union(new THREE.Box3().setFromBufferAttribute(g.attributes.position));
-      }
-    };
-    emit(c.shell, 'bld', rec.shell, true);
-    emit(c.detail, 'blddet', rec.detail, true);
-    emit(c.far, 'bldfar', rec.far, false);
+    const rec = { key: k, shell: [], far: [], box: bb };
+    emit(c.shell, 'bld', k, rec.shell, bb, true);
+    emit(c.far, 'bldfar', k, rec.far, bb, false);
     for (const m of rec.far) m.visible = false;
     chunkList.push(rec);
+  }
+  for (const [k, c] of dchunks) {
+    const bb = new THREE.Box3();
+    const rec = { key: k, detail: [], box: bb };
+    emit(c.detail, 'blddet', k, rec.detail, bb, true);
+    detailList.push(rec);
   }
 
   engine.scene.add(group);
@@ -832,16 +846,18 @@ export function createBuildings(engine, world, opts = {}) {
   const cam = engine.camera;
   let quality = 1;
   let shellDist = opts.shellDistance ?? 340;   // beyond this the box-and-roof stand-in shows
-  let detailDist = opts.detailDistance ?? 105; // beyond this the window trim and props drop
+  let detailDist = opts.detailDistance ?? 95; // beyond this the window trim and props drop
   function refreshLOD() {
+    // distance to the tile's box, not its centre: a 256 m tile has a 180 m radius, and
+    // subtracting that would keep half the village at full detail.
     for (const c of chunkList) {
-      // distance to the chunk's box, not its centre: a 256 m tile has a 180 m radius, and
-      // subtracting that would keep half the village at full detail.
-      const d = c.box.distanceToPoint(cam.position);
-      const shell = d < shellDist;
+      const shell = c.box.distanceToPoint(cam.position) < shellDist;
       for (const m of c.shell) m.visible = shell;
-      for (const m of c.detail) m.visible = d < detailDist;
       for (const m of c.far) m.visible = !shell;
+    }
+    for (const c of detailList) {
+      const on = c.box.distanceToPoint(cam.position) < detailDist;
+      for (const m of c.detail) m.visible = on;
     }
   }
   refreshLOD();
@@ -851,6 +867,7 @@ export function createBuildings(engine, world, opts = {}) {
     group,
     count: designs.length,
     chunks: chunkList.length,
+    detailTiles: detailList.length,
     drawCalls,
     materials: M,
     update(dt) {
@@ -871,14 +888,14 @@ export function createBuildings(engine, world, opts = {}) {
 
 /* ==================================================================== one building = */
 
-function buildOne(d, chunk, world, M, place) {
+function buildOne(d, chunk, dchunk, world, M, place) {
   // `out` routes each kind of surface at its own LOD tier: masses into the shell bucket,
   // trim / joinery / furniture into the detail bucket.
   const out = {
     plaster: chunk.shell.plaster, stone: chunk.shell.stone, tile: chunk.shell.tile,
-    sheeting: chunk.shell.sheeting, trim: chunk.detail.plaster,
-    shutter: chunk.detail.shutter, glass: chunk.detail.glass,
-    metal: chunk.detail.metal, foliage: chunk.detail.foliage,
+    sheeting: chunk.shell.sheeting, trim: dchunk.detail.plaster,
+    shutter: dchunk.detail.shutter, glass: dchunk.detail.glass,
+    metal: dchunk.detail.metal, foliage: dchunk.detail.foliage,
   };
   const { ring, floorY, wallH, storeys, storeyH, kind, tint, roofTint } = d;
   const wallTopY = floorY + wallH;
@@ -887,8 +904,8 @@ function buildOne(d, chunk, world, M, place) {
   const soffitCol = [tint[0] * 0.50, tint[1] * 0.49, tint[2] * 0.48];
   const doorCol = [0.30 + d.rand() * 0.25, 0.22 + d.rand() * 0.16, 0.16 + d.rand() * 0.12];
   const glassCol = [1, 1, 1];
-  const glassTop = [1.35, 1.42, 1.55];      // upper pane catches the sky
-  const glassBot = [0.42, 0.46, 0.52];      // lower pane looks into the room
+  const glassTop = [1.10, 1.20, 1.34];      // upper pane catches the sky
+  const glassBot = [0.30, 0.34, 0.40];      // lower pane looks into the room
   const frameCol = [1.10, 1.09, 1.06];
   const shutterCol = [0.92 + d.rand() * 0.1, 0.92, 0.90];
   const stoneCol = [0.96 + d.rand() * 0.08, 0.96, 0.95];
@@ -1147,7 +1164,7 @@ function addGardenWall(d, world, out, tint) {
   const a = d.ring[d.entrance], b = d.ring[(d.entrance + 1) % d.ring.length];
   const f = edgeFrame(a, b);
   if (!f || f.L < 4.5) return;
-  const off = 5.0 + d.rand() * 2.5, H = 0.85 + d.rand() * 0.25;
+  const off = 4.2 + d.rand() * 1.8, H = 0.85 + d.rand() * 0.25;
   const len = Math.min(f.L * 1.1, 16);
   const s0 = (f.L - len) * 0.5;
   const gate = 1.3;

@@ -149,99 +149,83 @@ function stepKarts(dt) {
 /* --------------------------------------------------------------- scenarios */
 /* Each scene rewinds the world and replays a fixed number of 1/60 s steps, so the moment in
    the screenshot is identical every run no matter how slow the software renderer is. */
+/* Cameras are evaluated AFTER the scenario has been replayed, so they frame where the karts
+   actually ended up rather than where they started. */
+const camAt = (k, back, side, up, aheadLook = 3, fov = 38) => {
+  const f = { x: Math.sin(k.yaw), z: Math.cos(k.yaw) };
+  const r = { x: f.z, z: -f.x };
+  return {
+    pos: [k.pos.x - f.x * back + r.x * side, k.pos.y + up, k.pos.z - f.z * back + r.z * side],
+    look: [k.pos.x + f.x * aheadLook, k.pos.y + 0.8, k.pos.z + f.z * aheadLook],
+    fov,
+  };
+};
+
 const SCENES = {
   boxes: {
-    frames: 84, fov: 40,
+    frames: 76, fov: 40,
     setup() {
       const b = items.boxes[3];
       karts.forEach((k, i) => placeKart(k, b.s - 26 - i * 6.5, [-3.2, 0, 3.2, -1.6, 1.6][i], 21));
       hero = karts[0];
     },
-    camera() {
-      const b = items.boxes[3], sm = track.sample(b.s - 13);
-      return {
-        pos: [sm.pos.x - sm.tangent.x * 7.0 + sm.normal.x * 1.2, sm.pos.y + 2.6, sm.pos.z - sm.tangent.z * 7.0 + sm.normal.z * 1.2],
-        look: [b.pos.x, b.pos.y + 0.1, b.pos.z], fov: 40,
-      };
-    },
+    camera() { return camAt(hero, 8.5, 0.6, 3.0, 14, 40); },
   },
   pickup: {
-    frames: 128, fov: 34,
+    frames: 122, fov: 36,
     setup() {
       const b = items.boxes[3];
       karts.forEach((k, i) => placeKart(k, b.s - 39.6 - i * 10, [-3.2, 3.2, 0, -1.6, 1.6][i], 21));
       hero = karts[0];
     },
-    camera() {
-      const b = items.boxes[4], sm = track.sample(b.s - 6);
-      return {
-        pos: [sm.pos.x - sm.tangent.x * 10.5 + sm.normal.x * 6.4, sm.pos.y + 3.4, sm.pos.z - sm.tangent.z * 10.5 + sm.normal.z * 6.4],
-        look: [b.pos.x, b.pos.y - 0.35, b.pos.z], fov: 36,
-      };
-    },
+    camera() { return camAt(hero, 8.0, 5.0, 3.0, 2, 36); },
   },
   lineup: { frames: 30, fov: 34, display: true },
   chaos: {
-    frames: 150, fov: 42,
+    frames: 150, fov: 44,
     setup() {
       const s0 = items.boxes[6].s + 40;
-      karts.forEach((k, i) => placeKart(k, s0 + [0, -16, -30, -44, -58][i], [-1.0, 2.6, -2.8, 1.4, -3.4][i], 22));
-      hero = karts[2];
-      items.setItem(karts[2], 'sabra');
+      karts.forEach((k, i) => placeKart(k, s0 + [0, -14, -26, -40, -54][i], [-1.0, 2.6, -2.8, 1.4, -3.4][i], 22));
+      hero = karts[0];
+      items.setItem(karts[0], 'pan');
       items.setItem(karts[3], 'hummus');
       items.setItem(karts[4], 'khamsin');
       items.setItem(karts[1], 'pardes');
-      at(0.05, () => items.useItem(karts[3], true));
-      at(0.10, () => items.useItem(karts[4], false));
-      at(0.35, () => items.useItem(karts[1], true));
-      at(0.95, () => { items.setItem(karts[2], 'sabra'); items.useItem(karts[2], false); });
+      items.setItem(karts[2], 'sabra');
+      at(0.05, () => items.useItem(karts[0], false));    // the leader hangs its pan out behind
+      at(0.10, () => items.useItem(karts[3], true));     // hummus goes down on the racing line
+      at(0.70, () => items.useItem(karts[1], true));     // crate bursts into rolling oranges
+      at(1.65, () => items.useItem(karts[4], false));    // khamsin devil sets off up the road
+      at(1.95, () => items.useItem(karts[2], false));    // sabra launches at the kart ahead
     },
-    camera() {
-      const s0 = items.boxes[6].s + 40, sm = track.sample(s0 - 26);
-      return {
-        pos: [sm.pos.x - sm.tangent.x * 13 + sm.normal.x * 7, sm.pos.y + 6.2, sm.pos.z - sm.tangent.z * 13 + sm.normal.z * 7],
-        look: [sm.pos.x + sm.tangent.x * 16, sm.pos.y + 0.4, sm.pos.z + sm.tangent.z * 16], fov: 42,
-      };
-    },
+    camera() { return camAt(karts[4], 12, 5.5, 5.6, 34, 44); },
   },
   shield: {
-    frames: 96, fov: 30,
+    frames: 96, fov: 38,
     setup() {
       const s0 = items.boxes[9].s;
-      karts.forEach((k, i) => placeKart(k, s0 - i * 11, [0, 3.0, -3.2, 2.0, -2.2][i], 19));
+      karts.forEach((k, i) => placeKart(k, s0 + [0, 9, 17, 25, 33][i], [0, 3.4, -3.6, 1.6, -1.8][i], 19));
       hero = karts[0];
       items.setItem(karts[0], 'jaffa3');
       items.setItem(karts[1], 'pan');
       items.setItem(karts[2], 'hamsa');
       items.setItem(karts[3], 'avatiach');
-      at(0.05, () => items.useItem(karts[1], false));    // deploy the pan behind the kart
-      at(0.30, () => items.useItem(karts[2], false));    // hamsa charm lights up
-      at(0.50, () => items.useItem(karts[3], false));    // watermelon growth
+      at(0.05, () => items.useItem(karts[1], false));
+      at(0.30, () => items.useItem(karts[2], false));
+      at(0.50, () => items.useItem(karts[3], false));
     },
-    camera() {
-      const s0 = items.boxes[9].s, sm = track.sample(s0 - 5);
-      return {
-        pos: [sm.pos.x - sm.tangent.x * 6.5 + sm.normal.x * 4.6, sm.pos.y + 2.5, sm.pos.z - sm.tangent.z * 6.5 + sm.normal.z * 4.6],
-        look: [sm.pos.x + sm.tangent.x * 2.5, sm.pos.y + 0.9, sm.pos.z + sm.tangent.z * 2.5], fov: 30,
-      };
-    },
+    camera() { return camAt(hero, 6.2, 3.4, 2.4, 14, 38); },
   },
   catnap: {
-    frames: 168, fov: 38,
+    frames: 268, fov: 42,
     setup() {
       const s0 = items.boxes[1].s + 30;
-      karts.forEach((k, i) => placeKart(k, s0 - i * 26, [0.5, -2.6, 2.4, -1.4, 3.0][i], 22));
+      karts.forEach((k, i) => placeKart(k, s0 - i * 22, [0.5, -2.6, 2.4, -1.4, 3.0][i], 22));
       hero = karts[0];
       items.setItem(karts[4], 'catnap');
       at(0.05, () => items.useItem(karts[4], false));
     },
-    camera() {
-      const s0 = items.boxes[1].s + 30, sm = track.sample(s0 + 2);
-      return {
-        pos: [sm.pos.x - sm.tangent.x * 11 + sm.normal.x * 6.5, sm.pos.y + 5.0, sm.pos.z - sm.tangent.z * 11 + sm.normal.z * 6.5],
-        look: [sm.pos.x, sm.pos.y + 1.4, sm.pos.z], fov: 38,
-      };
-    },
+    camera() { return camAt(hero, 11.5, 6.8, 4.8, 1, 42); },
   },
 };
 
