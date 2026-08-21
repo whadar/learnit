@@ -74,15 +74,20 @@ function texFrom(c, { repeat = false, aniso = 8 } = {}) {
   return t;
 }
 
-/** Atlas of banners, road signs and sponsor boards. Rows of 1024 x 128 cells. */
+/**
+ * Atlas of banners, road signs and sponsor boards.
+ *
+ * 16 rows of 1024 x 128 in a 1024 x 2048 canvas. Text is drawn the normal way round here;
+ * `panel()` below is responsible for making sure a viewer never sees the mirrored back of a
+ * quad (it emits a real front face and a real back face, each with its own correct UVs).
+ */
 function buildSignAtlas() {
-  const W = 1024, H = 1024, cell = 128;
+  const W = 1024, H = 2048, cell = 128, ROWS = H / cell;
   const { c, x } = makeCanvas(W, H);
   x.fillStyle = '#20242c'; x.fillRect(0, 0, W, H);
-  const rows = [];
   const font = '"DejaVu Sans","Liberation Sans","FreeSans",sans-serif';
 
-  const row = (i, draw) => { x.save(); x.translate(0, i * cell); x.beginPath(); x.rect(0, 0, W, cell); x.clip(); draw(x); x.restore(); rows.push(i); };
+  const row = (i, draw) => { x.save(); x.translate(0, i * cell); x.beginPath(); x.rect(0, 0, W, cell); x.clip(); draw(x); x.restore(); };
   const grad = (ctx, a, b) => { const g = ctx.createLinearGradient(0, 0, 0, cell); g.addColorStop(0, a); g.addColorStop(1, b); return g; };
   const centred = (ctx, he, en, col, size = 62) => {
     ctx.textAlign = 'center'; ctx.fillStyle = col;
@@ -91,39 +96,62 @@ function buildSignAtlas() {
     ctx.font = `600 ${Math.round(size * 0.52)}px ${font}`;
     ctx.fillText(en, W * 0.5, cell * 0.86);
   };
+  // a small seated-cat mark, drawn at (cx, cy) with radius r
+  const catMark = (ctx, cx, cy, r, col) => {
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.ellipse(cx, cy + r * 0.35, r * 0.72, r * 0.62, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy - r * 0.42, r * 0.46, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx - r * 0.44, cy - r * 0.62); ctx.lineTo(cx - r * 0.10, cy - r * 0.66); ctx.lineTo(cx - r * 0.36, cy - r * 1.05); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx + r * 0.44, cy - r * 0.62); ctx.lineTo(cx + r * 0.10, cy - r * 0.66); ctx.lineTo(cx + r * 0.36, cy - r * 1.05); ctx.closePath(); ctx.fill();
+    ctx.lineWidth = r * 0.16; ctx.strokeStyle = col;
+    ctx.beginPath(); ctx.moveTo(cx + r * 0.66, cy + r * 0.62); ctx.quadraticCurveTo(cx + r * 1.15, cy + r * 0.30, cx + r * 0.92, cy - r * 0.34); ctx.stroke();
+  };
+  const chequerBand = (ctx, y0, h, n) => {
+    for (let i = 0; i < n; i++) {
+      ctx.fillStyle = (i & 1) ? '#16171b' : '#f2efe6';
+      ctx.fillRect(i * W / n, y0, W / n + 1, h);
+    }
+  };
 
   // 0 — start gantry banner
   row(0, ctx => {
-    ctx.fillStyle = grad(ctx, '#123a6b', '#0a2244'); ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = grad(ctx, '#16457c', '#0a2246'); ctx.fillRect(0, 0, W, cell);
     ctx.fillStyle = '#e9b53a'; ctx.fillRect(0, cell - 9, W, 9); ctx.fillRect(0, 0, W, 6);
-    centred(ctx, 'מסלול מושב עמיקם', 'AMIKAM VILLAGE CIRCUIT', '#f4efe2', 58);
+    catMark(ctx, 74, cell * 0.52, 34, 'rgba(233,181,58,0.85)');
+    catMark(ctx, W - 74, cell * 0.52, 34, 'rgba(233,181,58,0.85)');
+    centred(ctx, 'מסלול מושב עמיקם', 'AMIKAM VILLAGE CIRCUIT', '#f6f1e4', 56);
   });
-  // 1 — START / FINISH
+  // 1 — START / FINISH, chequer-edged
   row(1, ctx => {
     ctx.fillStyle = '#f3efe4'; ctx.fillRect(0, 0, W, cell);
-    for (let i = 0; i < 16; i++) { ctx.fillStyle = (i & 1) ? '#191a1e' : '#f3efe4'; ctx.fillRect(i * W / 16, 0, W / 16, 22); ctx.fillRect(i * W / 16, cell - 22, W / 16, 22); }
+    chequerBand(ctx, 0, 24, 32); chequerBand(ctx, cell - 24, 24, 32);
     centred(ctx, 'זינוק · סיום', 'START / FINISH', '#16181c', 52);
   });
   // 2 — lap banner
   row(2, ctx => {
-    ctx.fillStyle = grad(ctx, '#8d1f26', '#5d1119'); ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = grad(ctx, '#9a2027', '#5d1119'); ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#e9b53a'; ctx.fillRect(0, 0, W, 5); ctx.fillRect(0, cell - 5, W, 5);
     centred(ctx, 'הקפה אחרונה', 'FINAL LAP', '#f7e9c9', 58);
   });
   // 3 — sponsor: olive press
   row(3, ctx => {
     ctx.fillStyle = '#2f5b34'; ctx.fillRect(0, 0, W, cell);
     ctx.fillStyle = '#cfe0b6'; ctx.beginPath(); ctx.ellipse(96, cell / 2, 40, 26, -0.4, 0, TAU); ctx.fill();
-    centred(ctx, 'בית הבד עמיקם', 'AMIKAM OLIVE PRESS', '#e9f0dc', 52);
+    ctx.fillStyle = '#8fae70'; ctx.beginPath(); ctx.ellipse(W - 96, cell / 2, 40, 26, 0.4, 0, TAU); ctx.fill();
+    centred(ctx, 'בית הבד עמיקם', 'AMIKAM OLIVE PRESS', '#e9f0dc', 50);
   });
   // 4 — sponsor: dairy / cats
   row(4, ctx => {
     ctx.fillStyle = '#2a3b6d'; ctx.fillRect(0, 0, W, cell);
-    centred(ctx, 'מחלבת רמות מנשה', 'RAMOT MENASHE DAIRY', '#f0eede', 52);
+    catMark(ctx, 92, cell * 0.52, 36, '#dfe6f4');
+    centred(ctx, 'מחלבת רמות מנשה', 'RAMOT MENASHE DAIRY', '#f0eede', 50);
   });
   // 5 — sponsor: watermelon
   row(5, ctx => {
     ctx.fillStyle = '#b8362f'; ctx.fillRect(0, 0, W, cell);
-    centred(ctx, 'אבטיחי העמק', 'VALLEY WATERMELONS', '#fdf1de', 52);
+    ctx.fillStyle = '#2d6b34'; ctx.beginPath(); ctx.arc(92, cell / 2, 42, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#e6584e'; ctx.beginPath(); ctx.arc(92, cell / 2, 32, 0, TAU); ctx.fill();
+    centred(ctx, 'אבטיחי העמק', 'VALLEY WATERMELONS', '#fdf1de', 50);
   });
   // 6 — hairpin warning (yellow)
   row(6, ctx => {
@@ -137,7 +165,89 @@ function buildSignAtlas() {
     ctx.strokeStyle = '#f0eede'; ctx.lineWidth = 6; ctx.strokeRect(10, 10, W - 20, cell - 20);
     centred(ctx, 'רחוב רקפת', 'REHOV RAKEFET', '#f0eede', 52);
   });
-  return { tex: texFrom(c), cell: cell / H, rows: 8 };
+  // 8 — 100 m board
+  row(8, ctx => {
+    ctx.fillStyle = '#f2efe4'; ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#1b1c20'; ctx.fillRect(0, 0, W, 8); ctx.fillRect(0, cell - 8, W, 8);
+    for (let i = 0; i < 3; i++) { ctx.fillStyle = '#8d1f26'; ctx.fillRect(150 + i * 90, 26, 46, cell - 52); }
+    ctx.textAlign = 'center'; ctx.fillStyle = '#1b1c20';
+    ctx.font = `800 82px ${font}`; ctx.fillText('100', W * 0.62, cell * 0.76);
+    ctx.font = `700 40px ${font}`; ctx.fillText('m', W * 0.80, cell * 0.76);
+  });
+  // 9 — 50 m board
+  row(9, ctx => {
+    ctx.fillStyle = '#f2efe4'; ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#1b1c20'; ctx.fillRect(0, 0, W, 8); ctx.fillRect(0, cell - 8, W, 8);
+    for (let i = 0; i < 2; i++) { ctx.fillStyle = '#8d1f26'; ctx.fillRect(200 + i * 90, 26, 46, cell - 52); }
+    ctx.textAlign = 'center'; ctx.fillStyle = '#1b1c20';
+    ctx.font = `800 82px ${font}`; ctx.fillText('50', W * 0.62, cell * 0.76);
+    ctx.font = `700 40px ${font}`; ctx.fillText('m', W * 0.78, cell * 0.76);
+  });
+  // 10 — sponsor: winery
+  row(10, ctx => {
+    ctx.fillStyle = grad(ctx, '#6d3055', '#431c36'); ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#c9a24a'; ctx.fillRect(0, cell - 7, W, 7);
+    centred(ctx, 'יקב רמות מנשה', 'MENASHE HILLS WINERY', '#f0e2d6', 50);
+  });
+  // 11 — sponsor: tyres
+  row(11, ctx => {
+    ctx.fillStyle = '#17181c'; ctx.fillRect(0, 0, W, cell);
+    ctx.strokeStyle = '#e0a21f'; ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(96, cell / 2, 38, 0, TAU); ctx.stroke();
+    centred(ctx, 'צמיגי עמיקם', 'AMIKAM TYRES', '#f0d99a', 52);
+  });
+  // 12 — chequered strip (no text) for barrier tops
+  row(12, ctx => { chequerBand(ctx, 0, cell * 0.5, 32); chequerBand(ctx, cell * 0.5, cell * 0.5, 32); ctx.fillStyle = '#f2efe6'; for (let i = 0; i < 32; i += 2) ctx.fillRect(i * W / 32, cell * 0.5, W / 32 + 1, cell * 0.5); for (let i = 1; i < 32; i += 2) { ctx.fillStyle = '#16171b'; ctx.fillRect(i * W / 32, cell * 0.5, W / 32 + 1, cell * 0.5); } });
+  // 13 — marshal post
+  row(13, ctx => {
+    ctx.fillStyle = '#e56a12'; ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#1b1c20'; ctx.fillRect(0, 0, W, 7); ctx.fillRect(0, cell - 7, W, 7);
+    centred(ctx, 'עמדת שופט', 'MARSHAL POST', '#1b1c20', 54);
+  });
+  // 14 — championship banner
+  row(14, ctx => {
+    ctx.fillStyle = grad(ctx, '#0e6b6e', '#07393f'); ctx.fillRect(0, 0, W, cell);
+    catMark(ctx, 80, cell * 0.5, 36, '#f2c94c');
+    catMark(ctx, W - 80, cell * 0.5, 36, '#f2c94c');
+    centred(ctx, 'אליפות החתולים', 'KAT RACING GRAND PRIX', '#f2efe0', 52);
+  });
+  // 15 — red/white chevron hazard
+  row(15, ctx => {
+    ctx.fillStyle = '#f2efe4'; ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#c1332b';
+    for (let i = -1; i < 18; i++) {
+      ctx.beginPath();
+      ctx.moveTo(i * 64, cell); ctx.lineTo(i * 64 + 34, cell); ctx.lineTo(i * 64 + 34 + cell, 0); ctx.lineTo(i * 64 + cell, 0);
+      ctx.closePath(); ctx.fill();
+    }
+  });
+  return { tex: texFrom(c), cell: cell / H, rows: ROWS };
+}
+
+/** Vertical feather-flag banners: 4 designs across one 512 x 512 texture. */
+function buildFlagTexture() {
+  const W = 512, H = 512, cw = W / 4;
+  const { c, x } = makeCanvas(W, H);
+  const font = '"DejaVu Sans","Liberation Sans","FreeSans",sans-serif';
+  const designs = [
+    { bg: '#16457c', fg: '#e9b53a', t: 'KAT' },
+    { bg: '#9a2027', fg: '#f7e9c9', t: 'GP' },
+    { bg: '#2f5b34', fg: '#e9f0dc', t: 'OLIVE' },
+    { bg: '#e0a21f', fg: '#2b2417', t: 'AMIKAM' },
+  ];
+  designs.forEach((d, i) => {
+    const x0 = i * cw;
+    x.fillStyle = d.bg; x.fillRect(x0, 0, cw, H);
+    x.fillStyle = d.fg; x.fillRect(x0 + 6, 8, cw - 12, 6); x.fillRect(x0 + 6, H - 14, cw - 12, 6);
+    x.save();
+    x.translate(x0 + cw * 0.5, H * 0.5);
+    x.textAlign = 'center'; x.fillStyle = d.fg;
+    x.font = `800 ${Math.round(cw * 0.44)}px ${font}`;
+    const letters = d.t.split('');
+    const step = Math.min(cw * 0.56, (H * 0.72) / letters.length);
+    letters.forEach((ch, k) => x.fillText(ch, 0, (k - (letters.length - 1) / 2) * step + step * 0.34));
+    x.restore();
+  });
+  return { tex: texFrom(c), cols: 4 };
 }
 
 /** Triangular bunting pennants, alternating colours. */
@@ -195,6 +305,7 @@ export function createFurniture(engine, world, track, opts = {}) {
     seed: 424242,
     rails: true, tyres: true, bales: true, crates: true, bunting: true,
     stands: true, gantry: true, signs: true, arches: true, jump: true, grove: true,
+    markers: true, barriers: true, marshals: true, village: true,
     shadows: true,
   }, opts);
   const R = rng(o.seed);
@@ -202,7 +313,8 @@ export function createFurniture(engine, world, track, opts = {}) {
 
   const metal = new Builder(), wood = new Builder(), rubber = new Builder();
   const straw = new Builder(), foliage = new Builder(), fur = new Builder();
-  const panels = [];   // textured quads collected into one atlas mesh
+  const panels = [];      // textured quads collected into one atlas mesh
+  const flagPanels = [];  // vertical feather-flag quads (their own small texture)
 
   const len = track.length;
   const at = s => track.sample(((s % len) + len) % len);
@@ -333,43 +445,142 @@ export function createFurniture(engine, world, track, opts = {}) {
 
   /* -------------------------------------------------------- start gantry --- */
   const atlas = buildSignAtlas();
-  function panel(x, y, z, ry, w, h, rowIdx, rx = 0) {
-    const g = new THREE.PlaneGeometry(w, h);
-    const uv = g.attributes.uv;
-    for (let i = 0; i < uv.count; i++) {
-      uv.setY(i, 1 - (rowIdx + (1 - uv.getY(i))) * atlas.cell);
+  const flagTex = buildFlagTexture();
+  /**
+   * A trackside sign.
+   *
+   * The old version pushed a single quad and relied on `side: DoubleSide`, so anyone standing
+   * behind the sign — which, for the gantry banner and the pit-wall boards, was the whole
+   * grid — read the artwork through the back of the plane, i.e. mirrored. Now every sign emits
+   * two *real* faces, each with its own correctly-wound UVs, and the material is single sided.
+   * `ry` is the yaw of the front face; both faces read the right way round regardless.
+   */
+  function panel(x, y, z, ry, w, h, rowIdx, rx = 0, opts = {}) {
+    const t = opts.thickness === undefined ? 0.035 : opts.thickness;
+    const face = back => {
+      const g = new THREE.PlaneGeometry(w, h);
+      if (back) g.rotateY(Math.PI);
+      g.translate(0, 0, back ? -t : t);
+      const uv = g.attributes.uv;
+      const rIdx = back && opts.backRow !== undefined ? opts.backRow : rowIdx;
+      for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - (rIdx + (1 - uv.getY(i))) * atlas.cell);
+      panels.push({ g, m: trs(x, y, z, ry, 1, 1, 1, rx) });
+    };
+    face(false);
+    if (opts.oneSided !== true) face(true);
+    if (opts.frame !== false) {
+      metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+        trs(x, y, z, ry, w * 1.02, h * 1.06, t * 1.7, rx), opts.frameCol || [0.14, 0.15, 0.17]);
     }
-    panels.push({ g, m: trs(x, y, z, ry, 1, 1, 1, rx) });
+  }
+  /** Vertical feather flag on a pole; `col` picks one of four designs. */
+  function featherFlag(x, gy, z, ry, hgt, col) {
+    const w = hgt * 0.30;
+    const u0 = col / 4, u1 = (col + 1) / 4;
+    for (const back of [false, true]) {
+      const g = new THREE.PlaneGeometry(w, hgt);
+      if (back) g.rotateY(Math.PI);
+      g.translate(w * 0.5 + 0.07, hgt * 0.5 + 0.9, back ? -0.02 : 0.02);
+      const uv = g.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setX(i, lerp(u0, u1, uv.getX(i)));
+      flagPanels.push({ g, m: trs(x, gy, z, ry) });
+    }
+    metal.add(geo('flagpole', () => new THREE.CylinderGeometry(0.05, 0.06, 1, 6)),
+      trs(x, gy + (hgt + 1.4) * 0.5, z, ry, 1, hgt + 1.4, 1), [0.62, 0.63, 0.66]);
+    metal.add(geo('flagfoot', () => new THREE.CylinderGeometry(0.34, 0.40, 0.14, 8)),
+      trs(x, gy + 0.07, z, ry), [0.30, 0.31, 0.33]);
   }
   if (o.gantry) {
     const sm = at(track.startS), hw = sm.width * 0.5;
-    const ry = Math.atan2(sm.tangent.x, sm.tangent.z);
-    const towerC = [0.72, 0.73, 0.75];
+    // the banner faces back down the road, at the karts coming to the line
+    const ryFwd = Math.atan2(sm.tangent.x, sm.tangent.z);
+    const ry = ryFwd + Math.PI;
+    const towerC = [0.74, 0.75, 0.77];
     for (const sgn of [-1, 1]) {
-      const p = side(sm, sgn * (hw + 2.0));
+      const p = side(sm, sgn * (hw + 2.2));
       const gy = Math.min(p.y, world.heightAt(p.x, p.z));
-      metal.add(geo('tower', () => new THREE.BoxGeometry(0.85, 8.0, 0.85)), trs(p.x, gy + 4.0, p.z, ry), towerC);
-      metal.add(geo('foot', () => new THREE.BoxGeometry(1.7, 0.34, 1.7)), trs(p.x, gy + 0.17, p.z, ry), [0.5, 0.5, 0.52]);
-      for (let i = 1; i < 5; i++)
-        metal.add(geo('brace', () => new THREE.BoxGeometry(0.16, 0.16, 1.9)),
-          trs(p.x, gy + i * 1.6, p.z, ry), [0.62, 0.63, 0.65]);
+      metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+        trs(p.x, gy + 4.3, p.z, ry, 0.95, 8.6, 0.95), towerC);
+      metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+        trs(p.x, gy + 0.22, p.z, ry, 2.1, 0.44, 2.1), [0.48, 0.49, 0.51]);
+      // red/white hazard skirt on the tower foot, so the gate reads from far away
+      panel(p.x, gy + 1.5, p.z, ry, 1.0, 1.9, 15, 0, { thickness: 0.5, frame: false });
+      panel(p.x, gy + 1.5, p.z, ry + Math.PI / 2, 1.0, 1.9, 15, 0, { thickness: 0.5, frame: false });
+      for (let i = 1; i < 6; i++)
+        metal.add(geo('brace', () => new THREE.BoxGeometry(0.16, 0.16, 2.1)),
+          trs(p.x, gy + 1.6 + i * 1.25, p.z, ry), [0.60, 0.61, 0.64]);
+      // diagonal truss on the outward face
+      for (let i = 0; i < 5; i++)
+        metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+          trs(p.x, gy + 2.1 + i * 1.25, p.z, ry, 0.10, 1.75, 0.10, 0, (i % 2 ? 1 : -1) * 0.62), [0.58, 0.59, 0.62]);
+      // feather flags flanking the gate
+      for (const d of [-3.4, 3.4]) {
+        const q = { x: p.x + sm.tangent.x * d, z: p.z + sm.tangent.z * d };
+        const qy = world.heightAt(q.x, q.z);
+        featherFlag(q.x, qy, q.z, ryFwd + (sgn > 0 ? -0.5 : 0.5), 3.1, ((d < 0 ? 0 : 2) + (sgn > 0 ? 1 : 0)) % 4);
+      }
     }
     const c0 = side(sm, 0);
     const gy = Math.min(c0.y, world.heightAt(c0.x, c0.z));
-    const span = hw * 2 + 5.4;
+    const span = hw * 2 + 5.8;
     metal.add(geo('beam', () => new THREE.BoxGeometry(1.0, 1.0, 1.0)),
-      trs(c0.x, gy + 7.6, c0.z, ry, 0.9, 0.9, span), [0.68, 0.69, 0.71]);
-    panel(c0.x, gy + 8.6, c0.z, ry, span * 0.95, 1.55, 0);
-    panel(c0.x, gy + 6.55, c0.z, ry, span * 0.95, 1.05, 1);
-    // sponsor boards along the pit wall
-    for (let i = 0; i < 6; i++) {
-      const s2 = track.startS - 30 + i * 10;
-      const s3 = at(s2), h2 = s3.width * 0.5;
-      const p = side(s3, -(h2 + 2.4));
-      const g2 = Math.min(p.y, world.heightAt(p.x, p.z));
-      panel(p.x, g2 + 0.75, p.z, Math.atan2(s3.tangent.x, s3.tangent.z), 8.6, 1.15, 3 + (i % 3));
-      wood.add(geo('boardpost', () => new THREE.BoxGeometry(0.12, 1.5, 0.12)),
-        trs(p.x, g2 + 0.75, p.z, 0), [0.38, 0.32, 0.26]);
+      trs(c0.x, gy + 7.55, c0.z, ry, 1.0, 1.0, span), [0.70, 0.71, 0.73]);
+    metal.add(geo('beam', () => new THREE.BoxGeometry(1.0, 1.0, 1.0)),
+      trs(c0.x, gy + 9.72, c0.z, ry, 0.5, 0.42, span * 0.97), [0.62, 0.63, 0.66]);
+    // headline banner + START/FINISH board, both readable from either side
+    panel(c0.x, gy + 8.95, c0.z, ry, span * 0.94, 2.1, 0);
+    panel(c0.x, gy + 6.32, c0.z, ry, span * 0.94, 1.30, 1);
+    // a chequered valance hanging under the beam
+    panel(c0.x, gy + 5.45, c0.z, ry, span * 0.94, 0.44, 12, 0, { frame: false, thickness: 0.02 });
+    // gantry lights: five bulbs across the beam, F1-style
+    for (let i = 0; i < 5; i++) {
+      const t = (i - 2) * span * 0.135;
+      const lx = c0.x + sm.tangent.x * 0 - sm.normal.x * t, lz = c0.z - sm.normal.z * t;
+      metal.add(geo('lightbox', () => new THREE.BoxGeometry(0.62, 0.72, 0.34)),
+        trs(lx, gy + 10.25, lz, ry), [0.10, 0.11, 0.12]);
+      metal.add(geo('bulb', () => new THREE.SphereGeometry(0.20, 8, 6)),
+        trs(lx, gy + 10.25, lz + 0.0, ry, 1, 1, 0.6), [0.62, 0.10, 0.09]);
+    }
+
+    // tyre stacks bracketing the crossing
+    for (const sgn of [-1, 1]) for (let j = -1; j <= 1; j++) {
+      const s2 = at(track.startS + j * 1.35), h2 = s2.width * 0.5;
+      const q = side(s2, sgn * (h2 + 4.2));
+      const qy = Math.min(q.y, world.heightAt(q.x, q.z));
+      tyreStack(q.x, qy, q.z, 3, j === 0 ? [0.82, 0.80, 0.76] : [0.62, 0.10, 0.09]);
+    }
+
+    // pit wall: sponsor hoardings both sides of the straight, on a low concrete wall
+    for (const sgn of [-1, 1]) {
+      for (let i = 0; i < 7; i++) {
+        const s2 = track.startS - 40 + i * 11.4;
+        // leave the crossing itself clear so the chequered walls and the line stay visible
+        if (Math.abs(s2 - track.startS) < 7.5) continue;
+        const s3 = at(s2), h2 = s3.width * 0.5;
+        const p = side(s3, sgn * (h2 + 2.5));
+        const g2 = Math.min(p.y, world.heightAt(p.x, p.z));
+        const rw = Math.atan2(s3.tangent.x, s3.tangent.z) + (sgn > 0 ? 0 : Math.PI);
+        const rows = [3, 4, 5, 10, 11, 14, 3];
+        panel(p.x, g2 + 1.02, p.z, rw, 8.8, 1.2, rows[(i + (sgn > 0 ? 3 : 0)) % rows.length], 0,
+          { frameCol: [0.55, 0.53, 0.50] });
+        // concrete plinth under the board
+        wood.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+          trs(p.x, g2 + 0.21, p.z, rw, 8.9, 0.42, 0.5), [0.68, 0.66, 0.60]);
+        for (const d of [-4.1, 4.1])
+          metal.add(geo('boardpost2', () => new THREE.BoxGeometry(0.11, 1.5, 0.11)),
+            trs(p.x + s3.tangent.x * d, g2 + 0.76, p.z + s3.tangent.z * d, rw), [0.70, 0.71, 0.73]);
+        // light capping rail along the top of the hoarding
+        metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+          trs(p.x, g2 + 1.70, p.z, rw, 9.0, 0.10, 0.20), [0.78, 0.78, 0.79]);
+        // a few cats leaning over the hoarding to watch
+        for (let k = 0; k < 3; k++) {
+          if (R() > 0.7) continue;
+          const d = (k - 1) * 2.6 + (R() - 0.5);
+          const bx = p.x + s3.tangent.x * d + s3.normal.x * sgn * 0.8;
+          const bz = p.z + s3.tangent.z * d + s3.normal.z * sgn * 0.8;
+          catAt(fur, bx, Math.min(g2, world.heightAt(bx, bz)) + 0.75, bz, rw + Math.PI, 1.0, R);
+        }
+      }
     }
   }
 
@@ -411,6 +622,143 @@ export function createFurniture(engine, world, track, opts = {}) {
       metal.add(geo('signpost', () => new THREE.CylinderGeometry(0.07, 0.07, 2.6, 6)),
         trs(p.x, gy + 1.3, p.z, 0), [0.55, 0.56, 0.58]);
       panel(p.x, gy + 2.25, p.z, ry, 2.9, 0.44, mk.row);
+    }
+  }
+
+  /* ------------------------------------------------- distance markers ----- */
+  if (o.markers) {
+    const hard = track.corners.slice().sort((a, b2) => Math.abs(b2.angle) - Math.abs(a.angle)).slice(0, 5);
+    for (const c of hard) {
+      const sgn = c.angle > 0 ? -1 : 1;                  // outside of the corner
+      for (const [d, rowIdx] of [[100, 8], [50, 9]]) {
+        const sm = at(c.s - d), hw = sm.width * 0.5;
+        const p = side(sm, sgn * (hw + 2.6));
+        const gy = Math.min(p.y, world.heightAt(p.x, p.z));
+        const ry = Math.atan2(sm.tangent.x, sm.tangent.z) + Math.PI + sgn * 0.30;
+        panel(p.x, gy + 1.62, p.z, ry, 2.3, 0.95, rowIdx, 0, { frameCol: [0.30, 0.31, 0.33] });
+        for (const t of [-0.95, 0.95])
+          metal.add(geo('markpost', () => new THREE.CylinderGeometry(0.06, 0.06, 1.9, 6)),
+            trs(p.x + Math.cos(ry) * t, gy + 0.95, p.z - Math.sin(ry) * t, 0), [0.52, 0.53, 0.55]);
+      }
+    }
+  }
+
+  /* ---------------------------------------------------- crowd barriers ---- */
+  if (o.barriers) {
+    // outside the pit-wall boards on the start straight, and around the two grandstands
+    const runs = [
+      { s0: track.startS - 62, s1: track.startS - 36, sgn: -1 },
+      { s0: track.startS + 40, s1: track.startS + 76, sgn: -1 },
+      { s0: track.startS - 62, s1: track.startS - 22, sgn: 1 },
+      { s0: track.startS + 44, s1: track.startS + 84, sgn: 1 },
+      { s0: track.startS + 0.375 * len - 22, s1: track.startS + 0.375 * len + 22, sgn: -1 },
+    ];
+    for (const r of runs) {
+      const n = Math.max(2, Math.round((r.s1 - r.s0) / 2.4));
+      for (let i = 0; i < n; i++) {
+        const sm = at(lerp(r.s0, r.s1, (i + 0.5) / n)), hw = sm.width * 0.5;
+        const p = side(sm, r.sgn * (hw + 4.2));
+        const gy = Math.min(p.y, world.heightAt(p.x, p.z));
+        const ry = Math.atan2(sm.tangent.x, sm.tangent.z);
+        // frame: two uprights, top and bottom rail, four verticals
+        for (const t of [-1.1, 1.1])
+          metal.add(geo('barpost', () => new THREE.BoxGeometry(0.07, 1.15, 0.07)),
+            trs(p.x + sm.tangent.x * t, gy + 0.58, p.z + sm.tangent.z * t, ry), [0.66, 0.67, 0.69]);
+        for (const h of [1.08, 0.12])
+          metal.add(geo('barrail', () => new THREE.BoxGeometry(1, 1, 1)),
+            trs(p.x, gy + h, p.z, ry, 0.06, 0.07, 2.3), [0.66, 0.67, 0.69]);
+        for (const t of [-0.55, 0, 0.55])
+          metal.add(geo('barvert', () => new THREE.BoxGeometry(0.045, 0.98, 0.045)),
+            trs(p.x + sm.tangent.x * t, gy + 0.6, p.z + sm.tangent.z * t, ry), [0.60, 0.61, 0.63]);
+        // every third bay carries a small sponsor skirt
+        if (i % 3 === 1)
+          panel(p.x, gy + 0.60, p.z, ry + (r.sgn > 0 ? 0 : Math.PI), 2.2, 0.86, [3, 5, 11, 10][i % 4], 0,
+            { frame: false, thickness: 0.03 });
+      }
+    }
+  }
+
+  /* -------------------------------------------------------- marshal posts -- */
+  if (o.marshals) {
+    const hard = track.corners.slice().sort((a, b2) => Math.abs(b2.angle) - Math.abs(a.angle)).slice(0, 6);
+    for (let ci = 0; ci < hard.length; ci++) {
+      const c = hard[ci];
+      const sgn = c.angle > 0 ? -1 : 1;
+      const sm = at(c.s + 12), hw = sm.width * 0.5;
+      const p = side(sm, sgn * (hw + 6.5));
+      const gy = Math.min(p.y, world.heightAt(p.x, p.z));
+      const ry = Math.atan2(sm.tangent.x, sm.tangent.z);
+      // raised deck
+      wood.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+        trs(p.x, gy + 0.62, p.z, ry, 2.4, 0.16, 2.4), [0.58, 0.50, 0.38]);
+      for (const dx of [-1.0, 1.0]) for (const dz of [-1.0, 1.0])
+        wood.add(geo('deckleg', () => new THREE.BoxGeometry(0.14, 0.62, 0.14)),
+          trs(p.x + sm.tangent.x * dz - sm.normal.x * dx, gy + 0.31, p.z + sm.tangent.z * dz - sm.normal.z * dx, ry),
+          [0.42, 0.34, 0.24]);
+      // railing on the track side
+      metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+        trs(p.x - sm.normal.x * sgn * 1.15, gy + 1.35, p.z - sm.normal.z * sgn * 1.15, ry, 0.06, 0.06, 2.4), [0.70, 0.71, 0.73]);
+      // orange marshal board on the front rail
+      panel(p.x - sm.normal.x * sgn * 1.2, gy + 1.02, p.z - sm.normal.z * sgn * 1.2,
+        ry + (sgn > 0 ? Math.PI : 0), 2.3, 0.52, 13, 0, { frame: false, thickness: 0.03 });
+      // two marshal cats on the deck
+      for (const dz of [-0.55, 0.55])
+        catAt(fur, p.x + sm.tangent.x * dz, gy + 0.70, p.z + sm.tangent.z * dz,
+          ry + (sgn > 0 ? Math.PI * 0.5 : -Math.PI * 0.5), 1.0, R);
+      // feather flag beside the post
+      featherFlag(p.x + sm.normal.x * sgn * 1.9, world.heightAt(p.x + sm.normal.x * sgn * 1.9, p.z + sm.normal.z * sgn * 1.9),
+        p.z + sm.normal.z * sgn * 1.9, ry + 0.6, 2.8, ci % 4);
+    }
+  }
+
+  /* --------------------------------------------- village-edge dressing ---- */
+  if (o.village) {
+    const cyp = geo('cypress', () => new THREE.ConeGeometry(1, 1, 7));
+    const drum = geo('drum', () => new THREE.CylinderGeometry(0.42, 0.42, 0.88, 10));
+    const tank = geo('tank', () => new THREE.CylinderGeometry(0.85, 0.85, 1.7, 12));
+    const stack = [track.startS - 78, track.startS + 96, track.startS + 0.19 * len, track.startS + 0.62 * len];
+    for (let k = 0; k < stack.length; k++) {
+      const base = stack[k];
+      // a cypress line running away from the road
+      for (const sgn of [-1, 1]) {
+        for (let i = 0; i < 7; i++) {
+          const sm = at(base + i * 6.4), hw = sm.width * 0.5;
+          const p = side(sm, sgn * (hw + 10.0 + (R() - 0.5) * 1.6));
+          const gy = world.heightAt(p.x, p.z);
+          const h = 6.2 + R() * 3.4, w = 0.95 + R() * 0.3;
+          const tint = 0.85 + R() * 0.3;
+          wood.add(geo('cyptrunk', () => new THREE.CylinderGeometry(0.14, 0.20, 1, 5)),
+            trs(p.x, gy + 0.5, p.z, 0, 1, 1.0, 1), [0.31, 0.26, 0.20]);
+          foliage.add(cyp, trs(p.x, gy + h * 0.5 + 0.4, p.z, R() * TAU, w, h, w),
+            [0.135 * tint, 0.225 * tint, 0.135 * tint]);
+        }
+      }
+      // water tanks and olive drums on the verge
+      const sm = at(base + 18), hw = sm.width * 0.5;
+      const sgn = k % 2 ? 1 : -1;
+      const p = side(sm, sgn * (hw + 6.2));
+      const gy = world.heightAt(p.x, p.z);
+      const ry = Math.atan2(sm.tangent.x, sm.tangent.z);
+      metal.add(tank, trs(p.x, gy + 0.85, p.z, ry), [0.80, 0.79, 0.75]);
+      metal.add(geo('tankband', () => new THREE.CylinderGeometry(0.88, 0.88, 0.12, 12)),
+        trs(p.x, gy + 1.35, p.z, ry), [0.55, 0.56, 0.58]);
+      wood.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+        trs(p.x, gy + 0.06, p.z, ry, 2.2, 0.12, 2.2), [0.62, 0.60, 0.55]);
+      for (let i = 0; i < 4; i++) {
+        const q = { x: p.x + sm.tangent.x * (2.4 + i * 1.0) + sm.normal.x * (R() - 0.5),
+          z: p.z + sm.tangent.z * (2.4 + i * 1.0) + sm.normal.z * (R() - 0.5) };
+        const qy = world.heightAt(q.x, q.z);
+        metal.add(drum, trs(q.x, qy + 0.44, q.z, R() * TAU),
+          i % 2 ? [0.20, 0.34, 0.22] : [0.60, 0.30, 0.16]);
+      }
+      // olive-harvest netting spread out under the trees
+      for (let i = 0; i < 3; i++) {
+        const q = { x: p.x + sm.tangent.x * (-4 - i * 5) + sm.normal.x * sgn * 4.2,
+          z: p.z + sm.tangent.z * (-4 - i * 5) + sm.normal.z * sgn * 4.2 };
+        const qy = world.heightAt(q.x, q.z);
+        straw.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+          trs(q.x, qy + 0.04, q.z, ry + (R() - 0.5) * 0.5, 4.2, 0.06, 3.4), [0.52, 0.44, 0.22]);
+      }
     }
   }
 
@@ -574,12 +922,25 @@ export function createFurniture(engine, world, track, opts = {}) {
     for (const p of panels) pb.add(p.g, p.m, [1, 1, 1]);
     const g = pb.build();
     const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
-      map: atlas.tex, vertexColors: true, roughness: 0.78, metalness: 0.0, side: THREE.DoubleSide,
+      map: atlas.tex, vertexColors: true, roughness: 0.72, metalness: 0.0, side: THREE.FrontSide,
     }));
     mesh.name = 'furniture:signs';
     mesh.castShadow = false; mesh.receiveShadow = o.shadows;
     group.add(mesh);
     for (const p of panels) p.g.dispose();
+  }
+
+  if (flagPanels.length) {
+    const fb = new Builder();
+    for (const p of flagPanels) fb.add(p.g, p.m, [1, 1, 1]);
+    const g = fb.build();
+    const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+      map: flagTex.tex, vertexColors: true, roughness: 0.8, metalness: 0.0, side: THREE.FrontSide,
+    }));
+    mesh.name = 'furniture:flags';
+    mesh.castShadow = false; mesh.receiveShadow = o.shadows;
+    group.add(mesh);
+    for (const p of flagPanels) p.g.dispose();
   }
 
   const api = {

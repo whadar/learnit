@@ -430,10 +430,11 @@ function attachPost() {
     width: engine.renderer.domElement.clientWidth || 1280,
     height: engine.renderer.domElement.clientHeight || 720,
     quality: QS().postTier,
-    // post.js is tuned for a landscape shot; a kart game puts additive drift smoke, sparks and
-    // boost flame two metres from the lens, which the stock bloom turns into a white hole, and
-    // the stock shutter smears the road to mush at 90 km/h. These are call-site trims only.
-    bloomStrength: 0.42, bloomThreshold: 8.2, bloomClamp: 1.5,
+    // A kart game puts additive drift smoke, sparks and boost flame two metres from the lens,
+    // and the stock shutter smears the road to mush at 90 km/h. The bloom trims that used to
+    // live here (0.42 / 8.2 / 1.5) were the cause of the white hole they were meant to
+    // prevent — post.js now ships the kart-safe numbers as its defaults, so only the shutter
+    // and the lens fringe need trimming from the call site.
     motionShutter: 0.45, motionMax: 0.0085,
     chromatic: 0.0026,
   }));
@@ -861,15 +862,39 @@ function updateAudio(dt) {
 
 /* ----------------------------------------------------------------- post --- */
 
+// Smoothed 0..1 "punch" handed to the post stack. Kept across frames so a 0.6 s mini-turbo
+// ramps in and out instead of switching the whole grade on for exactly as long as it lasts.
+let postPunch = 0;
+
 function updatePost(dt) {
   const post = S.post, race = S.race;
   if (!post) return;
   const p = race?.state.player;
   const st = p?.vehicle.state;
   const kmh = st ? st.speed * 3.6 : 0;
-  const boost = st ? clamp(st.boost.time > 0 ? 1 : 0, 0, 1) : 0;
-  post.setSpeed(kmh, boost);
-  void dt;
+
+  // Scale by how strong the boost actually is. This used to be `boost.time > 0 ? 1 : 0`,
+  // which drove the rush blur, the speed lines, the bloom kick and the saturation push at
+  // full intensity for *every* boost in the game — including a tier-1 mini-turbo (power
+  // 0.18, the mildest kick there is) and a pad (0.30). That is why review plates shot at an
+  // ordinary 58-62 km/h came back smeared to the edges with speed lines over the sky.
+  // vehicle.js's boostPower ladder is [0.18, 0.27, 0.37]; map it onto 0.20 .. 1.0 so a
+  // tier-1 charge is a whisper and only a tier-3 or a mushroom earns the full effect.
+  const b = st?.boost;
+  let punch = 0;
+  if (b && b.time > 0) {
+    punch = 0.20 + 0.80 * clamp((b.power - 0.18) / (0.37 - 0.18), 0, 1);
+    punch *= clamp(b.time / 0.20, 0, 1);            // ease out over the last fifth of a second
+  }
+  // The rush is a driver's-eye effect: it belongs to the chase camera and nowhere else.
+  // A fixed cinematic plate looking down at the pack must never get radial speed lines.
+  if (!S.camera || S.camera.mode !== 'chase') punch = 0;
+
+  const k = 1 - Math.exp(-clamp(dt || 1 / 60, 0, 0.25) * (punch > postPunch ? 11 : 8));
+  postPunch += (punch - postPunch) * k;
+  if (postPunch < 1e-3) postPunch = 0;
+
+  post.setSpeed(kmh, postPunch);
 }
 
 /* --------------------------------------------------------------- resize --- */

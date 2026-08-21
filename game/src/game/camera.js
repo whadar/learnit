@@ -26,42 +26,43 @@ import { clamp, lerp, damp, smoothstep, wrapPi } from '../core/mathx.js';
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 
 export const DEFAULTS = {
-  /* chase geometry, metres */
-  back: 4.70,             // distance behind the kart's centre of mass at rest
-  backSpeed: 1.25,        // extra distance at top speed
-  backBoost: 0.55,        // … and while boosting (the kart pulls away from the lens)
-  height: 1.32,           // above the CoM, which is itself ~0.8 m above the road
-  heightSpeed: 0.24,
-  lookAhead: 9.0,
-  lookHeight: 0.52,       // aim just over the driver's ears
+  /* chase geometry, metres.  The rig sits at kart-shoulder height, close enough that the
+     player's kart fills the bottom third of frame and you can read the cat's whiskers. */
+  back: 3.35,             // distance behind the kart's centre of mass at rest
+  backSpeed: 0.60,        // extra distance at top speed
+  backBoost: 0.45,        // … and while boosting (the kart pulls away from the lens)
+  height: 1.00,           // above the CoM, which is itself ~0.52 m above the road
+  heightSpeed: 0.14,
+  lookAhead: 6.6,
+  lookHeight: 0.62,       // aim over the driver's ears, along the road, not down at it
   /* responsiveness */
-  posFreq: 2.55,          // Hz of the position spring
+  posFreq: 2.90,          // Hz of the position spring
   posDamping: 1.02,       // 1 = critically damped
-  lookLambda: 8.5,        // exponential follow for the aim point
-  yawLambda: 6.2,         // how fast the rig's heading catches the kart's
-  yawLambdaDrift: 9.5,
+  lookLambda: 9.0,        // exponential follow for the aim point
+  yawLambda: 7.0,         // how fast the rig's heading catches the kart's
+  yawLambdaDrift: 10.0,
   /* field of view */
-  fov: 62,
-  fovSpeed: 13.0,         // + degrees at top speed
-  fovBoost: 8.5,          // + degrees at full boost
+  fov: 51,
+  fovSpeed: 8.0,          // + degrees at top speed
+  fovBoost: 12.0,         // + degrees at full boost — the boost punch you feel in the lens
   fovAir: 3.0,
-  fovLambda: 4.2,
+  fovLambda: 5.4,
   /* drift */
-  driftYaw: 0.20,         // rad the rig turns INTO the corner at tier 0 …
-  driftYawTier: 0.075,    // … plus this per mini-turbo tier
-  driftSide: 1.35,        // metres the rig swings to the outside of the slide
-  driftRoll: 0.055,       // rad of camera roll into the slide
+  driftYaw: 0.19,         // rad the rig turns INTO the corner at tier 0 …
+  driftYawTier: 0.070,    // … plus this per mini-turbo tier
+  driftSide: 0.95,        // metres the rig swings to the outside of the slide
+  driftRoll: 0.050,       // rad of camera roll into the slide
   /* air / landing */
-  airHeight: 1.30,
-  airBack: 1.10,
-  landKick: 0.42,
+  airHeight: 1.00,
+  airBack: 0.80,
+  landKick: 0.34,
   hopLambda: 12.0,
   /* misc */
   lookBackTime: 0.16,     // seconds to swing round when look-back is held
   speedRef: 25.0,         // m/s that counts as "top speed" for the curves
   shakeDecay: 3.4,
-  groundClear: 1.25,      // never film from inside the hillside
-  near: 0.28, far: 6000,
+  groundClear: 1.05,      // never film from inside the hillside
+  near: 0.22, far: 6000,
 };
 
 /* ------------------------------------------------------------------ springs -- */
@@ -110,6 +111,7 @@ export function createCamera(engine, world, opts = {}) {
 
   /* ---- scratch ---- */
   const q = new THREE.Quaternion();
+  const qRoll = new THREE.Quaternion();
   const m = new THREE.Matrix4();
   const tmp = V(), tmp2 = V();
 
@@ -143,7 +145,7 @@ export function createCamera(engine, world, opts = {}) {
     q.setFromRotationMatrix(m);
     if (roll) {
       tmp.set(0, 0, 1).applyQuaternion(q);
-      q.premultiply(new THREE.Quaternion().setFromAxisAngle(tmp, -roll));
+      q.premultiply(qRoll.setFromAxisAngle(tmp, -roll));
     }
     camera.quaternion.copy(q);
     if (Math.abs(camera.fov - fov) > 1e-3) { camera.fov = fov; camera.updateProjectionMatrix(); }
@@ -159,9 +161,11 @@ export function createCamera(engine, world, opts = {}) {
     const fwd = tf ? tf.forward : { x: Math.sin(s.yaw), y: 0, z: Math.cos(s.yaw) };
 
     const spdN = clamp(s.speed / O.speedRef, 0, 1.4);
-    const boost = clamp(s.boost && s.boost.time > 0 ? 1 : 0, 0, 1);
+    // Scale with the boost's *power* (0.18 mini-turbo … 0.37 tier-3 / pad) so a big boost
+    // opens the lens visibly further than a scrappy little one.
+    const boost = s.boost && s.boost.time > 0 ? clamp(s.boost.power / 0.30, 0.5, 1.3) : 0;
     st.speed = damp(st.speed, spdN, 5, dt);
-    st.boost = damp(st.boost, boost, boost > st.boost ? 12 : 3.2, dt);
+    st.boost = damp(st.boost, boost, boost > st.boost ? 14 : 3.0, dt);
     st.air = damp(st.air, s.grounded ? 0 : 1, s.grounded ? 5 : 9, dt);
 
     /* drift: which way, and how hard */
@@ -280,12 +284,16 @@ export function createCamera(engine, world, opts = {}) {
       at = V(b.pos.x, b.pos.y + 1.1, b.pos.z);
       fov = lerp(46, 54, u);
     } else {
+      // …and lands exactly on the chase rig's resting pose behind pole, so the cut to
+      // gameplay at the end of the countdown is invisible: same height, boom and lens.
       const u = smoothstep(0, 1, (k - 0.72) / 0.28);
-      const a = sample(startS - lerp(34, 15.5, u));
-      const b = sample(startS - lerp(4, 0, u) + 14);
-      p = V(a.pos.x + a.normal.x * lerp(9, 0.4, u), a.pos.y + lerp(11.5, 3.1, u), a.pos.z + a.normal.z * lerp(9, 0.4, u));
-      at = V(b.pos.x, b.pos.y + 1.25, b.pos.z);
-      fov = lerp(52, 60, u);
+      const a = sample(startS - lerp(38, 18.4, u));
+      const b = sample(startS + lerp(26, -11.6, u));
+      // 1.55 m over the tarmac and a 51.5-degree lens is exactly where the chase rig rests
+      // (CoM 0.52 m up + O.height 1.00), so the hand-off is a dissolve, not a jump.
+      p = V(a.pos.x + a.normal.x * lerp(9, 0.25, u), a.pos.y + lerp(12.0, 1.55, u), a.pos.z + a.normal.z * lerp(9, 0.25, u));
+      at = V(b.pos.x, b.pos.y + lerp(1.6, 1.14, u), b.pos.z);
+      fov = lerp(50, 51.5, u);
     }
     clearGround(p, at);
     return { pos: p, look: at, fov };

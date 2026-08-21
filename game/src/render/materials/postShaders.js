@@ -56,6 +56,19 @@ vec3 katLinearToSRGB( vec3 c ) {
   c = max( c, vec3( 0.0 ) );
   return mix( c * 12.92, 1.055 * pow( c, vec3( 0.41666 ) ) - 0.055, step( 0.0031308, c ) );
 }
+
+// Soft highlight shoulder. Below \`k\` this is *exactly* the identity, so nothing another
+// module graded is touched; above it, values roll asymptotically into 1.0 instead of
+// slamming into a hard clamp. That difference is the whole reason a hot boost flame reads
+// as a glow with a gradient instead of a flat white plateau with a hard rim — a hard
+// clamp turns every over-bright pixel into the same 1.0 and erases the shape behind it.
+vec3 katSoftClip( vec3 v, float k ) {
+  vec3 x = max( v, vec3( 0.0 ) );
+  float w = max( 1.0 - k, 1e-4 );
+  vec3 over = min( ( x - k ) / w, vec3( 24.0 ) );          // bound the exponent argument
+  vec3 rolled = k + w * ( 1.0 - exp( - over ) );
+  return mix( x, rolled, step( vec3( k ), x ) );
+}
 `;
 
 /** 32^3 LUT packed as a 1024x32 strip, sampled with trilinear interpolation. */
@@ -88,12 +101,26 @@ void main() {
 // Bloom prefilter — a drop-in replacement for UnrealBloomPass's LuminosityHighPassShader.
 //
 // The input is display-referred, so a plain luminance threshold would bloom off mid-grey.
-// Instead the tone curve is inverted (`lin / (1.02 - lin)`, the inverse of a Reinhard-ish
+// Instead the tone curve is inverted (`m / (1.02 - m)`, the inverse of a Reinhard-ish
 // shoulder) to recover roughly how far over white a pixel was before tone mapping, and the
-// threshold is applied there. Sunlit white plaster sits near 0.95 display, which
-// reconstructs to about 4; the solar disc, boost flames and item sparkles reconstruct to
-// hundreds. A threshold around 6 therefore blooms the things that should glow and leaves
-// the village walls alone — which is the entire tuning problem for this effect.
+// threshold is applied there.
+//
+// Two details here are what stop this pass from eating the frame, and both were learned the
+// hard way from a `driftCorner` plate in which bloom off the boost flame covered a fifth of
+// the screen in flat white with the kart nowhere to be seen:
+//
+//  * **The denominator floor bounds the reconstruction.** With a 0.02 floor, display white
+//    reconstructs to 50 and display 0.95 to 7 — a 7x jump across the last 5% of the range,
+//    so no threshold can separate "sunlit plaster" from "glowing" and the effect is a
+//    cliff. At 0.06 display white lands near 17, which leaves a usable tuning range.
+//  * **The energy limit is applied to the magnitude, not per channel.** `min(c, clamp)`
+//    clips each channel independently, so a hot orange flame enters the mip pyramid as a
+//    *white* disc, already the brightest thing the blur can carry. Scaling the whole colour
+//    keeps its hue and caps how much light one pixel may smear across the frame.
+//
+// Downstream, UnrealBloomPass multiplies this by `3.0 * bloomStrength * sum(mipFactors)`,
+// and that sum is about 3.0 — so the effective gain on this image is roughly 9x the
+// strength. Any tuning here has to be read with that 9x in mind.
 // ---------------------------------------------------------------------------------------
 
 export const BloomPrefilterFrag = /* glsl */`
@@ -107,10 +134,17 @@ export const BloomPrefilterFrag = /* glsl */`
 
   void main() {
     vec3 c = min( texture2D( tDiffuse, vUv ).rgb, vec3( KAT_MAX ) );
-    float lin = katLuma( katSRGBToLinear( c ) );
-    float hdr = lin / max( 1.02 - lin, 0.02 );          // undo the tone curve's shoulder
+    vec3 lin = katSRGBToLinear( c );
+    // Score the highlight partly on the brightest channel, so a saturated orange flame is
+    // treated as the highlight it is instead of being scored as mid-grey and skipped.
+    float m = mix( katLuma( lin ), max( lin.r, max( lin.g, lin.b ) ), 0.6 );
+    float hdr = m / max( 1.02 - m, 0.06 );
     float a = smoothstep( luminosityThreshold, luminosityThreshold + smoothWidth, hdr );
-    gl_FragColor = vec4( min( c, vec3( bloomClamp ) ) * a, 1.0 );
+
+    float peak = max( c.r, max( c.g, c.b ) );
+    c *= bloomClamp / max( peak, bloomClamp );          // hue-preserving energy limit
+
+    gl_FragColor = vec4( c * a, 1.0 );
   }`;
 
 // ---------------------------------------------------------------------------------------
@@ -184,6 +218,7 @@ export function makeCompositeShader() {
       uVignette:     { value: 0.0 },
       uCA:           { value: 0.0 },
       uLift:         { value: 0.0 },
+      uShoulder:     { value: 0.86 },
     },
     vertexShader: FS_QUAD_VERT,
     fragmentShader: /* glsl */`
@@ -201,6 +236,7 @@ export function makeCompositeShader() {
       uniform vec2  uFocus;
       uniform float uDofMax;
       uniform float uExposure, uContrast, uSaturation, uLutMix, uVignette, uCA, uLift;
+      uniform float uShoulder;
       varying vec2 vUv;
 
       ${GLSL_COMMON}
@@ -294,7 +330,12 @@ export function makeCompositeShader() {
         #endif
 
         // ---- grade ---------------------------------------------------------------------------
-        vec3 g = clamp( col * uExposure, 0.0, 1.0 );
+        // Roll the over-range top end into white instead of clamping it. Bloom and additive
+        // VFX both hand this pass values above 1.0; a hard clamp fuses them into one flat
+        // white shape with a hard edge, which is exactly how a boost flame ends up erasing
+        // the kart. Below uShoulder (0.86) this is the identity, so the graded midtones and
+        // shadows every other module tuned come through untouched.
+        vec3 g = clamp( katSoftClip( col * uExposure, uShoulder ), 0.0, 1.0 );
 
         #if USE_LUT == 1
           g = mix( g, katLUT( tLut, g ), uLutMix );

@@ -156,14 +156,24 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
 
   const params = {
     exposure:        opts.exposure ?? 1.0,
-    // Bloom. The threshold is in *reconstructed* HDR units (see the prefilter): sunlit
-    // white plaster comes back at ~4, the solar disc and boost flames at hundreds. 6.5 is
-    // therefore comfortably above the village walls and well below anything that glows.
-    bloomStrength:   opts.bloomStrength ?? 0.62,
-    bloomRadius:     opts.bloomRadius ?? 0.68,
-    bloomThreshold:  opts.bloomThreshold ?? 6.5,
-    bloomKnee:       opts.bloomKnee ?? 5.0,
-    bloomClamp:      opts.bloomClamp ?? 2.2,
+    // Bloom. The threshold is in *reconstructed* HDR units (see the prefilter): display
+    // 0.90 comes back at ~3.4, sunlit white plaster at 0.95 at ~7, display white at ~17,
+    // and a genuinely over-range additive flame in the 30..80 range. 12 with a 6-wide knee
+    // therefore leaves the village walls and the sky completely alone and only lifts the
+    // things that are actually emitting.
+    //
+    // The strength number looks tiny because UnrealBloomPass applies a hidden `3.0 *
+    // bloomStrength * sum(mipFactors)`, and that factor sum is ~3.0 — so the real gain on
+    // the prefiltered image is about 9x this value. At 0.18 and a 0.60 energy clamp the
+    // most a saturated highlight can add is ~0.97 at its core and a few hundredths out in
+    // the halo: a punchy glow that cannot swallow the kart. The old 0.42/1.5/0.68 trio
+    // worked out to a gain of ~5.7 and turned the `driftCorner` boost flame into a
+    // 600 px white hole with the kart nowhere inside it.
+    bloomStrength:   opts.bloomStrength ?? 0.18,
+    bloomRadius:     opts.bloomRadius ?? 0.40,   // low mips dominate at high radius = giant halo
+    bloomThreshold:  opts.bloomThreshold ?? 12.0,
+    bloomKnee:       opts.bloomKnee ?? 6.0,
+    bloomClamp:      opts.bloomClamp ?? 0.52,
     // Ambient occlusion.
     aoIntensity:     opts.aoIntensity ?? 1.0,
     aoRadius:        opts.aoRadius ?? 1.1,
@@ -179,15 +189,23 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     motionMax:       opts.motionMax ?? 0.013,
     motionNear:      opts.motionNear ?? 2.5,
     motionFull:      opts.motionFull ?? 14,
-    // Grade.
+    // Grade. `saturation` is a display-space trim on top of the LUT's own 1.28 push; it
+    // exists so the base look can carry the Mario Kart punch on its own. It used to sit at
+    // 1.0 and the frames only looked saturated because a wrongly-binary boost flag was
+    // multiplying it by 1.22 nearly all the time — when that bug went, so did the punch.
     contrast:        opts.contrast ?? 1.0,
-    saturation:      opts.saturation ?? 1.0,
+    saturation:      opts.saturation ?? 1.05,
     lutMix:          opts.lutMix ?? 1.0,
     vignette:        opts.vignette ?? 0.28,
     chromatic:       opts.chromatic ?? 0.0038,
-    // Boost rush.
+    // Boost rush. `rushOn`/`rushLinesOn` are the *boost* levels at which each half of the
+    // effect starts to appear. They sit high on purpose: the rush is the reward for a fat
+    // mini-turbo, so a tier-1 charge (which reaches ~0.20 of full punch) must leave the
+    // frame completely clean, and only a tier-3 or a mushroom pushes it to the top.
     rushStrength:    opts.rushStrength ?? 0.024,
     rushLines:       opts.rushLines ?? 0.42,
+    rushOn:          opts.rushOn ?? 0.30,
+    rushLinesOn:     opts.rushLinesOn ?? 0.42,
     speedRef:        opts.speedRef ?? 110,     // km/h that counts as "full speed"
   };
 
@@ -337,7 +355,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
 
   /**
    * @param {number} kmh   current kart ground speed
-   * @param {number} boostAmount 0..1 — mushroom / mini-turbo intensity
+   * @param {number} boostAmount 0..1 — mushroom / mini-turbo *intensity*, not a flag. Pass
+   *   the boost's power scaled onto 0..1 and smoothed; a binary 1 for any active boost
+   *   pins the rush blur and speed lines on through ordinary driving.
    */
   function setSpeed(kmh, boostAmount = 0) {
     speedN = clamp((kmh || 0) / params.speedRef, 0, 1.35);
@@ -394,9 +414,13 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     cu.uMotionNear.value.set(params.motionNear, params.motionFull);
 
     // ---- boost rush ---------------------------------------------------------------------
-    const rush = smoothstep(0.05, 1.0, punch);
-    cu.uRush.value = params.rushStrength * rush + 0.0035 * smoothstep(0.72, 1.25, speedN);
-    cu.uRushLines.value = params.rushLines * smoothstep(0.18, 0.95, punch);
+    // Both halves start well up the boost range. The old thresholds (0.05 for the radial
+    // blur, 0.18 for the lines) meant *any* boost at all — a pad, the weakest mini-turbo —
+    // engaged the whole effect, which is why review plates taken at an ordinary 58-62 km/h
+    // came back with smeared edges and speed lines across the sky.
+    const rush = smoothstep(params.rushOn, 1.0, punch);
+    cu.uRush.value = params.rushStrength * rush + 0.0035 * smoothstep(0.88, 1.3, speedN);
+    cu.uRushLines.value = params.rushLines * smoothstep(params.rushLinesOn, 1.0, punch);
 
     // ---- depth of field ------------------------------------------------------------------
     cu.uFocus.value.set(params.focusNear, params.focusFar);
@@ -404,7 +428,10 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     cu.tBlur.value = dofPass.texture;
 
     // ---- bloom -----------------------------------------------------------------------------
-    bloomPass.strength = params.bloomStrength * (1 + 0.55 * punch);
+    // A modest kick only. Scaling strength hard with boost compounds with the extra light
+    // the flame itself puts into the frame, so the one moment the kart most needs to stay
+    // readable is the moment bloom is loudest.
+    bloomPass.strength = params.bloomStrength * (1 + 0.30 * punch);
     bloomPass.threshold = params.bloomThreshold;
     bloomPass.radius = params.bloomRadius;
 

@@ -45,22 +45,84 @@ function stripeTexture({ a, b, blocks = 2, w = 24, h = 128, grime = 0.25, seed =
   return t;
 }
 
-function chequerTexture(n = 8, px = 256) {
-  const c = document.createElement('canvas'); c.width = px; c.height = px;
+/**
+ * The start/finish strip.
+ *
+ * Drawn as a real chequered band with a hard white edge line front and back, plus paint wear.
+ * `across` is chosen at build time so the squares come out roughly 0.8 m on the ground.
+ *
+ * Orientation note: the decal UVs put u=0 on the driver's RIGHT (the track normal points
+ * left) and v=1 ahead of the line, so anything with a reading direction has to be drawn
+ * mirrored in x. The chequer is symmetric, so only the lettering below cares.
+ */
+function startLineTexture(across = 16, rows = 4, cellPx = 64) {
+  const W = across * cellPx, H = rows * cellPx;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
   const ctx = c.getContext('2d');
-  const cell = px / n;
-  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
-    ctx.fillStyle = ((i + j) & 1) ? '#e8e6e0' : '#16161a';
-    ctx.fillRect(i * cell, j * cell, cell, cell);
+  for (let j = 0; j < rows; j++) for (let i = 0; i < across; i++) {
+    ctx.fillStyle = ((i + j) & 1) ? '#f8f5ec' : '#0c0d10';
+    ctx.fillRect(i * cellPx, j * cellPx, cellPx + 1, cellPx + 1);
   }
-  // wear: scrape a little of the paint away
+  // hard white edge lines top (ahead) and bottom (behind)
+  const edge = Math.max(6, cellPx * 0.20);
+  ctx.fillStyle = '#f8f5ec';
+  ctx.fillRect(0, 0, W, edge); ctx.fillRect(0, H - edge, W, edge);
+  ctx.fillStyle = '#15161a';
+  ctx.fillRect(0, edge, W, edge * 0.30); ctx.fillRect(0, H - edge * 1.30, W, edge * 0.30);
+  // paint wear: rubber pickup and scraped squares
   const rnd = rng(99);
-  ctx.globalAlpha = 0.30;
-  for (let i = 0; i < 420; i++) {
-    ctx.fillStyle = '#3a3733';
-    ctx.fillRect(rnd() * px, rnd() * px, 2 + rnd() * 9, 1 + rnd() * 4);
+  ctx.globalAlpha = 0.15;
+  for (let i = 0; i < 700; i++) {
+    ctx.fillStyle = rnd() > 0.55 ? '#3a3733' : '#7d7768';
+    ctx.fillRect(rnd() * W, rnd() * H, 2 + rnd() * 14, 1 + rnd() * 5);
+  }
+  ctx.globalAlpha = 0.10;
+  for (let i = 0; i < 30; i++) {
+    ctx.fillStyle = '#241f1b';
+    ctx.fillRect(rnd() * W, 0, 6 + rnd() * 22, H);
   }
   ctx.globalAlpha = 1;
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
+}
+
+/**
+ * 4 x 4 atlas of numbered starting boxes (positions 1..12 plus spares).
+ *
+ * Each cell is a worn white outline, a big grid number and a forward chevron. Drawn mirrored
+ * in x because the decal UV's u axis runs right-to-left as the driver sees it.
+ */
+function gridBoxTexture(px = 256) {
+  const c = document.createElement('canvas'); c.width = c.height = px * 4;
+  const ctx = c.getContext('2d');
+  const font = '"DejaVu Sans","Liberation Sans","FreeSans",sans-serif';
+  const rnd = rng(1717);
+  ctx.clearRect(0, 0, px * 4, px * 4);
+  for (let k = 0; k < 16; k++) {
+    const cx = (k % 4) * px, cy = ((k / 4) | 0) * px;
+    ctx.save();
+    // mirror in x within this cell so painted text reads correctly on the road
+    ctx.translate(cx + px, cy); ctx.scale(-1, 1);
+    const pad = px * 0.085, lw = px * 0.055;
+    ctx.strokeStyle = 'rgba(243,240,229,0.94)'; ctx.lineWidth = lw;
+    ctx.strokeRect(pad, pad, px - pad * 2, px - pad * 2);
+    // forward chevron (canvas top = down-track)
+    ctx.fillStyle = 'rgba(243,240,229,0.88)';
+    ctx.beginPath();
+    ctx.moveTo(px * 0.5, px * 0.17); ctx.lineTo(px * 0.72, px * 0.36); ctx.lineTo(px * 0.62, px * 0.36);
+    ctx.lineTo(px * 0.5, px * 0.26); ctx.lineTo(px * 0.38, px * 0.36); ctx.lineTo(px * 0.28, px * 0.36);
+    ctx.closePath(); ctx.fill();
+    // grid number, upright for a driver sitting in the box
+    ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(243,240,229,0.92)';
+    ctx.font = `800 ${Math.round(px * 0.40)}px ${font}`;
+    ctx.fillText(String(k + 1), px * 0.5, px * 0.78);
+    // wear
+    ctx.globalAlpha = 0.35; ctx.fillStyle = 'rgba(30,28,26,1)';
+    for (let i = 0; i < 90; i++) ctx.fillRect(rnd() * px, rnd() * px, 2 + rnd() * 10, 1 + rnd() * 4);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
   return t;
@@ -176,6 +238,16 @@ function decalGeometry(track, s0, s1, off0, off1, lift) {
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.setIndex(idx);
+  return g;
+}
+
+/** Squeeze a decal's 0..1 UVs into an atlas sub-rectangle. */
+function remapUV(g, u0, u1, v0, v1) {
+  const uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, lerp(u0, u1, uv.getX(i)), lerp(v0, v1, uv.getY(i)));
+  }
+  uv.needsUpdate = true;
   return g;
 }
 
@@ -373,27 +445,106 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   {
     const sm = track.sample(track.startS);
     const hw = sm.width * 0.5;
-    const line = decalGeometry(track, track.startS - 1.1, track.startS + 1.1, -hw + 0.35, hw - 0.35, 0.055);
-    const t = chequerTexture(10, 256);
-    t.wrapS = THREE.RepeatWrapping; t.repeat.set(6, 1);
+
+    /* --- start / finish chequer -------------------------------------------- */
+    // A 2 m strip is ~2 px tall from the grid camera 56 m back, so the band has to be long
+    // (6 m, six rows of squares) and run right out over the verge to read as a start line.
+    const CELL = 1.35;                                  // metres per chequer square
+    const rows = 6, halfLen = rows * CELL * 0.5;
+    const across = clamp(Math.round((hw * 2 + 3.6) / CELL), 8, 30);
+    const line = decalGeometry(track, track.startS - halfLen, track.startS + halfLen,
+      -(hw + 1.8), hw + 1.8, 0.062);
+    const tLine = startLineTexture(across, rows, 64);
     const mesh = new THREE.Mesh(line, new THREE.MeshStandardMaterial({
-      map: t, roughness: 0.55, metalness: 0, polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -16,
+      map: tLine, roughness: 0.52, metalness: 0,
+      polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -16,
     }));
-    mesh.renderOrder = 6; paints.add(mesh);
-    // grid boxes
-    const boxMat = new THREE.MeshStandardMaterial({
-      color: 0xe6e2d8, roughness: 0.6, metalness: 0, transparent: true, opacity: 0.72,
+    mesh.name = 'circuit:startline';
+    mesh.renderOrder = 7; paints.add(mesh);
+
+    /* --- approach markings: fat white bars either side of the band ---------- */
+    const barMat = new THREE.MeshStandardMaterial({
+      color: 0xf0ece0, roughness: 0.6, metalness: 0, transparent: true, opacity: 0.85,
       polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -16,
     });
-    for (const g of track.startGrid) {
+    for (const d of [-(halfLen + 1.5), halfLen + 1.5]) {
+      const bar = decalGeometry(track, track.startS + d - 0.26, track.startS + d + 0.26,
+        -(hw + 1.7), hw + 1.7, 0.056);
+      const bm = new THREE.Mesh(bar, barMat); bm.renderOrder = 6; paints.add(bm);
+    }
+
+    /* --- numbered starting boxes ------------------------------------------- */
+    const gridTex = gridBoxTexture(256);
+    const gridMat = new THREE.MeshStandardMaterial({
+      map: gridTex, roughness: 0.6, metalness: 0, transparent: true, alphaTest: 0.04,
+      polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -16,
+    });
+    const gridGeos = [];
+    track.startGrid.forEach((g, i) => {
       const n = track.nearest(g.pos);
-      const s = n.s, off = n.lateral;
-      const q = decalGeometry(track, s - 2.4, s + 2.4, off - 1.35, off + 1.35, 0.05);
-      const mesh2 = new THREE.Mesh(q, boxMat);
-      mesh2.renderOrder = 5; paints.add(mesh2);
+      const q = decalGeometry(track, n.s - 1.85, n.s + 1.85, n.lateral - 1.55, n.lateral + 1.55, 0.052);
+      const col = i % 4, row = (i / 4) | 0;
+      remapUV(q, col / 4, (col + 1) / 4, 1 - (row + 1) / 4, 1 - row / 4);
+      gridGeos.push(q);
+    });
+    const gridMerged = mergeGeoms(gridGeos);
+    if (gridMerged) {
+      const gm = new THREE.Mesh(gridMerged, gridMat);
+      gm.name = 'circuit:grid'; gm.renderOrder = 6; paints.add(gm);
     }
   }
   group.add(paints);
+
+  /* ------------------------------------------- start-line kerbing --------- */
+  // Paint alone cannot carry the line from a chase camera, so the crossing is bracketed by
+  // real geometry: a run of red/white rumble blocks and a waist-high chequered wall each side.
+  {
+    const blocks = [];
+    const q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1), v = new THREE.Vector3();
+    for (const sgn of [-1, 1]) {
+      for (let j = -7; j <= 7; j++) {
+        const ss = track.startS + j * 1.02;
+        const s2 = track.sample(ss);
+        const off = sgn * (s2.width * 0.5 + 0.98);
+        const x = s2.pos.x + s2.normal.x * off, z = s2.pos.z + s2.normal.z * off;
+        const gy = Math.min(s2.pos.y + Math.tan(s2.banking) * off, world.heightAt(x, z) + 0.26);
+        blocks.push({ x, y: gy, z, ry: Math.atan2(s2.tangent.x, s2.tangent.z), red: ((j + 7) & 1) === 0 });
+      }
+    }
+    const kg = new THREE.BoxGeometry(1.30, 0.34, 0.98);
+    const km = new THREE.MeshStandardMaterial({ roughness: 0.66, metalness: 0 });
+    const inst = new THREE.InstancedMesh(kg, km, blocks.length);
+    const red = new THREE.Color(0.62, 0.085, 0.075), white = new THREE.Color(0.88, 0.865, 0.82);
+    blocks.forEach((b, i) => {
+      q.setFromEuler(new THREE.Euler(0, b.ry, 0));
+      inst.setMatrixAt(i, new THREE.Matrix4().compose(v.set(b.x, b.y, b.z), q, sc));
+      inst.setColorAt(i, b.red ? red : white);
+    });
+    inst.name = 'circuit:startkerb';
+    inst.castShadow = false; inst.receiveShadow = o.shadows;
+    inst.instanceMatrix.needsUpdate = true;
+    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+    group.add(inst);
+
+    // chequered walls: 1.0 m tall, so they are ~12 px on screen from the back of the grid
+    const wallTex = startLineTexture(6, 2, 64);
+    wallTex.wrapS = THREE.RepeatWrapping; wallTex.repeat.set(1, 1);
+    const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.7, metalness: 0 });
+    const wg = new THREE.BoxGeometry(0.50, 1.60, 5.4);
+    const wallInst = new THREE.InstancedMesh(wg, wallMat, 2);
+    [-1, 1].forEach((sgn, i) => {
+      const s2 = track.sample(track.startS);
+      const off = sgn * (s2.width * 0.5 + 2.55);
+      const x = s2.pos.x + s2.normal.x * off, z = s2.pos.z + s2.normal.z * off;
+      const gy = Math.min(s2.pos.y + Math.tan(s2.banking) * off, world.heightAt(x, z)) + 0.78;
+      q.setFromEuler(new THREE.Euler(0, Math.atan2(s2.tangent.x, s2.tangent.z), 0));
+      wallInst.setMatrixAt(i, new THREE.Matrix4().compose(v.set(x, gy, z), q, sc));
+    });
+    wallInst.name = 'circuit:startwall';
+    wallInst.castShadow = o.shadows; wallInst.receiveShadow = o.shadows;
+    wallInst.instanceMatrix.needsUpdate = true;
+    group.add(wallInst);
+  }
 
   /* --------------------------------------------------------- boost pads --- */
   {
