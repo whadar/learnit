@@ -34,6 +34,73 @@ const _size = new THREE.Vector2();
 const _q1 = new THREE.Quaternion();
 const _c1 = new THREE.Color();
 
+/* -------------------------------------------------------------- art tuning ---- */
+/**
+ * Art-direction layer over `vfxLibrary.PRESETS`.
+ *
+ * The library presets are the *physics* of each effect; these overrides are the *look*, and
+ * they live here because the look is a property of how this system composites — screen
+ * blending with a sharpened coverage profile — not of the sprite atlas.
+ *
+ * The rule for every additive effect below: a large sprite never carries a high alpha, and
+ * only a *small* sprite is allowed to be near-white. Body layers stay saturated (deep orange
+ * for fire, the charge-tier hue for sparks) so that when the screen blend does drive a
+ * channel to 1.0 the result is a hot core inside a coloured flame, not a white lobe.
+ */
+const FX_TUNE = {
+  /* mini-turbo charge sparks: short, stretched, individually readable comets */
+  driftSpark: {
+    size: [0.19, 0.026], life: [0.20, 0.40], alpha: 0.85, stretch: 0.70,
+    speed: [4.0, 9.5], spread: 0.75, jitter: 1.3, drag: 3.6, grav: -4.5,
+    turb: [0.04, 3.0], spin: 5, fadeIn: 0.03,
+  },
+  /* the soft bloom that sits under a spark shower — small and dim, it is not the star */
+  miniTurbo: { size: [0.24, 0.03], life: [0.13, 0.26], alpha: 0.34, speed: [0.8, 2.2] },
+
+  /* exhaust fire. Deep orange body, cool blue-black smoke, white only in `boostCore`. */
+  boostFlame: {
+    size: [0.30, 0.74], life: [0.13, 0.23], alpha: 0.30,
+    speed: [3.0, 7.0], spread: 0.20, jitter: 0.55, drag: 5.4, grav: 0.85,
+    turb: [0.05, 3.4], stretch: 0.05, fadeIn: 0.07, spin: 1.2,
+    colorA: [1.00, 0.60, 0.20], colorB: [1.00, 0.24, 0.045],
+  },
+  boostBurst: {
+    count: 9, size: [0.36, 1.00], life: [0.20, 0.40], alpha: 0.26,
+    speed: [5, 12], spread: 0.38, jitter: 1.6, drag: 4.6, grav: 1.0,
+    turb: [0.14, 2.2], fadeIn: 0.05, spin: 2,
+    colorA: [1.00, 0.68, 0.28], colorB: [1.00, 0.22, 0.04],
+  },
+  boostSmoke: {
+    size: [0.24, 1.55], life: [0.45, 1.00], alpha: 0.22,
+    speed: [1.2, 3.2], spread: 0.45, jitter: 0.7, drag: 2.4, grav: 0.9,
+    colorA: [0.60, 0.56, 0.53], colorB: [0.26, 0.24, 0.25], fadeIn: 0.14,
+  },
+  ember: { size: [0.052, 0.011], alpha: 0.85, stretch: 0.45, life: [0.45, 1.0] },
+  impactShock: { alpha: 0.42 },
+};
+
+/** Effects that exist only here: the shaped layers the boost flame is built from. */
+const FX_EXTRA = {
+  /** The white-hot kernel. Deliberately tiny — this is the only near-white boost layer. */
+  boostCore: {
+    sprite: 'flare', blend: 'add', count: 1, life: [0.10, 0.17], size: [0.19, 0.032],
+    speed: [1.4, 3.2], spread: 0.14, jitter: 0.35, drag: 6.0, grav: 0.7, turb: [0.02, 3.0],
+    alpha: 0.50, colorA: [1.0, 0.95, 0.84], colorB: [1.0, 0.62, 0.22], fadeIn: 0.02,
+  },
+  /** Charge-tier coloured tongue riding outside the orange fire (MK8 tints its mini-turbo). */
+  boostTierFlame: {
+    sprite: 'flame', blend: 'add', count: 1, life: [0.16, 0.30], size: [0.36, 0.95],
+    speed: [3.5, 8.0], spread: 0.30, jitter: 0.8, drag: 5.0, grav: 1.0, turb: [0.08, 3.0],
+    alpha: 0.20, colorA: [0.55, 0.85, 1.0], colorB: [0.20, 0.45, 0.9], fadeIn: 0.06, spin: 1.4,
+  },
+  /** Grit lifted off the road by the exhaust blast — gives the fire something to sit in. */
+  boostGrit: {
+    sprite: 'dust', blend: 'alpha', count: 1, life: [0.5, 1.1], size: [0.35, 2.0],
+    speed: [2.0, 5.0], spread: 0.6, jitter: 1.0, drag: 2.2, grav: 0.75, turb: [0.3, 0.9],
+    alpha: 0.34, colorA: [0.82, 0.78, 0.72], colorB: [0.45, 0.42, 0.40], fadeIn: 0.10, spin: 1.1,
+  },
+};
+
 /* ---------------------------------------------------------------- shaders ---- */
 const VERT = /* glsl */`
 precision highp float;
@@ -147,6 +214,7 @@ uniform vec3  uFogColor;
 uniform vec2  uFogRange;      // near, far  (far <= near disables)
 uniform float uAdditive;
 uniform float uBrightness;
+uniform float uAlphaPow;
 uniform vec2  uNearFar;
 #ifdef SOFT
 uniform sampler2D uDepth;
@@ -163,6 +231,9 @@ void main() {
   vec4 tex = texture2D(uMap, vUv);
   float a = tex.a * vAlpha;
   if (a <= 0.002) discard;
+  // Sharpen the coverage profile: a gamma > 1 keeps the hot core and pulls the broad,
+  // low-alpha skirt in, so a stack of glow sprites reads as a shape and not as a disc.
+  a = pow(a, uAlphaPow);
   vec3 col = vCol * tex.rgb * uBrightness;
 
   float dist = -vViewZ;
@@ -184,14 +255,24 @@ void main() {
     else col = mix(col, uFogColor, f);
   }
 
+#ifdef PREMUL
+  // Screen blending (`dst + src*(1-dst)`) needs premultiplied source: the blend factor is
+  // 1-dst, so the alpha has to already be folded into the colour.
+  gl_FragColor = vec4(col * a, a);
+#else
   gl_FragColor = vec4(col, a);
+#endif
 }
 `;
 
 /* ----------------------------------------------------------- ParticleBatch ---- */
 /** One draw call's worth of particles: ring-buffered instances with a single upload range. */
 export class ParticleBatch {
-  constructor(atlas, { capacity = 2000, blend = 'alpha', name = 'particles', renderOrder = 10, soft = false, brightness = 1 } = {}) {
+  constructor(atlas, {
+    capacity = 2000, blend = 'alpha', name = 'particles', renderOrder = 10,
+    soft = false, brightness = 1, alphaPow = 1,
+  } = {}) {
+    this.blend = blend;
     this.capacity = capacity;
     this.cursor = 0;
     this.used = 0;
@@ -228,8 +309,9 @@ export class ParticleBatch {
         uSizeScale: { value: 1 },
         uFogColor: { value: new THREE.Color(0x9dc0dc) },
         uFogRange: { value: new THREE.Vector2(0, -1) },
-        uAdditive: { value: blend === 'add' ? 1 : 0 },
+        uAdditive: { value: blend === 'alpha' ? 0 : 1 },
         uBrightness: { value: brightness },
+        uAlphaPow: { value: alphaPow },
         uNearFar: { value: new THREE.Vector2(0.25, 8000) },
         uDepth: { value: null },
         uResolution: { value: new THREE.Vector2(1280, 720) },
@@ -242,7 +324,29 @@ export class ParticleBatch {
       side: THREE.DoubleSide,
       toneMapped: true,
     });
-    if (soft) mat.defines = { SOFT: '' };
+
+    // --- 'screen' blend: glow that physically cannot clip ------------------------------
+    // Straight additive is why the boost flame used to erase the kart: every overlapping
+    // sprite adds its full energy, so ten 0.9-alpha quads land at 9.0 and the framebuffer
+    // clamps a huge region to flat white, with no shape, no hue and a bloom source that
+    // reads as an HDR value of ~9 after the prefilter inverts the tone curve. Screen
+    // blending — `out = dst + src * (1 - dst)` — spends the *remaining headroom* instead,
+    // so a stack converges smoothly on white, never overshoots 1.0 (the scene target is
+    // tone-mapped and sRGB-encoded, so dst is always in [0,1]), and the red channel of an
+    // orange flame saturates well before green and blue: the core goes white-hot while the
+    // body stays orange. It also caps what the bloom prefilter can ever see.
+    this.premultiplied = blend === 'screen';
+    if (this.premultiplied) {
+      mat.blending = THREE.CustomBlending;
+      mat.blendEquation = THREE.AddEquation;
+      mat.blendSrc = THREE.OneMinusDstColorFactor;
+      mat.blendDst = THREE.OneFactor;
+      mat.blendEquationAlpha = THREE.AddEquation;
+      mat.blendSrcAlpha = THREE.OneFactor;
+      mat.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+    }
+    this._baseDefines = this.premultiplied ? { PREMUL: '' } : {};
+    mat.defines = { ...this._baseDefines, ...(soft ? { SOFT: '' } : {}) };
     this.material = mat;
 
     this.mesh = new THREE.Mesh(geo, mat);
@@ -257,7 +361,7 @@ export class ParticleBatch {
   setSoft(on) {
     const has = !!(this.material.defines && 'SOFT' in this.material.defines);
     if (on === has) return;
-    this.material.defines = on ? { SOFT: '' } : {};
+    this.material.defines = { ...this._baseDefines, ...(on ? { SOFT: '' } : {}) };
     this.material.needsUpdate = true;
   }
 
@@ -747,7 +851,8 @@ export function createVFX(engine, world, opts = {}) {
 
   const batches = {
     alpha: new ParticleBatch(atlas, { capacity: capAlpha, blend: 'alpha', name: 'vfx.alpha', renderOrder: 10, soft, brightness: 1.0 }),
-    add: new ParticleBatch(atlas, { capacity: capAdd, blend: 'add', name: 'vfx.add', renderOrder: 11, soft: false, brightness: 1.35 }),
+    // `screen`, not `add`: see the note in ParticleBatch. alphaPow tightens the glow skirt.
+    add: new ParticleBatch(atlas, { capacity: capAdd, blend: 'screen', name: 'vfx.add', renderOrder: 11, soft: false, brightness: 1.06, alphaPow: 1.3 }),
   };
   group.add(batches.alpha.mesh, batches.add.mesh);
 
@@ -791,6 +896,11 @@ export function createVFX(engine, world, opts = {}) {
   }
 
   /* ------------------------------------------------------------- emission ---- */
+  // Library physics + the local art tuning, resolved once.
+  const FX = {};
+  for (const k of Object.keys(PRESETS)) FX[k] = FX_TUNE[k] ? { ...PRESETS[k], ...FX_TUNE[k] } : PRESETS[k];
+  for (const k of Object.keys(FX_EXTRA)) FX[k] = FX_EXTRA[k];
+
   let time = 0;
   const rec = {};             // reused particle record — zero allocation per particle
   const stats = { emitted: 0, bursts: 0 };
@@ -883,9 +993,16 @@ export function createVFX(engine, world, opts = {}) {
       { p: 'explosionCore' }, { p: 'explosionSmoke' }, { p: 'impactShock', count: 1, scale: 1.8 },
       { p: 'ember', count: 22 }, { p: 'railSpark', count: 14 },
     ],
+    // A mini-turbo pop, layered so it has a silhouette: a saturated orange fan, a small
+    // white kernel, a tier-coloured tongue, embers, and smoke/grit behind it for contrast.
     boostBurst: [
-      { p: 'boostBurst' }, { p: 'ember', count: 16 }, { p: 'boostSmoke', count: 8 },
-      { p: 'impactShock', count: 1, scale: 0.55 },
+      { p: 'boostBurst', own: true },
+      { p: 'boostCore', count: 4, scale: 1.5, own: true },
+      { p: 'boostTierFlame', count: 6, scale: 1.15, tier: true },
+      { p: 'ember', count: 12, own: true },
+      { p: 'boostSmoke', count: 7, scale: 1.2, own: true },
+      { p: 'boostGrit', count: 5, scale: 1.1 },
+      { p: 'impactShock', count: 1, scale: 0.30, own: true },
     ],
     spinOut: [
       { p: 'starBurst', count: 10 }, { p: 'squashPuff', count: 10 }, { p: 'dust', count: 8 },
@@ -903,7 +1020,7 @@ export function createVFX(engine, world, opts = {}) {
    */
   function emit(type, params = {}) {
     // `raw` asks for the single preset even when a composite shares the name
-    const comp = (params.raw && PRESETS[type]) ? null : COMPOSITE[type];
+    const comp = (params.raw && FX[type]) ? null : COMPOSITE[type];
     const pos = vecOf(params.pos, _v3.set(0, 0, 0));
     const px = pos.x, py = pos.y, pz = pos.z;
     const d = params.dir ? vecOf(params.dir, null) : null;
@@ -912,10 +1029,16 @@ export function createVFX(engine, world, opts = {}) {
     if (comp) {
       stats.bursts++;
       for (const c of comp) {
-        const P = PRESETS[c.p];
+        const P = FX[c.p];
         if (!P) continue;
         const n = Math.max(1, Math.round((c.count ?? P.count ?? 1) * (params.countScale ?? 1) * qEmit()));
         const o = { ...params };
+        // By default a component inherits the caller's tint (surface colours for dust and
+        // splashes). `own` pins a layer to its authored colours so a multi-layer effect
+        // keeps its internal colour structure; `tier` gives it the charge-tier hue.
+        if (c.own) { o.colorA = P.colorA; o.colorB = P.colorB; }
+        if (c.tier) { o.colorA = params.tierA || P.colorA; o.colorB = params.tierB || P.colorB; }
+        if (c.alpha !== undefined) o.alpha = c.alpha;
         o.scale = (params.scale ?? 1) * (c.scale ?? 1);
         o._px = px; o._py = py; o._pz = pz;
         if (c.dirUp) { o._dx = 0; o._dy = 1; o._dz = 0; o.mode = MODE.flat; }
@@ -926,7 +1049,7 @@ export function createVFX(engine, world, opts = {}) {
       return;
     }
 
-    const P = PRESETS[type];
+    const P = FX[type];
     if (!P) { console.warn('[vfx] unknown effect: ' + type); return; }
     const n = Math.max(1, Math.round((params.count ?? P.count ?? 1) * (params.raw ? 1 : qEmit())));
     const o = params;
@@ -1096,6 +1219,8 @@ function createKartRig(vfx, world, target, o = {}) {
 
   const acc = { smoke: 0, dust: 0, spark: 0, flame: 0, chip: 0, splash: 0, ember: 0, mud: 0, ripple: 0 };
   let lastTier = 0, wasTier = 0, wasDrifting = false, wasBoosting = false, wasGrounded = true;
+  // which charge tier bought the boost currently burning — MK8 tints the flame by it
+  let boostTier = tierColor(1), boostTierT = 0;
   let mudLevel = 0;
   const skidId = seed;
   const TRAIL_ANCHOR = [0, -0.02, -0.95];
@@ -1257,15 +1382,17 @@ function createKartRig(vfx, world, target, o = {}) {
         local(a, wp);
         dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.55)
           .addScaledVector(right, (rand() * 2 - 1) * 0.9);
+        // hot at birth, cooling into the saturated tier hue: a spark reads as a coloured
+        // comet with a white tip rather than a white dot with a coloured halo.
         vfx.emit('driftSpark', {
           pos: wp, dir: dirv, count: 1, raw: true,
-          colorA: T.glow, colorB: T.core, scale: T.size * (0.7 + rand() * 0.8),
-          speedScale: 0.8 + rand() * 0.8,
+          colorA: T.core, colorB: T.glow, scale: T.size * (0.8 + rand() * 0.9),
+          speedScale: 0.85 + rand() * 0.9,
         });
-        if (rand() < 0.35) {
+        if (rand() < 0.22) {
           vfx.emit('miniTurbo', {
             pos: wp, dir: dirv, count: 1, raw: true,
-            colorA: T.core, colorB: T.glow, scale: T.size * 1.5, opacity: 0.8,
+            colorA: T.glow, colorB: T.glow, scale: T.size * 1.4, opacity: 0.7,
           });
         }
       }
@@ -1273,8 +1400,8 @@ function createKartRig(vfx, world, target, o = {}) {
         events.tierUps++;
         for (const a of sparkAnchor) {
           local(a, wp);
-          vfx.emit('miniTurbo', { pos: wp, dir: up, count: 10, scale: T.size * 2.6, colorA: T.core, colorB: T.glow, speedScale: 1.6 });
-          vfx.emit('driftSpark', { pos: wp, dir: up, count: 12, scale: T.size * 1.2, colorA: T.glow, colorB: T.core, speedScale: 1.4 });
+          vfx.emit('miniTurbo', { pos: wp, dir: up, count: 6, scale: T.size * 2.2, colorA: T.glow, colorB: T.glow, opacity: 0.8, speedScale: 1.6 });
+          vfx.emit('driftSpark', { pos: wp, dir: up, count: 16, scale: T.size * 1.3, colorA: T.core, colorB: T.glow, speedScale: 1.5 });
         }
       }
     }
@@ -1286,15 +1413,25 @@ function createKartRig(vfx, world, target, o = {}) {
       const tier = clamp(wasTier, 1, 3);
       const T = tierColor(tier);
       events.boosts++;
+      boostTier = T; boostTierT = 0.75;
       for (const e of exhausts) {
         local(e, wp);
         dirv.copy(fwd).multiplyScalar(-1);
         vfx.emit('boostBurst', {
-          pos: wp, dir: dirv, scale: 0.75 + 0.25 * tier,
-          colorA: T.core, colorB: T.glow, speedScale: 0.9 + 0.25 * tier,
+          pos: wp, dir: dirv, scale: 0.62 + 0.16 * tier,
+          tierA: T.core, tierB: T.glow, speedScale: 0.9 + 0.25 * tier,
         });
       }
-      vfx.emit('squashPuff', { pos, dir: up, count: 8, scale: 1.2, opacity: 0.4 });
+      // a fan of tier-coloured sparks thrown off the rear as the turbo lets go
+      for (const a of sparkAnchor) {
+        local(a, wp);
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.4);
+        vfx.emit('driftSpark', {
+          pos: wp, dir: dirv, count: 10 + 4 * tier, scale: T.size * 1.25,
+          colorA: T.core, colorB: T.glow, speedScale: 1.5,
+        });
+      }
+      vfx.emit('squashPuff', { pos, dir: up, count: 8, scale: 1.2, opacity: 0.35 });
     }
     wasTier = st.drifting ? st.tier : 0;
     lastTier = st.drifting ? st.tier : 0;
@@ -1307,25 +1444,69 @@ function createKartRig(vfx, world, target, o = {}) {
       for (const e of exhausts) {
         local(e, wp);
         dirv.copy(fwd).multiplyScalar(-1);
-        vfx.emit('boostBurst', { pos: wp, dir: dirv, scale: 1.0, speedScale: 1.1 });
+        vfx.emit('boostBurst', { pos: wp, dir: dirv, scale: 0.8, speedScale: 1.1 });
       }
     }
     if (st.boosting) {
-      const n = rate('flame', 70 * vfx.emitScale, dt);
-      for (let i = 0; i < n; i++) {
+      /* The exhaust plume is built in layers so it has a silhouette instead of a mass:
+       *   grit + smoke   dark, alpha-blended, laid down first so the fire has a backing
+       *   flame body     deep orange, low alpha, many small sprites -> a tapered tongue
+       *   tier tongue    the charge colour that earned this boost, riding the outside
+       *   core           one tiny near-white kernel per exhaust, ~0.2 m across
+       *   embers         individually readable specks trailing up and back
+       * The rates are roughly half what they were: with screen blending the plume gets its
+       * density from overlap, and past ~4 concurrent sprites per exhaust it stops reading. */
+      const nf = rate('flame', 34 * vfx.emitScale, dt);
+      for (let i = 0; i < nf; i++) {
         const e = exhausts[i % exhausts.length];
         local(e, wp);
-        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.18).addScaledVector(right, (rand() * 2 - 1) * 0.12);
-        vfx.emit('boostFlame', { pos: wp, dir: dirv, count: 1, raw: true, scale: 0.9 + rand() * 0.5, speedScale: 0.8 + fast * 0.6 });
-        if (rand() < 0.45) vfx.emit('boostSmoke', { pos: wp, dir: dirv, count: 1, raw: true, scale: 1.1 });
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.16).addScaledVector(right, (rand() * 2 - 1) * 0.10);
+        vfx.emit('boostFlame', {
+          pos: wp, dir: dirv, count: 1, raw: true,
+          scale: 0.85 + rand() * 0.45, speedScale: 0.8 + fast * 0.6,
+        });
+        if (boostTierT > 0 && rand() < 0.6) {
+          vfx.emit('boostTierFlame', {
+            pos: wp, dir: dirv, count: 1, raw: true,
+            colorA: boostTier.core, colorB: boostTier.glow,
+            scale: 1.0 + rand() * 0.5, opacity: clamp(boostTierT / 0.5, 0, 1),
+            speedScale: 0.9 + fast * 0.5,
+          });
+        }
+        if (rand() < 0.5) {
+          local(e, wp); wp.y -= 0.04;
+          dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.5);
+          vfx.emit('boostSmoke', { pos: wp, dir: dirv, count: 1, raw: true, scale: 1.0 + rand() * 0.5 });
+        }
       }
-      const en = rate('ember', 26 * vfx.emitScale, dt);
+      const nc = rate('spark', 24 * vfx.emitScale, dt);
+      for (let i = 0; i < nc; i++) {
+        local(exhausts[i % exhausts.length], wp);
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.1);
+        vfx.emit('boostCore', { pos: wp, dir: dirv, count: 1, raw: true, scale: 0.9 + rand() * 0.35 });
+      }
+      const en = rate('ember', 20 * vfx.emitScale, dt);
       for (let i = 0; i < en; i++) {
         local(exhausts[i % exhausts.length], wp);
-        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.5);
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.55).addScaledVector(right, (rand() * 2 - 1) * 0.4);
         vfx.emit('ember', { pos: wp, dir: dirv, count: 1, raw: true, speedScale: 0.9 + rand() });
       }
+      // grit torn off the road by the blast — the dust plume a boost should leave behind
+      if (grounded && fx.wet === 0) {
+        const gn = rate('dust', (10 + 12 * fast) * vfx.emitScale, dt);
+        for (let i = 0; i < gn; i++) {
+          local(wheels[i % wheels.length], wp);
+          wp.y += 0.04; wp.addScaledVector(fwd, -0.35 - rand() * 0.5);
+          dirv.set(0, 0.7, 0).addScaledVector(fwd, -0.9).addScaledVector(right, (rand() * 2 - 1) * 0.7);
+          vfx.emit('boostGrit', {
+            pos: wp, dir: dirv, count: 1, raw: true,
+            colorA: fx.a, colorB: fx.b, scale: 0.8 + rand() * 0.7,
+            speedScale: 0.7 + fast * 0.8,
+          });
+        }
+      }
     }
+    boostTierT = Math.max(0, boostTierT - dt);
 
     // trail ribbon: a bright band that hangs behind the kart while boosting
     local(TRAIL_ANCHOR, wp);
