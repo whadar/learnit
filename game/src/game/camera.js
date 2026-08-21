@@ -35,13 +35,13 @@ export const DEFAULTS = {
      ~2.2 m up and looks *down* the road rather than along it, which is where MK8 puts it:
      the kart fills the bottom third, the driver reads against the tarmac, and you can still
      see far enough ahead to place the kart for the next corner. */
-  back: 3.85,             // distance behind the kart's centre of mass at rest
+  back: 3.50,             // distance behind the kart's centre of mass at rest
   backSpeed: 0.60,        // extra distance at top speed
   backBoost: 0.45,        // … and while boosting (the kart pulls away from the lens)
-  height: 1.62,           // above the CoM, which is itself ~0.56 m above the road
+  height: 1.80,           // above the CoM, which is itself ~0.56 m above the road
   heightSpeed: 0.20,
-  lookAhead: 6.2,
-  lookHeight: 0.26,       // aim past the driver's ears at the road, not over the scenery
+  lookAhead: 5.9,
+  lookHeight: 0.20,       // aim past the driver's ears at the road, not over the scenery
   /* responsiveness */
   posFreq: 2.90,          // Hz of the position spring
   posDamping: 1.02,       // 1 = critically damped
@@ -65,8 +65,9 @@ export const DEFAULTS = {
   landKick: 0.34,
   hopLambda: 12.0,
   /* rivals in the lens */
-  kartClear: 2.9,         // a rival this close to the eye lifts the rig over it …
-  kartLift: 0.95,         // … by up to this much, instead of being sliced open by the frame
+  kartClear: 4.6,         // a rival this close to the eye backs the rig off and lifts it …
+  kartLift: 0.80,         // … by up to this much, instead of being sliced open by the frame
+  kartBack: 1.15,
   /* misc */
   lookBackTime: 0.16,     // seconds to swing round when look-back is held
   speedRef: 25.0,         // m/s that counts as "top speed" for the curves
@@ -158,7 +159,7 @@ export function createCamera(engine, world, opts = {}) {
    * (which fights the spring and swings the whole shot), the eye lifts over the intruder and
    * settles straight back down: a pass close enough to touch reads as a pass, not a glitch.
    */
-  function rivalLift(v, dt) {
+  function rivalNear(v, dt) {
     let want = 0;
     const rivals = v && v.rivals;
     if (rivals && rivals.length) {
@@ -173,7 +174,7 @@ export function createCamera(engine, world, opts = {}) {
         if (w > want) want = w;
       }
     }
-    st.kartLift = damp(st.kartLift, want * O.kartLift, want * O.kartLift > st.kartLift ? 13 : 4.5, dt);
+    st.kartLift = damp(st.kartLift, want, want > st.kartLift ? 9 : 3.5, dt);
     return st.kartLift;
   }
 
@@ -241,8 +242,13 @@ export function createCamera(engine, world, opts = {}) {
     const rgtX = cy, rgtZ = -sy;                   // rig right
 
     /* --- distances --- */
-    const back = O.back + O.backSpeed * st.speed + O.backBoost * st.boost + O.airBack * st.air;
-    const hgt = O.height + O.heightSpeed * st.speed + O.airHeight * st.air;
+    // A rival inside the rig's own volume gets the lens out of its way first: back off and lift
+    // over it, so a pass close enough to touch is a pass in frame and not a sliced-open kart
+    // pasted across the HUD.
+    const near = rivalNear(v, dt);
+    const back = O.back + O.backSpeed * st.speed + O.backBoost * st.boost + O.airBack * st.air
+      + near * O.kartBack;
+    const hgt = O.height + O.heightSpeed * st.speed + O.airHeight * st.air + near * O.kartLift;
     const side = -st.driftDir * O.driftSide * st.drift * (1 - st.lookBack);
     st.side = damp(st.side, side, 7, dt);
     st.hop = damp(st.hop, 0, O.hopLambda, dt);
@@ -268,7 +274,6 @@ export function createCamera(engine, world, opts = {}) {
       look.lerp(aim, clamp(1 - Math.exp(-O.lookLambda * dt), 0, 1));
     }
     clearGround(pos, look);
-    pos.y += rivalLift(v, dt);
 
     /* --- fov + roll + shake --- */
     const wantFov = O.fov + O.fovSpeed * st.speed * st.speed + O.fovBoost * st.boost + O.fovAir * st.air;

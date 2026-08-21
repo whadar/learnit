@@ -363,8 +363,8 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
        empty road is a wasted shot. So when nobody is driving it, it is banded towards the
        middle of its own field this much harder than the rest of the grid, and the pack it was
        seeded in front of gets to race it. A human's kart is never touched by any of this. */
-    heroBand: 2.0,
-    heroDragMax: 0.200,
+    heroBand: 1.8,
+    heroDragMax: 0.175,
     paceCap: 1.02,             // hard ceiling on tier x personality x catch-up: the grip limit
     tailGap: 6.0,              // metres: inside this, square behind a rival, match its speed
     catchBoost: true,          // top-speed tow for a kart that is already flat out and dropping
