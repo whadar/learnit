@@ -723,7 +723,12 @@ function buildBlockMap(world, size, opts) {
     ctx.lineWidth = Math.max(1, (opts.buildingClear ?? 3.0) * 2 * k);
     ctx.strokeStyle = '#808080'; ctx.stroke();
   }
+  // Anything else the caller wants kept clear — the race circuit runs across open orchard and
+  // hillside where there is no OSM road to mask, so main.js hands its corridor in here.
+  // Same shape as a road feature: { paths:[[[x,z],…]], width }.
+  stroke(opts.blockers, f => (f.width || 8) + treeClear * 2, '#808080');
   stroke(world.roads, f => (f.width || ROAD_W[f.cls] || ROAD_W[f.sub] || 4) + 1.2, '#ffffff');
+  stroke(opts.blockers, f => (f.width || 8) + 1.2, '#ffffff');
   ctx.fillStyle = '#ffffff';
   for (const b of world.buildings || []) {
     ctx.beginPath();

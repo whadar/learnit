@@ -75,6 +75,7 @@ function makeShots(w) {
   const ab = (name, tweak) => still(name, LANE[0], LANE[1], LANE[2], LANE[3], 0, tweak);
   ab('laneQ0',      f => f.setQuality(0));
   ab('laneQ1',      f => f.setQuality(1));
+  ab('laneQ3',      f => f.setQuality(3));
   ab('laneNoBloom', f => { f.passes.bloomPass.enabled = false; });
   ab('laneNoDof',   f => { f.params.dofMax = 0; });
   ab('laneNoGrade', f => { f.setGradeEnabled(false); });

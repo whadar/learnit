@@ -591,8 +591,11 @@ export function createKart(id, opts = {}) {
     for (const w of wheels) {
       w.spin.rotation.x = S.spin * (0.28 / w.radius);
     }
-    steerPivot.rotation.y = -S.steer * 0.44 - S.drift * 0.10;
-    swheel.rotation.z = -S.steer * WHEEL_TURN;
+    // vehicle.js signs steer so that +1 yaws the kart to the right (yaw = atan2(fwd.x, fwd.z),
+    // and rotation.y = +theta is exactly that yaw), so the front wheels and the rim turn with
+    // the sign, not against it.
+    steerPivot.rotation.y = S.steer * 0.44 + S.drift * 0.10;
+    swheel.rotation.z = S.steer * WHEEL_TURN;
 
     const rollAmt = clamp(S.steer * (0.35 + Math.min(1, Math.abs(S.speed) / 18) * 0.65), -1, 1);
     const pitch = -accel * 0.055 + S.air * 0.05;

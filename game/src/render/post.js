@@ -20,11 +20,11 @@ import { BloomPrefilterFrag, BlurShader, makeCompositeShader, makeGradeLUT } fro
  *
  *   scene -> rtScene (+depth)   full-res forward render, renderer ACES, sRGB-encoded
  *     -> GTAO                   horizon-based AO, normals reconstructed from our depth
- *     -> UnrealBloom            soft-knee threshold bloom on real HDR highlights
- *     -> half-res gaussian      the blur source for depth of field
- *     -> composite              motion blur + rush blur + DoF + CA + ACES + LUT grade +
- *                               speed lines + vignette + dither + sRGB encode
- *     -> SMAA                   1x anti-aliasing on the finished, perceptual image
+ *     -> UnrealBloom            threshold bloom, thresholded in reconstructed HDR
+ *     -> half-res gaussian      the blur source for depth of field and the CA fringe
+ *     -> composite              motion blur + rush blur + DoF + CA + LUT grade +
+ *                               speed-driven sat/contrast + speed lines + vignette + dither
+ *     -> SMAA                   anti-aliasing, last, on the finished perceptual image
  *
  * ## Colour management
  *
@@ -45,10 +45,10 @@ import { BloomPrefilterFrag, BlurShader, makeCompositeShader, makeGradeLUT } fro
  *
  * `setQuality(t)` takes a tier 0..3 (a fraction in 0..1 is accepted and scaled):
  *
- *   0  SMAA + grade only          - software raster / weak GPUs
- *   1  + bloom, vignette, CA
- *   2  + GTAO, depth of field, motion blur, rush   (default)
- *   3  + more AO/bloom/motion samples
+ *   0  SMAA + grade + vignette                       - software raster / weak GPUs
+ *   1  + bloom
+ *   2  + GTAO, depth of field, motion blur, chromatic aberration, boost rush   (default)
+ *   3  + more AO and motion-blur samples
  */
 
 const TIER_MAX = 3;
@@ -292,7 +292,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
 
   // ---- state ---------------------------------------------------------------------------
   let tier = -1;
-  let speedN = 0, boost = 0, gradeOn = true;
+  let speedN = 0, boost = 0, gradeOn = true, vignetteScale = 1;
   const prevViewProj = new THREE.Matrix4();
   const curViewProj = new THREE.Matrix4();
   let havePrev = false;
@@ -331,7 +331,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     d.MB_TAPS    = tier >= 3 ? 12 : 8;
     compositePass.material.needsUpdate = true;
 
-    cu.uVignette.value = tier >= 1 ? params.vignette : params.vignette * 0.6;
+    vignetteScale = tier >= 1 ? 1 : 0.6;   // without bloom a full vignette reads heavy
     havePrev = false;
   }
 
@@ -374,7 +374,8 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     cu.uContrast.value = params.contrast * (1 + 0.10 * punch);
     cu.uLutMix.value = gradeOn ? params.lutMix : 0;
     cu.uLift.value = 0.02 * punch;
-    cu.uVignette.value = params.vignette + 0.20 * punch + 0.05 * smoothstep(0.6, 1.2, speedN);
+    cu.uVignette.value = vignetteScale *
+      (params.vignette + 0.20 * punch + 0.05 * smoothstep(0.6, 1.2, speedN));
     // CA scales only gently with boost: past ~4 px of separation the fringe stops reading
     // as a lens and starts reading as a bug.
     cu.uCA.value = params.chromatic * (1 + 0.7 * punch + 0.15 * speedN);

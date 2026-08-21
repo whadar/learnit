@@ -4,7 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "vite build",
+    "preview": "vite preview --port 4173 --strictPort --host 127.0.0.1",
+    "dev": "vite",
+    "smoke": "node tools/smoke.mjs",
+    "shoot": "node tools/shoot.mjs"
   },
   "keywords": [],
   "author": "",
@@ -16,5 +20,6 @@
   },
   "devDependencies": {
     "playwright": "^1.62.1"
-  }
+  },
+  "type": "module"
 }
