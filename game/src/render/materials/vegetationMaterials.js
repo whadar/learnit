@@ -255,7 +255,7 @@ function cellOlive(ctx, S, seed) {
   const bx = S * 0.5, by = S * 0.99;
   // Olive foliage is bicoloured: grey-green above, near-white felted underside. Half the
   // leaves of a real tree show their pale side, which is what makes a grove read silver.
-  underMass(ctx, S, r, [118, 130, 104], S * 0.32, S * 0.30, bx, by - S * 0.42, 9, 0.32);
+  underMass(ctx, S, r, [150, 158, 130], S * 0.32, S * 0.30, bx, by - S * 0.42, 9, 0.32);
   for (let b = 0; b < 11; b++) {
     const ang = -Math.PI / 2 + (b - 5) * 0.175 + (r() - 0.5) * 0.14;
     const L = S * (0.46 + r() * 0.30);
@@ -273,8 +273,8 @@ function cellOlive(ctx, S, seed) {
         ctx.rotate(la + Math.PI / 2);
         const g = r();
         drawLeaf(ctx, L2, W2,
-          g > 0.52 ? jit([196, 202, 176], r, 0.10) : jit([98, 122, 78], r, 0.22),
-          g > 0.52 ? 'rgba(176,182,158,0.55)' : 'rgba(154,166,132,0.5)', 0, false);
+          g > 0.44 ? jit([212, 218, 192], r, 0.09) : jit([110, 134, 86], r, 0.22),
+          g > 0.44 ? 'rgba(188,194,168,0.5)' : 'rgba(160,172,136,0.5)', 0, false);
         ctx.restore();
       }
     }

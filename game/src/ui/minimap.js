@@ -85,9 +85,20 @@ const C = {
   item:     '#3FA9E0',
   rival:    '#F0E6D2',
   player:   '#FFD24A',
+  ink:      '#241F16',
 };
 
 const PLACE_TINT = ['#FFD24A', '#E7EBF0', '#D9964A'];
+
+/**
+ * One livery colour per grid slot, so every rival blip is its own kart on the map even when the
+ * caller does not hand us a colour. Index is the racer's stable position in the racers array.
+ */
+export const RIVAL_TINTS = [
+  '#E2513A', '#4FB4E6', '#8FD35A', '#C86BE8',
+  '#F2953A', '#5FD9C0', '#E86AA0', '#B9A24A',
+  '#7C8CE8', '#D8D2C0', '#8B6A3C', '#5E8C3A',
+];
 
 /* =================================================================== factory */
 
@@ -173,7 +184,10 @@ export function createMinimap(opts = {}) {
     ribbonPath(c); c.stroke();
     c.setLineDash([]);
 
-    // ---- start/finish chequer across the ribbon
+    // ---- direction of travel: chevrons riding the ribbon, pointing the way round
+    drawDirectionChevrons(c, px);
+
+    // ---- start/finish chequer across the ribbon, plus a chequered flag in the margin
     if (pts.length > 3) {
       const s0 = Number.isFinite(O.track?.startS) ? O.track.startS : 0;
       const i0 = Math.round((s0 / (O.track?.length || 1)) * pts.length) % pts.length;
@@ -196,8 +210,69 @@ export function createMinimap(opts = {}) {
         c.stroke();
       }
       c.lineCap = 'round';
+
+      // the flag sits on the outboard side of the line so it never covers the ribbon
+      const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+      let ox = x1 - x0, oy = y1 - y0;
+      const om = Math.hypot(ox, oy) || 1;
+      ox /= om; oy /= om;
+      const off = px * 0.55 + 8;
+      let fx = mx + ox * off, fy = my + oy * off;
+      // keep it on the map even if the line sits near an edge
+      if (fx < 14 || fx > S - 14 || fy < 14 || fy > S - 14) { fx = mx - ox * off; fy = my - oy * off; }
+      startFlag(c, clamp(fx, 12, S - 12), clamp(fy, 12, S - 12));
     }
     baked = c2;
+  }
+
+  /** Little chequered flag on a pole - the map's "you start here, you finish here". */
+  function startFlag(c, x, y) {
+    c.save();
+    c.translate(x, y);
+    c.lineJoin = 'round';
+    // pole
+    c.strokeStyle = C.ink; c.lineWidth = 2.6; c.lineCap = 'round';
+    c.beginPath(); c.moveTo(0, 7); c.lineTo(0, -9); c.stroke();
+    // flag body, cased then chequered
+    c.fillStyle = '#FFF8E7';
+    c.strokeStyle = C.ink; c.lineWidth = 2.2;
+    c.beginPath(); c.rect(0.6, -9.4, 11, 7.6); c.fill(); c.stroke();
+    c.save();
+    c.beginPath(); c.rect(0.6, -9.4, 11, 7.6); c.clip();
+    c.fillStyle = '#22201A';
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 3; j++) {
+      if ((i + j) % 2) continue;
+      c.fillRect(0.6 + i * 2.75, -9.4 + j * 2.53, 2.75, 2.53);
+    }
+    c.restore();
+    c.restore();
+  }
+
+  /** Arrowheads along the centre-line so the lap direction is never ambiguous. */
+  function drawDirectionChevrons(c, px) {
+    if (pts.length < 8) return;
+    const n = 5, size = Math.max(2.8, px * 0.42);
+    c.save();
+    c.lineJoin = 'round'; c.lineCap = 'round';
+    for (let k = 0; k < n; k++) {
+      const i = Math.round((k + 0.5) / n * pts.length) % pts.length;
+      const a = pts[i], b = pts[(i + 3) % pts.length];
+      proj.to(a.x, a.z, tmp); const ax = tmp.x, ay = tmp.y;
+      proj.to(b.x, b.z, tmp); const bx = tmp.x, by = tmp.y;
+      const dx = bx - ax, dy = by - ay, m = Math.hypot(dx, dy);
+      if (m < 0.001) continue;
+      c.save();
+      c.translate(ax, ay);
+      c.rotate(Math.atan2(dy, dx));
+      c.beginPath();
+      c.moveTo(-size * 0.75, -size * 0.85);
+      c.lineTo(size * 0.85, 0);
+      c.lineTo(-size * 0.75, size * 0.85);
+      c.lineWidth = size * 0.7; c.strokeStyle = 'rgba(28,25,18,.75)'; c.stroke();
+      c.lineWidth = size * 0.34; c.strokeStyle = 'rgba(255,248,231,.95)'; c.stroke();
+      c.restore();
+    }
+    c.restore();
   }
 
   function drawWorldFeature(c, list, colour, width, alpha) {
@@ -252,28 +327,77 @@ export function createMinimap(opts = {}) {
   }
 
   /* ---------------------------------------------------------------- blips -- */
-  function blip(c, x, y, r, fill, ring, label) {
-    c.beginPath(); c.arc(x, y, r + 1.6, 0, TAU);
-    c.fillStyle = ring || 'rgba(30,28,22,.85)'; c.fill();
+  /** A rival: cased disc in that kart's livery, with a gold ring on the race leader. */
+  function blip(c, x, y, r, fill, leader) {
+    c.beginPath(); c.arc(x, y + 1.1, r + 1.5, 0, TAU);
+    c.fillStyle = 'rgba(0,0,0,.28)'; c.fill();
+    c.beginPath(); c.arc(x, y, r + 1.5, 0, TAU);
+    c.fillStyle = leader ? '#FFD24A' : 'rgba(30,28,22,.92)'; c.fill();
     c.beginPath(); c.arc(x, y, r, 0, TAU);
     c.fillStyle = fill; c.fill();
-    if (label) {
-      c.fillStyle = '#241F16';
-      c.font = `800 ${Math.round(r * 1.25)}px 'Trebuchet MS',DejaVu Sans,sans-serif`;
-      c.textAlign = 'center'; c.textBaseline = 'middle';
-      c.fillText(label, x, y + 0.5);
-    }
+    // a soft top-light so the disc reads as a bead, not a flat dot
+    c.beginPath(); c.arc(x - r * 0.28, y - r * 0.32, r * 0.46, 0, TAU);
+    c.fillStyle = 'rgba(255,255,255,.42)'; c.fill();
   }
 
+  /** The player: one cased arrowhead, no double-draw, pointing the way the kart faces. */
   function arrow(c, x, y, ang, r, fill) {
     c.save();
     c.translate(x, y); c.rotate(ang);
     c.beginPath();
-    c.moveTo(0, -r * 1.55); c.lineTo(r * 1.05, r * 1.05); c.lineTo(0, r * 0.55); c.lineTo(-r * 1.05, r * 1.05);
+    c.moveTo(0, -r * 1.62); c.lineTo(r * 1.12, r * 1.02); c.lineTo(0, r * 0.46); c.lineTo(-r * 1.12, r * 1.02);
     c.closePath();
-    c.lineWidth = 2.2; c.strokeStyle = '#241F16'; c.lineJoin = 'round';
+    c.lineJoin = 'round';
+    c.fillStyle = 'rgba(0,0,0,.30)';
+    c.save(); c.translate(0, 1.4); c.fill(); c.restore();
+    c.lineWidth = 2.6; c.strokeStyle = C.ink;
     c.fillStyle = fill; c.fill(); c.stroke();
+    // bright bevel down the leading edge
+    c.beginPath();
+    c.moveTo(0, -r * 1.62); c.lineTo(r * 0.55, r * 0.1); c.lineTo(0, r * 0.0);
+    c.closePath();
+    c.fillStyle = 'rgba(255,255,255,.5)'; c.fill();
     c.restore();
+  }
+
+  /**
+   * The pack bunches on the grid, and at map scale eight karts land inside one blip. Nudge
+   * overlapping markers apart (deterministically, bounded to a couple of blip widths) so the
+   * field is readable without lying about where anyone is.
+   */
+  const marks = [];
+  function layoutRacers(racers) {
+    marks.length = 0;
+    for (let i = 0; i < racers.length; i++) {
+      const r = racers[i];
+      proj.to(r.x, r.z, tmp);
+      marks.push({ r, i, x: tmp.x, y: tmp.y, ox: tmp.x, oy: tmp.y });
+    }
+    const MIN = O.blip * 2.25, MAXOFF = O.blip * 2.6;
+    for (let pass = 0; pass < 8; pass++) {
+      let moved = false;
+      for (let a = 0; a < marks.length; a++) {
+        for (let b = a + 1; b < marks.length; b++) {
+          const A = marks[a], B = marks[b];
+          let dx = B.x - A.x, dy = B.y - A.y, d = Math.hypot(dx, dy);
+          if (d >= MIN) continue;
+          if (d < 1e-4) {                       // exactly coincident: fan out on a fixed spiral
+            const ang = (a * 2.39996 + b * 0.91);
+            dx = Math.cos(ang); dy = Math.sin(ang); d = 1;
+          }
+          const push = (MIN - d) * 0.5 / d;
+          A.x -= dx * push; A.y -= dy * push;
+          B.x += dx * push; B.y += dy * push;
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+    for (const m of marks) {                    // never drift far from the truth
+      const dx = m.x - m.ox, dy = m.y - m.oy, d = Math.hypot(dx, dy);
+      if (d > MAXOFF) { m.x = m.ox + dx / d * MAXOFF; m.y = m.oy + dy / d * MAXOFF; }
+    }
+    return marks;
   }
 
   /**
@@ -289,7 +413,8 @@ export function createMinimap(opts = {}) {
 
     const player = data.player || (data.racers || []).find(r => r.player) || null;
     if (mode === 'heading' && player) {
-      headingTarget = -(player.yaw || 0);
+      // bring the direction of travel to screen-up: map angle of travel is (PI - yaw)
+      headingTarget = (player.yaw || 0) - Math.PI;
       let d = headingTarget - heading;
       while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU;
       heading += d * clamp((data.dt ?? 1 / 60) * 8, 0, 1);
@@ -321,25 +446,30 @@ export function createMinimap(opts = {}) {
       }
     }
 
-    // rivals first, player last so it is never occluded
+    // every kart on the map: rivals first, the player last so it is never occluded
     const racers = data.racers || [];
     const pulse = data.pulse ?? 0;
-    for (const r of racers) {
-      if (r.player) continue;
-      proj.to(r.x, r.z, tmp);
-      const tint = r.color || (r.place <= 3 ? PLACE_TINT[r.place - 1] : C.rival);
+    const laid = layoutRacers(racers);
+    let me = null;
+    for (const m of laid) {
+      const r = m.r;
+      if (r.player || r === player) { me = m; continue; }
+      const tint = r.color != null ? hexish(r.color) : RIVAL_TINTS[m.i % RIVAL_TINTS.length];
       c.save();
       if (r.finished) c.globalAlpha = 0.45;
-      blip(c, tmp.x, tmp.y, O.blip * 0.82, tint);
+      blip(c, m.x, m.y, O.blip * 0.86, tint, r.place === 1);
       c.restore();
     }
     if (player) {
-      proj.to(player.x, player.z, tmp);
-      const g = 1 + 0.12 * Math.sin(pulse * 6.0);
-      // halo
-      c.beginPath(); c.arc(tmp.x, tmp.y, O.blip * 2.3 * g, 0, TAU);
-      c.fillStyle = 'rgba(255,210,74,.22)'; c.fill();
-      arrow(c, tmp.x, tmp.y, (player.yaw || 0) + heading * 0 + (mode === 'heading' ? 0 : (player.yaw || 0) * 0), O.blip * 1.15, C.player);
+      const x = me ? me.x : (proj.to(player.x, player.z, tmp), tmp.x);
+      const y = me ? me.y : tmp.y;
+      const g = 1 + 0.09 * Math.sin(pulse * 5.0);
+      c.beginPath(); c.arc(x, y, O.blip * 2.5 * g, 0, TAU);
+      c.fillStyle = 'rgba(255,206,61,.20)'; c.fill();
+      c.beginPath(); c.arc(x, y, O.blip * 1.85 * g, 0, TAU);
+      c.fillStyle = 'rgba(255,206,61,.24)'; c.fill();
+      // north-up: the arrow carries the kart's heading; heading-up: the map already turned
+      arrow(c, x, y, Math.PI - (player.yaw || 0), O.blip * 1.2, C.player);
     }
     c.restore();
 
@@ -357,6 +487,9 @@ export function createMinimap(opts = {}) {
 
     c.restore();
   }
+
+  const hexish = n => typeof n === 'string' ? n
+    : '#' + ((n >>> 0) & 0xffffff).toString(16).padStart(6, '0');
 
   function roundRect(c, x, y, w, h, r) {
     c.moveTo(x + r, y);

@@ -92,11 +92,13 @@ export function buildRoadTextures(p) {
   const mx = p.total / W, my = p.vMetres / H;   // metres per texel
 
   // palette
-  const dirtKind = p.kind === 'dirt' || p.kind === 'path';
-  const base = p.kind === 'path' ? [0.40, 0.335, 0.245]
+  // 'gravel' is a *racing* gravel surface: dirt-like grain, but no weed strip and its
+  // own palette, so the circuit never has to share a look with a village farm track.
+  const dirtKind = p.kind === 'dirt' || p.kind === 'path' || p.kind === 'gravel';
+  const base = p.base || (p.kind === 'path' ? [0.40, 0.335, 0.245]
     : dirtKind ? [0.575, 0.515, 0.405]
-      : [0.108, 0.106, 0.104];
-  const shoulderCol = dirtKind ? [0.50, 0.455, 0.335] : [0.415, 0.375, 0.285];
+      : [0.108, 0.106, 0.104]);
+  const shoulderCol = p.shoulder || (dirtKind ? [0.50, 0.455, 0.335] : [0.415, 0.375, 0.285]);
 
   // a few random asphalt repairs, and the odd oil stain
   const polish = p.polish || (dirtKind
@@ -130,7 +132,7 @@ export function buildRoadTextures(p) {
       if (dirtKind) {
         const dust = fbm(U * 0.85, V * 0.85, 12, 24, seed + 3, 5);
         const grit = fbm(U * 9.0, V * 9.0, 48, 128, seed + 19, 3);
-        const tone = 0.80 + dust * 0.42 + (grit - 0.5) * 0.20;
+        const tone = 0.90 + dust * 0.20 + (grit - 0.5) * 0.22;
         r *= tone; g *= tone * 0.99; b *= tone * 0.95;
         h = dust * 0.5 + grit * 0.35;
         // two compacted wheel ruts
@@ -153,7 +155,7 @@ export function buildRoadTextures(p) {
         // asphalt: fine aggregate + a coarse macro variation
         const agg = fbm(U * 26, V * 26, 96, 256, seed + 5, 3, 0.62);
         const macro = fbm(U * 0.6, V * 0.6, 6, 16, seed + 71, 4);
-        const tone = 0.80 + macro * 0.50 + (agg - 0.5) * 0.42;
+        const tone = 0.90 + macro * 0.22 + (agg - 0.5) * 0.46;
         r *= tone; g *= tone; b *= tone * 1.02;
         h = agg * 1.5 + macro * 0.5;
         rough = 0.66 + (agg - 0.5) * 0.22 + macro * 0.10;
@@ -283,8 +285,10 @@ float rdH(vec2 p){ vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.
 float rdN(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
   return mix(mix(rdH(i), rdH(i+vec2(1,0)), f.x), mix(rdH(i+vec2(0,1)), rdH(i+vec2(1,1)), f.x), f.y); }`)
       .replace('#include <map_fragment>', `#include <map_fragment>
-{ float m = rdN(vRoadW.xz * 0.035) * 0.62 + rdN(vRoadW.xz * 0.14) * 0.38;
-  diffuseColor.rgb *= 0.80 + 0.42 * m; }`);
+{ // De-tile without smearing: a *small* mid-frequency drift plus a fine grain. The old
+  // 28 m / 0.42-amplitude term painted metre-wide dark smudges over the whole ribbon.
+  float m = rdN(vRoadW.xz * 0.085) * 0.45 + rdN(vRoadW.xz * 0.34) * 0.35 + rdN(vRoadW.xz * 1.7) * 0.20;
+  diffuseColor.rgb *= 0.945 + 0.115 * m; }`);
   };
   return m;
 }
@@ -455,12 +459,16 @@ export function mergeGeoms(list) {
   let nv = 0, ni = 0;
   for (const g of list) { nv += g.attributes.position.count; ni += g.index.count; }
   if (!nv) return null;
+  // vertex colours ride along only when every input carries them
+  const withCol = list.length > 0 && list.every(g => !!g.attributes.color);
   const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), uv = new Float32Array(nv * 2);
+  const col = withCol ? new Float32Array(nv * 3) : null;
   const idx = nv > 65000 ? new Uint32Array(ni) : new Uint16Array(ni);
   let vo = 0, io = 0;
   for (const g of list) {
     const p = g.attributes.position.array, n = g.attributes.normal.array, u = g.attributes.uv.array, ix = g.index.array;
     pos.set(p, vo * 3); nor.set(n, vo * 3); uv.set(u, vo * 2);
+    if (col) col.set(g.attributes.color.array, vo * 3);
     for (let i = 0; i < ix.length; i++) idx[io + i] = ix[i] + vo;
     vo += g.attributes.position.count; io += ix.length;
   }
@@ -468,6 +476,7 @@ export function mergeGeoms(list) {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
   g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  if (col) g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   g.setIndex(new THREE.BufferAttribute(idx, 1));
   g.computeBoundingSphere();
   return g;

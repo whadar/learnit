@@ -136,12 +136,12 @@ const CSS = `
 /* ---- corner anchors ---- */
 .kr-hud .kr-tl{position:absolute;left:2.2cqmin;top:2.2cqmin;display:flex;gap:1.4cqmin;align-items:flex-start}
 .kr-hud .kr-tr{position:absolute;right:2.2cqmin;top:2.2cqmin;display:flex;flex-direction:column;align-items:flex-end;gap:1.4cqmin}
-.kr-hud .kr-bl{position:absolute;left:2.4cqmin;bottom:2.2cqmin;display:flex;flex-direction:column;align-items:flex-start;gap:1.2cqmin}
-.kr-hud .kr-br{position:absolute;right:2.2cqmin;bottom:2.2cqmin;display:flex;flex-direction:column;align-items:flex-end;gap:1.1cqmin}
+.kr-hud .kr-bl{position:absolute;left:2.6cqmin;bottom:3.4cqmin;display:flex;flex-direction:column;align-items:flex-start;gap:1.2cqmin}
+.kr-hud .kr-br{position:absolute;right:2.6cqmin;bottom:2.8cqmin;display:flex;flex-direction:column;align-items:flex-end;gap:1.1cqmin}
 .kr-hud .kr-mid{position:absolute;inset:0;display:grid;place-items:center}
 
 /* ---- item slot ---- */
-.kr-hud .kr-slot{position:relative;width:15.5cqmin;height:15.5cqmin;min-width:96px;min-height:96px;
+.kr-hud .kr-slot{position:relative;width:14cqmin;height:14cqmin;min-width:92px;min-height:92px;
   border-radius:24%;background:var(--plate);box-shadow:var(--edge);
   display:grid;place-items:center;transition:transform .18s var(--pop)}
 .kr-hud .kr-slot::before{content:'';position:absolute;inset:7%;border-radius:20%;
@@ -150,15 +150,19 @@ const CSS = `
 .kr-hud .kr-slot .kr-itemart{position:relative;width:74%;height:74%;display:block;
   filter:drop-shadow(0 3px 3px rgba(0,0,0,.38))}
 .kr-hud .kr-slot > div{position:relative;width:100%;height:100%;display:grid;place-items:center}
-.kr-hud .kr-slot.empty .kr-itemart{opacity:.14;filter:grayscale(1)}
+.kr-hud .kr-slot.empty{background:linear-gradient(180deg,rgba(247,241,226,.80),rgba(224,210,182,.78))}
+.kr-hud .kr-slot.empty .kr-itemart{display:none}
+.kr-hud .kr-slot.empty::after{content:'';position:absolute;inset:24%;border-radius:26%;
+  border:.42cqmin dashed rgba(96,82,56,.42)}
 .kr-hud .kr-slot.spin{animation:kr-slotspin .42s linear infinite}
 .kr-hud .kr-slot.got{animation:kr-got .5s var(--pop)}
 @keyframes kr-slotspin{0%,100%{transform:rotate(-2deg) scale(1)}50%{transform:rotate(2deg) scale(1.04)}}
 @keyframes kr-got{0%{transform:scale(1)}35%{transform:scale(1.22)}100%{transform:scale(1)}}
-.kr-hud .kr-count{position:absolute;right:-7%;bottom:-7%;min-width:34%;height:34%;padding:0 .5cqmin;
-  border-radius:999px;background:linear-gradient(180deg,#E3784C,#A8452A);color:var(--cream);
+.kr-hud .kr-count{position:absolute;right:-6%;bottom:-6%;width:37%;height:37%;padding:0;
+  border-radius:50%;background:radial-gradient(circle at 38% 28%,#F2A277,#E3784C 42%,#A8452A);
+  color:var(--cream);text-shadow:0 1px 0 rgba(0,0,0,.45);
   box-shadow:0 0 0 3px var(--ink),0 3px 0 rgba(0,0,0,.28);display:grid;place-items:center;
-  font-size:5.4cqmin;line-height:1;letter-spacing:-.02em;opacity:0;transform:scale(.6);
+  font-size:4.6cqmin;line-height:1;letter-spacing:-.02em;opacity:0;transform:scale(.6);
   transition:opacity .18s var(--ease),transform .22s var(--pop);z-index:2}
 .kr-hud .kr-count.on{opacity:1;transform:scale(1)}
 .kr-hud .kr-held{display:flex;flex-direction:column;gap:.8cqmin;padding-top:1.6cqmin}
@@ -167,7 +171,8 @@ const CSS = `
   white-space:nowrap;text-transform:uppercase;opacity:0;transform:translateX(-10px);
   transition:opacity .2s var(--ease),transform .2s var(--ease)}
 .kr-hud .kr-tag.on{opacity:1;transform:none}
-.kr-hud .kr-tag.shield{background:linear-gradient(180deg,#4FB4E6,#1B6FA8)}
+.kr-hud .kr-tag.shield{background:linear-gradient(180deg,#8FD9F8,#2E86BE);color:#06273E;
+  text-shadow:0 1px 0 rgba(255,255,255,.35)}
 
 /* ---- lap chip + minimap + clock ---- */
 .kr-hud .kr-lap{display:flex;align-items:baseline;gap:.7cqmin;padding:.6cqmin 1.8cqmin;border-radius:999px;
@@ -199,28 +204,33 @@ const CSS = `
 .kr-hud .kr-split.down{background:rgba(99,200,160,.34);color:#CCF7E6}
 
 /* ---- position badge ---- */
+/* NOTE: every [data-p] override below must use `background-image`, never the `background`
+   shorthand - the shorthand resets background-clip to border-box and the gradient then paints
+   as an opaque plate behind the glyphs instead of inside them. */
 .kr-hud .kr-pos{position:relative;display:flex;align-items:flex-start;
-  filter:drop-shadow(0 5px 0 rgba(0,0,0,.24)) drop-shadow(0 14px 26px rgba(0,0,0,.4));
+  filter:drop-shadow(0 4px 0 rgba(0,0,0,.26)) drop-shadow(0 12px 22px rgba(0,0,0,.42));
   transition:transform .3s var(--pop)}
-.kr-hud .kr-pos .num{font-size:17.5cqmin;line-height:.76;letter-spacing:-.06em;
-  -webkit-text-stroke:.9cqmin var(--ink);paint-order:stroke fill;
-  background:linear-gradient(180deg,#FFFDF4 6%,#FFD24A 50%,#B8791A 96%);
-  -webkit-background-clip:text;background-clip:text;color:transparent}
-.kr-hud .kr-pos .suf{font-size:7.4cqmin;line-height:1;margin-top:1.6cqmin;letter-spacing:-.02em;
-  -webkit-text-stroke:.66cqmin var(--ink);paint-order:stroke fill;
-  background:linear-gradient(180deg,#FFFDF4,#E8A93A);-webkit-background-clip:text;background-clip:text;color:transparent}
-.kr-hud .kr-pos[data-p="2"] .num{background:linear-gradient(180deg,#FFFFFF 6%,#DCE3EA 48%,#8B98A6 96%)}
-.kr-hud .kr-pos[data-p="2"] .suf{background:linear-gradient(180deg,#FFFFFF,#B9C3CD)}
-.kr-hud .kr-pos[data-p="3"] .num{background:linear-gradient(180deg,#FFF0DE 6%,#E0904A 48%,#94551F 96%)}
-.kr-hud .kr-pos[data-p="3"] .suf{background:linear-gradient(180deg,#FFF0DE,#C67D3E)}
-.kr-hud .kr-pos[data-p="0"] .num{background:linear-gradient(180deg,#FFFDF3 6%,#EFE3C8 48%,#A3936E 96%)}
-.kr-hud .kr-pos[data-p="0"] .suf{background:linear-gradient(180deg,#FFFDF3,#C7B896)}
+.kr-hud .kr-pos .num,.kr-hud .kr-pos .suf{
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  background-repeat:no-repeat;background-size:100% 100%}
+.kr-hud .kr-pos .num{font-size:16cqmin;line-height:.88;letter-spacing:-.06em;
+  -webkit-text-stroke:.86cqmin var(--ink);paint-order:stroke fill;
+  background-image:linear-gradient(180deg,#FFFDF4 4%,#FFD24A 46%,#B8791A 92%)}
+.kr-hud .kr-pos .suf{font-size:6.8cqmin;line-height:1;margin-top:1.4cqmin;letter-spacing:-.02em;
+  -webkit-text-stroke:.62cqmin var(--ink);paint-order:stroke fill;
+  background-image:linear-gradient(180deg,#FFFDF4,#E8A93A)}
+.kr-hud .kr-pos[data-p="2"] .num{background-image:linear-gradient(180deg,#FFFFFF 4%,#DCE3EA 46%,#8B98A6 92%)}
+.kr-hud .kr-pos[data-p="2"] .suf{background-image:linear-gradient(180deg,#FFFFFF,#B9C3CD)}
+.kr-hud .kr-pos[data-p="3"] .num{background-image:linear-gradient(180deg,#FFF0DE 4%,#E0904A 46%,#94551F 92%)}
+.kr-hud .kr-pos[data-p="3"] .suf{background-image:linear-gradient(180deg,#FFF0DE,#C67D3E)}
+.kr-hud .kr-pos[data-p="0"] .num{background-image:linear-gradient(180deg,#FFFDF3 4%,#EFE3C8 46%,#A3936E 92%)}
+.kr-hud .kr-pos[data-p="0"] .suf{background-image:linear-gradient(180deg,#FFFDF3,#C7B896)}
 .kr-hud .kr-pos.up{animation:kr-posup .55s var(--pop)}
 .kr-hud .kr-pos.down{animation:kr-posdown .55s var(--pop)}
 @keyframes kr-posup{0%{transform:translateY(16px) scale(.84)}60%{transform:translateY(-5px) scale(1.11)}100%{transform:none}}
 @keyframes kr-posdown{0%{transform:translateY(-14px) scale(1.09)}60%{transform:translateY(4px) scale(.94)}100%{transform:none}}
 .kr-hud .kr-field{align-self:flex-end;font-size:2.5cqmin;letter-spacing:.10em;color:var(--cream);
-  text-shadow:0 0 4px rgba(0,0,0,.95),0 2px 0 rgba(0,0,0,.6);margin-left:.7cqmin;margin-bottom:1.6cqmin}
+  text-shadow:0 0 4px rgba(0,0,0,.95),0 2px 0 rgba(0,0,0,.6);margin-left:.7cqmin;margin-bottom:1.1cqmin}
 
 /* ---- coins ---- */
 .kr-hud .kr-coins{display:flex;align-items:center;gap:1.0cqmin;padding:.5cqmin 1.6cqmin .5cqmin .5cqmin;
@@ -233,14 +243,15 @@ const CSS = `
 .kr-hud .kr-coins.bump{animation:kr-got .4s var(--pop)}
 
 /* ---- speedometer ---- */
-.kr-hud .kr-speedo{position:relative;width:25cqmin;height:14.5cqmin;min-width:168px;min-height:98px}
-.kr-hud .kr-speedo svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;
-  filter:drop-shadow(0 5px 0 rgba(0,0,0,.22)) drop-shadow(0 12px 22px rgba(0,0,0,.34))}
-.kr-hud .kr-speedo .unit{position:absolute;left:0;right:0;bottom:5%;text-align:center;
-  font-size:2.0cqmin;letter-spacing:.24em;color:var(--oliveDeep);opacity:.85}
-.kr-hud .kr-speedo .val{position:absolute;left:0;right:0;bottom:22%;text-align:center;
-  font-size:6.6cqmin;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.05em;color:var(--ink)}
-.kr-hud .kr-speedo.boost .val{color:#B34A12}
+/* The dial is one self-contained SVG: no CSS drop-shadow (that duplicated every tick as a
+   ghost), no needle over the digits - the value rides the arc as a knob instead. */
+.kr-hud .kr-speedo{position:relative;width:24cqmin;height:14.2cqmin;min-width:170px;min-height:100px}
+.kr-hud .kr-speedo svg{position:absolute;inset:0;width:100%;height:100%;overflow:hidden;display:block}
+.kr-hud .kr-speedo text{font-family:inherit;font-weight:700}
+.kr-hud .kr-speedo .val{fill:var(--ink);transition:fill .18s var(--ease)}
+.kr-hud .kr-speedo .unit{fill:#7A6E4C;letter-spacing:.22em}
+.kr-hud .kr-speedo.boost .val{fill:#B34A12}
+.kr-hud .kr-speedo.boost [data-knobdot]{fill:#FF8A2F}
 
 /* ---- mini-turbo charge ---- */
 .kr-hud .kr-mt{display:flex;flex-direction:column;align-items:flex-end;gap:.55cqmin;
@@ -306,19 +317,49 @@ const CSS = `
   background:radial-gradient(ellipse at 50% 55%,rgba(0,0,0,0) 38%,rgba(190,30,20,.72) 100%)}
 
 /* ---- standings strip, shown on the final lap ---- */
-.kr-hud .kr-strip{position:absolute;left:2.4cqmin;top:50%;transform:translate(-130%,-50%);
-  display:flex;flex-direction:column;gap:.3cqmin;padding:1.0cqmin;border-radius:15px;
-  background:var(--plateDark);box-shadow:0 0 0 3px var(--ink),0 8px 18px rgba(0,0,0,.38);
+.kr-hud .kr-strip{position:absolute;left:2.6cqmin;top:50%;transform:translate(-130%,-50%);
+  display:flex;flex-direction:column;gap:.28cqmin;padding:.9cqmin .9cqmin 1.0cqmin;border-radius:17px;
+  background:var(--plateDark);box-shadow:var(--edge);
   transition:transform .34s var(--ease),opacity .3s var(--ease);opacity:0}
 .kr-hud .kr-strip.on{transform:translate(0,-50%);opacity:1}
-.kr-hud .kr-strip .r{display:flex;align-items:center;gap:1.0cqmin;font-size:2.15cqmin;color:var(--cream);
-  padding:.2cqmin .6cqmin;border-radius:8px}
-.kr-hud .kr-strip .r.me{background:linear-gradient(90deg,rgba(255,210,74,.34),rgba(255,210,74,0));color:#FFE9A8}
-.kr-hud .kr-strip .r .p{width:2.8cqmin;text-align:right;opacity:.68;font-variant-numeric:tabular-nums}
-.kr-hud .kr-strip .r .n{min-width:11cqmin}
-.kr-hud .kr-strip .r .g{margin-left:auto;opacity:.62;font-variant-numeric:tabular-nums;font-size:1.9cqmin}
+.kr-hud .kr-strip .hd{display:flex;align-items:center;gap:.7cqmin;padding:0 .5cqmin .55cqmin;
+  font-size:1.7cqmin;letter-spacing:.20em;text-transform:uppercase;color:rgba(255,248,231,.62)}
+.kr-hud .kr-strip .hd::after{content:'';flex:1;height:2px;border-radius:2px;background:rgba(255,248,231,.20)}
+.kr-hud .kr-strip .r{display:flex;align-items:center;gap:.85cqmin;font-size:2.1cqmin;color:#F3EBDA;
+  padding:.28cqmin .9cqmin .28cqmin .28cqmin;border-radius:999px;line-height:1}
+.kr-hud .kr-strip .r.me{background:linear-gradient(180deg,#FFE08A,#E9A93A);color:#2E1F05;
+  box-shadow:0 0 0 2.4px var(--ink),0 2px 0 rgba(0,0,0,.3)}
+.kr-hud .kr-strip .r .p{width:3.0cqmin;height:3.0cqmin;flex:none;border-radius:50%;
+  display:grid;place-items:center;font-size:1.85cqmin;color:#2A2419;
+  background:linear-gradient(180deg,#EFE7D4,#BEB39A);box-shadow:0 0 0 1.8px rgba(20,17,12,.85)}
+.kr-hud .kr-strip .r[data-p="1"] .p{background:linear-gradient(180deg,#FFF0BE,#E8A93A)}
+.kr-hud .kr-strip .r[data-p="2"] .p{background:linear-gradient(180deg,#FFFFFF,#B9C3CD)}
+.kr-hud .kr-strip .r[data-p="3"] .p{background:linear-gradient(180deg,#FFE1BF,#C67D3E)}
+.kr-hud .kr-strip .r .k{width:1.0cqmin;height:2.4cqmin;flex:none;border-radius:3px;
+  background:var(--k,#8FA05B);box-shadow:0 0 0 1.6px rgba(20,17,12,.8)}
+.kr-hud .kr-strip .r .n{min-width:10cqmin;letter-spacing:.02em;white-space:nowrap}
+.kr-hud .kr-strip .r .g{margin-left:auto;opacity:.7;font-variant-numeric:tabular-nums;font-size:1.8cqmin;
+  padding-left:1.2cqmin}
+.kr-hud .kr-strip .r.me .g{opacity:.85}
 
 .kr-hud.hidden{opacity:0;transition:opacity .25s var(--ease)}
+
+/* ---- cinematic: the pre-race flythrough is a plate, not a gameplay frame ---- */
+.kr-hud .kr-title{position:absolute;left:3.4cqmin;bottom:4.2cqmin;display:flex;flex-direction:column;
+  align-items:flex-start;gap:.8cqmin;opacity:0;transform:translateY(10px);
+  transition:opacity .45s var(--ease),transform .45s var(--ease);pointer-events:none}
+.kr-hud .kr-title .k{padding:.45cqmin 1.5cqmin;border-radius:999px;font-size:1.9cqmin;letter-spacing:.24em;
+  text-transform:uppercase;background:var(--plateDark);color:var(--cream);
+  box-shadow:0 0 0 2.6px var(--ink),0 3px 0 rgba(0,0,0,.26)}
+.kr-hud .kr-title .t{font-size:6.4cqmin;line-height:1;letter-spacing:-.01em;
+  -webkit-text-stroke:.62cqmin var(--ink);paint-order:stroke fill;
+  background-image:linear-gradient(180deg,#FFFDF4 6%,#FFD24A 52%,#C4862099 96%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 4px 0 rgba(0,0,0,.26)) drop-shadow(0 12px 24px rgba(0,0,0,.45))}
+.kr-hud.cine .kr-title{opacity:1;transform:none}
+.kr-hud.cine .kr-tl,.kr-hud.cine .kr-tr,.kr-hud.cine .kr-bl,.kr-hud.cine .kr-br,
+.kr-hud.cine .kr-rocket,.kr-hud.cine .kr-strip,.kr-hud.cine .kr-wrong,.kr-hud.cine .kr-banner{
+  opacity:0;transition:opacity .3s var(--ease);pointer-events:none}
 `;
 
 /* ================================================================== the HUD */
@@ -366,7 +407,7 @@ export function createHUD(opts = {}) {
   </div>
 
   <div class="kr-bl">
-    <div class="kr-coins" data-el="coinbox"><div class="c">&#10022;</div><div class="n" data-el="coins">00</div></div>
+    <div class="kr-coins" data-el="coinbox"><div class="c">&#10022;</div><div class="n" data-el="coins">0</div></div>
     <div class="kr-pos" data-el="pos" data-p="1"><span class="num" data-el="posnum">1</span><span class="suf" data-el="possuf">st</span><span class="kr-field" data-el="field">/12</span></div>
   </div>
 
@@ -375,11 +416,7 @@ export function createHUD(opts = {}) {
       <div class="lab" data-el="mtlab">Mini-Turbo</div>
       <div class="bar"><div class="fill" data-el="mtfill"></div><div class="pips" data-el="pips"></div></div>
     </div>
-    <div class="kr-speedo" data-el="speedo">
-      ${speedoSVG()}
-      <div class="val" data-el="kmh">0</div>
-      <div class="unit">km/h</div>
-    </div>
+    <div class="kr-speedo" data-el="speedo">${speedoSVG()}</div>
   </div>
 
   <div class="kr-mid"><div class="kr-count3" data-el="count3"></div></div>
@@ -387,6 +424,7 @@ export function createHUD(opts = {}) {
   <div class="kr-wrong" data-el="wrong"><span class="ar">&#9664;</span><span>Wrong Way</span><span class="ar">&#9654;</span></div>
   <div class="kr-rocket" data-el="rocket"></div>
   <div class="kr-strip" data-el="strip"></div>
+  <div class="kr-title" data-el="title"><div class="k" data-el="titlekind">Grand Prix</div><div class="t" data-el="titlename">Amikam Village Circuit</div></div>
   <div class="kr-flash" data-el="flash"></div>
   <div class="kr-lines" data-el="lines"></div>
   <div class="kr-hurt" data-el="hurt"></div>`;
@@ -428,9 +466,11 @@ export function createHUD(opts = {}) {
   let flash = 0, lines = 0, hurt = 0, pulse = 0;
   let lastLapNumber = 0, refLap = Infinity, splitHold = 0, splitText = '', splitCls = '';
   let count3Shown = null;
-  const needle = el.speedo.querySelector('[data-needle]');
+  const knob = el.speedo.querySelector('[data-knob]');
   const gaugeFill = el.speedo.querySelector('[data-gauge]');
-  const GAUGE_LEN = 236;   // arc length of the gauge path, see speedoSVG()
+  el.kmh = el.speedo.querySelector('[data-el="kmh"]');
+  el.title.style.display = O.trackName ? '' : 'none';
+  el.titlename.textContent = O.trackName || 'Circuit';
 
   const mapData = { racers: [], items: [], player: null, pulse: 0, dt: 0 };
 
@@ -528,7 +568,7 @@ export function createHUD(opts = {}) {
     /* ---- coins ---- */
     const coins = Math.max(0, Math.round(s.coins || 0));
     if (coins !== prev.coins) {
-      el.coins.textContent = String(coins).padStart(2, '0');
+      el.coins.textContent = String(coins);
       if (coins > prev.coins && prev.coins >= 0) {
         el.coinbox.classList.remove('bump'); void el.coinbox.offsetWidth; el.coinbox.classList.add('bump');
       }
@@ -542,8 +582,9 @@ export function createHUD(opts = {}) {
     if (shown !== prev.kmh) { el.kmh.textContent = shown; prev.kmh = shown; }
     const top = s.topSpeedKmh || O.topSpeedKmh;
     needleShown = damp(needleShown, clamp(speedShown / top, 0, 1.06), 16, dt);
-    if (needle) needle.setAttribute('transform', `rotate(${lerp(-118, 118, clamp(needleShown, 0, 1)).toFixed(2)} 100 92)`);
-    if (gaugeFill) gaugeFill.setAttribute('stroke-dashoffset', (GAUGE_LEN * (1 - clamp(needleShown, 0, 1))).toFixed(1));
+    const gt = clamp(needleShown, 0, 1);
+    if (knob) knob.setAttribute('transform', `rotate(${lerp(GAUGE_A0, GAUGE_A1, gt).toFixed(2)} ${DIAL_X} ${DIAL_Y})`);
+    if (gaugeFill) gaugeFill.setAttribute('stroke-dashoffset', (GAUGE_LEN * (1 - gt)).toFixed(2));
     const boosting = !!(s.boost && (s.boost === true || s.boost.time > 0));
     el.speedo.classList.toggle('boost', boosting);
 
@@ -611,10 +652,12 @@ export function createHUD(opts = {}) {
       const rows = s.standings.slice(0, 8);
       const sig = rows.map(r => r.place + ':' + r.name).join('|');
       if (sig !== prev.strip) {
-        el.strip.innerHTML = rows.map(r =>
-          `<div class="r${r.player ? ' me' : ''}"><span class="p">${r.place}</span>`
+        el.strip.innerHTML = '<div class="hd">Standings</div>' + rows.map(r =>
+          `<div class="r${r.player ? ' me' : ''}" data-p="${r.place}">`
+          + `<span class="p">${r.place}</span>`
+          + `<span class="k" style="--k:${liveryFor(r)}"></span>`
           + `<span class="n">${escapeHTML(r.name)}</span>`
-          + `<span class="g">${r.gap == null ? '' : (r.gap > 0 ? '+' + r.gap.toFixed(1) : '—')}</span></div>`).join('');
+          + `<span class="g">${r.gap == null ? (r.player ? 'You' : '') : (r.gap > 0 ? '+' + r.gap.toFixed(1) : '—')}</span></div>`).join('');
         prev.strip = sig;
       }
       el.strip.classList.add('on');

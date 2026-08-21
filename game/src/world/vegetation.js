@@ -706,6 +706,16 @@ function buildStand(seed, kind) {
   return { trunk: null, foliage: b.build(H, 2.4), H, R: W * 0.6 };
 }
 
+/**
+ * The species builders are exported so trackside dressing does not have to fall back to
+ * untextured primitives: each returns `{ trunk, foliage, H, R }` of `BufferGeometry` ready to
+ * pair with `createBarkMaterial` / `createFoliageMaterial` from `vegetationMaterials.js`.
+ */
+export const treeBuilders = {
+  pine: buildPine, cypress: buildCypress, oak: buildOak, terebinth: buildTerebinth,
+  olive: buildOlive, almond: buildAlmond, palm: buildPalm, prickly: buildPrickly,
+};
+
 /* ============================================================ world rasters === */
 
 const CLS = { NONE: 0, BARREN: 1, GRASS: 2, CROP: 3, SHRUB: 4, FOREST: 5, FARM: 6, ORCHARD: 7, URBAN: 8 };
@@ -902,7 +912,7 @@ function build(engine, world, opts) {
     cypress:   foliage('cypress', { color: 0x8fae7c, bend: 0.16, flutter: 0.6, translucency: 0.35 }),
     oak:       foliage('oak', { color: 0xa8bf8c, bend: 0.24, flutter: 1.1, translucency: 0.6 }),
     terebinth: foliage('terebinth', { color: 0xc4d0a0, bend: 0.26, flutter: 1.2, translucency: 0.72 }),
-    olive:     foliage('olive', { color: 0xc2c8b4, bend: 0.22, flutter: 1.3, translucency: 0.8, roughness: 0.8 }),
+    olive:     foliage('olive', { color: 0xd0d4c0, bend: 0.22, flutter: 1.3, translucency: 0.85, wrap: 0.55, roughness: 0.8 }),
     almond:    foliage('almond', { color: 0xbcc894, bend: 0.26, flutter: 1.3, translucency: 0.75 }),
     palm:      foliage('palm', { color: 0xb0c088, bend: 0.20, flutter: 1.5, translucency: 0.8 }),
     shrub:     foliage('shrub', { color: 0xc0c4a4, bend: 0.14, flutter: 1.0, translucency: 0.5 }),
@@ -1358,9 +1368,11 @@ function build(engine, world, opts) {
     m[o + 8] = s * sz; m[o + 9] = 0; m[o + 10] = c * sz; m[o + 11] = 0;
     m[o + 12] = x; m[o + 13] = y; m[o + 14] = z; m[o + 15] = 1;
     const co = L.n * 3;
-    // late-summer colour drift: drier and paler toward the yellow end
+    // Late-summer colour drift, and a real *hue* spread rather than a brightness one: some
+    // trees are dusty and yellowing, their neighbours still deep blue-green. A stand where
+    // every crown sits on one hue is the other half of the cloned-silhouette problem.
     const t = tint;
-    tintCol.setRGB(0.86 + t * 0.30, 0.90 + t * 0.20 - 0.04, 0.80 + t * 0.24);
+    tintCol.setRGB(0.82 + t * 0.36, 0.88 + t * 0.20, 0.98 - t * 0.26);
     L.col[co] = tintCol.r; L.col[co + 1] = tintCol.g; L.col[co + 2] = tintCol.b;
     L.n++;
   }
@@ -1398,7 +1410,7 @@ function build(engine, world, opts) {
     // --- trees -----------------------------------------------------------------
     const treeR = MID_TREE * q;
     scatterGrid(TREE_CELL, treeR, cx, cz, (i, j, x, z, d) => {
-      const cls = coverNear(x, z, i, j, 30);
+      const cls = coverNear(x, z, i, j, 42);
       let dens = TREE_DENS[cls] ?? 0;
       if (dens <= 0) return;
       // The Overture forest polygons are surveyor-straight, so extruding them at full density
@@ -1408,12 +1420,12 @@ function build(engine, world, opts) {
       let inner = 1;
       if (cls === CLS.FOREST) {
         let open = 0;
-        if (coverAt(x + 26, z) !== CLS.FOREST) open++;
-        if (coverAt(x - 26, z) !== CLS.FOREST) open++;
-        if (coverAt(x, z + 26) !== CLS.FOREST) open++;
-        if (coverAt(x, z - 26) !== CLS.FOREST) open++;
+        if (coverAt(x + 40, z) !== CLS.FOREST) open++;
+        if (coverAt(x - 40, z) !== CLS.FOREST) open++;
+        if (coverAt(x, z + 40) !== CLS.FOREST) open++;
+        if (coverAt(x, z - 40) !== CLS.FOREST) open++;
         inner = 1 - open * 0.25;
-        dens *= lerp(0.30, 1.0, inner);
+        dens *= lerp(0.20, 1.0, inner);
       }
       if (hash2i(i, j, 5011) > dens) return;
       if (blockAt(x, z) > 60) return;
@@ -1429,7 +1441,7 @@ function build(engine, world, opts) {
       // A stand where every tree is the same silhouette at the same scale is the single
       // loudest "instanced prop" tell there is.
       const swell = 0.80 + 0.40 * smoothHash(x, z, 58, 4177);
-      const sc = (0.62 + hash2i(i, j, 7013) * 0.78) * lerp(0.62, 1.0, inner);
+      const sc = (0.62 + hash2i(i, j, 7013) * 0.78) * lerp(0.55, 1.0, inner);
       const sy = sc * swell * (0.88 + hash2i(i, j, 9007) * 0.30);
       const sxz = sc * (0.86 + hash2i(i, j, 9209) * 0.36);
       const rr = Math.max(sy, sxz);
@@ -1487,14 +1499,14 @@ function build(engine, world, opts) {
     const standFar = STAND_MAX * Math.min(1, 0.5 + q * 0.5);
     scatterGrid(STAND_CELL, standFar, cx, cz, (i, j, x, z, d) => {
       if (d < STAND_MIN * q) return;
-      const cls = coverNear(x, z, i, j, 34);
+      const cls = coverNear(x, z, i, j, 46);
       if (cls !== CLS.FOREST && cls !== CLS.SHRUB) return;
       // same margin treatment as the near forest, or the far ridge is a solid extruded band
       let open = 0;
-      if (coverAt(x + 34, z) === CLS.NONE || coverAt(x + 34, z) === CLS.URBAN) open++;
-      if (coverAt(x - 34, z) === CLS.NONE || coverAt(x - 34, z) === CLS.URBAN) open++;
-      if (coverAt(x, z + 34) === CLS.NONE || coverAt(x, z + 34) === CLS.URBAN) open++;
-      if (coverAt(x, z - 34) === CLS.NONE || coverAt(x, z - 34) === CLS.URBAN) open++;
+      if (coverAt(x + 48, z) === CLS.NONE || coverAt(x + 48, z) === CLS.URBAN) open++;
+      if (coverAt(x - 48, z) === CLS.NONE || coverAt(x - 48, z) === CLS.URBAN) open++;
+      if (coverAt(x, z + 48) === CLS.NONE || coverAt(x, z + 48) === CLS.URBAN) open++;
+      if (coverAt(x, z - 48) === CLS.NONE || coverAt(x, z - 48) === CLS.URBAN) open++;
       const inner = 1 - open * 0.25;
       if (hash2i(i, j, 8101) > (cls === CLS.FOREST ? 1.0 : 0.42) * lerp(0.34, 1, inner)) return;
       if (groveAt(x, z)) return;

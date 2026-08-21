@@ -16,22 +16,41 @@ import { createFurniture } from './furniture.js';
 
 /* ================================================================ helpers === */
 
-function stripeTexture({ a, b, blocks = 2, w = 24, h = 128, grime = 0.25, seed = 3 }) {
+/**
+ * Two kerb liveries side by side in one texture: column 0 is red/white corner rumble, column 1
+ * is pale limestone kerbstone for the straights. Columns are inset from the seam so mipping
+ * never bleeds red into the stone run.
+ *
+ * The U axis runs across the extruded profile (inner chamfer -> top -> outer chamfer -> drop
+ * face); V runs along the kerb, one block per repeat.
+ */
+function kerbAtlasTexture(cw = 48, h = 128) {
+  const w = cw * 2;
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const ctx = c.getContext('2d'), img = ctx.createImageData(w, h), d = img.data;
-  const rnd = rng(seed);
+  const rnd = rng(5150);
   const noise = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) noise[i] = rnd();
+  const cols = [
+    [[0.86, 0.075, 0.055], [0.97, 0.955, 0.915], 0.17],   // corner: red / white
+    [[0.94, 0.925, 0.875], [0.76, 0.735, 0.665], 0.26],   // straight: limestone kerbstone
+  ];
   for (let y = 0; y < h; y++) {
-    const block = Math.floor(y / (h / blocks)) % 2;
+    const block = Math.floor(y / (h / 2)) % 2;
+    // a dark mortar joint between blocks, so the kerb reads as laid stones up close
+    const dy = Math.min(y % (h / 2), (h / 2) - 1 - (y % (h / 2)));
+    const joint = clamp(1 - dy / 2.2, 0, 1);
     for (let x = 0; x < w; x++) {
-      const k = y * w + x;
+      const set = x < cw ? 0 : 1;
+      const [a, b, grime] = cols[set];
       const col = block ? a : b;
-      // grime toward the low, road-side edge and a scuffed top
-      const t = x / (w - 1);
-      const dirt = grime * (0.55 + 0.45 * noise[k]) * (0.35 + 0.65 * (1 - t));
-      const scuff = (noise[(k * 7919) % (w * h)] - 0.5) * 0.10;
-      const v = i => clamp((col[i] * (1 - dirt) + 0.30 * dirt * [1.0, 0.93, 0.80][i]) + scuff, 0, 1);
+      const k = y * w + x;
+      const t = (x % cw) / (cw - 1);
+      // grime on both chamfers, clean across the rumble top
+      const dirt = grime * (0.55 + 0.45 * noise[k]) * (0.20 + 0.80 * Math.abs(t * 2 - 1) ** 1.4);
+      const scuff = (noise[(k * 7919) % (w * h)] - 0.5) * 0.06;
+      const v = i => clamp((col[i] * (1 - dirt) + 0.30 * dirt * [1.0, 0.93, 0.80][i]) + scuff
+        - joint * 0.28 * col[i], 0, 1);
       d[k * 4] = Math.round(Math.pow(v(0), 1 / 2.2) * 255);
       d[k * 4 + 1] = Math.round(Math.pow(v(1), 1 / 2.2) * 255);
       d[k * 4 + 2] = Math.round(Math.pow(v(2), 1 / 2.2) * 255);
@@ -178,10 +197,12 @@ function vergeTextures(px = 256, seed = 4242) {
     const grit = fb(u * 3, v * 3, 24, seed, 4);
     const macro = fb(u * 0.7, v * 0.7, 6, seed + 300, 4);
     const grass = clamp(fb(u * 2.2, v * 2.2, 18, seed + 900, 3) * 1.9 - 0.82, 0, 1);
-    let r = 0.545 * (0.72 + macro * 0.55) + grit * 0.10;
-    let g = 0.500 * (0.72 + macro * 0.55) + grit * 0.095;
-    let b = 0.395 * (0.70 + macro * 0.55) + grit * 0.075;
-    r = lerp(r, 0.455, grass * 0.8); g = lerp(g, 0.412, grass * 0.8); b = lerp(b, 0.212, grass * 0.8);
+    // Deliberately darker than the surrounding hillside: the run-off has to be a value step
+    // down from the racing surface, or the ribbon has no readable edge at speed.
+    let r = 0.335 * (0.78 + macro * 0.46) + grit * 0.085;
+    let g = 0.300 * (0.78 + macro * 0.46) + grit * 0.080;
+    let b = 0.215 * (0.76 + macro * 0.46) + grit * 0.060;
+    r = lerp(r, 0.300, grass * 0.85); g = lerp(g, 0.282, grass * 0.85); b = lerp(b, 0.140, grass * 0.85);
     const st = vn(u * 9, v * 9, 72, seed + 55);
     let h = grit * 1.2 + macro * 0.8 + grass * 1.1;
     if (st > 0.905) { const q = (st - 0.905) * 10.5; r += q * 0.19; g += q * 0.18; b += q * 0.16; h += q * 2.4; }
@@ -257,9 +278,10 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   const o = Object.assign({
     ds: 2.2,               // longitudinal tessellation
     runoff: 6.5,           // gravel/verge each side
-    kerbWidth: 1.05,
-    kerbRise: 0.115,
-    kerbCurv: 0.0055,      // curvature above which a corner earns a kerb
+    kerbWidth: 1.35,
+    kerbRise: 0.20,
+    kerbDrop: 0.34,        // height of the outer face below the kerb top
+    kerbCurv: 0.0055,      // curvature above which a corner earns *red/white* kerbing
     shadows: true,
     itemBoxes: false,      // items.js owns these in the real game
     furniture: true,
@@ -282,15 +304,22 @@ export function createTrackMesh(engine, world, track, opts = {}) {
     seed: 771, normalStrength: 1.05, W: 224, H: 1024,
     polish: [{ at: 0, w: 2.1, k: 0.8 }, { at: 3.3, w: 0.9 }],
   });
+  // The gravel sectors used to be authored at almost exactly the albedo of the surrounding
+  // Amikam hillside, which is why the circuit dissolved into the terrain in oliveGrove and
+  // itemChaos. They are now compacted, oil-darkened limestone with a painted edge line — a
+  // clear value step below the sand either side.
   const gravelTex = buildRoadTextures({
-    total: NOMW + MARGIN * 2, road: NOMW, vMetres: 19, kind: 'dirt', centre: null, edge: false,
-    seed: 883, normalStrength: 1.45, W: 224, H: 1024,
-    polish: [{ at: 0, w: 1.7, k: 0.65 }, { at: 3.4, w: 0.85 }],
+    total: NOMW + MARGIN * 2, road: NOMW, vMetres: 19, kind: 'gravel', centre: null, edge: true,
+    seed: 883, normalStrength: 1.35, W: 224, H: 1024,
+    base: [0.400, 0.360, 0.292], shoulder: [0.300, 0.268, 0.200],
+    paintCol: [0.90, 0.885, 0.845],
+    polish: [{ at: 0, w: 2.5, k: 0.85 }, { at: 3.5, w: 1.05 }],
   });
   const matTarmac = createRoadMaterial(tarmacTex, { normalScale: 0.95, offsetFactor: -4, offsetUnits: -10 });
   const matGravel = createRoadMaterial(gravelTex, { normalScale: 1.35, offsetFactor: -4, offsetUnits: -10 });
   const vergeTex = vergeTextures();
   const matVerge = createRoadMaterial(vergeTex, { normalScale: 1.15, offsetFactor: -1, offsetUnits: -2 });
+  matVerge.vertexColors = true;
   matVerge.map.wrapS = THREE.RepeatWrapping;
   matVerge.normalMap.wrapS = THREE.RepeatWrapping;
   matVerge.roughnessMap.wrapS = THREE.RepeatWrapping;
@@ -298,7 +327,14 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   const isTarmac = new Float32Array(N + 1);
   for (let i = 0; i <= N; i++) isTarmac[i] = samples[i].surface === 'tarmac' ? 1 : 0;
 
-  /** Build a longitudinal strip: lanes are [lateralOffset(hw), heightAbove, u]. */
+  /**
+   * Build a longitudinal strip.
+   *
+   * Lanes are `[lateralOffset, heightAboveTrackPlane, u, drapeBlend, tint]`. `tint` is
+   * optional; when any lane supplies one the strip gains a vertex-colour attribute, which is
+   * how the run-off fades from a dark verge next to the kerb out to the hillside albedo
+   * without leaving the dead-straight value seam the critics flagged.
+   */
   function buildStrip(mask, laneFn, vScale, drape) {
     const runs = [];
     let cur = [];
@@ -312,12 +348,18 @@ export function createTrackMesh(engine, world, track, opts = {}) {
     for (const run of runs) {
       const lanes0 = laneFn(samples[run[0]]);
       const M = run.length, L = lanes0.length;
+      const wantCol = lanes0.some(l => l.length > 4);
       const pos = new Float32Array(M * L * 3), nor = new Float32Array(M * L * 3), uv = new Float32Array(M * L * 2);
+      const col = wantCol ? new Float32Array(M * L * 3) : null;
       for (let r = 0; r < M; r++) {
         const sm = samples[run[r]];
         const lanes = laneFn(sm);
         for (let k = 0; k < L; k++) {
           const off = lanes[k][0], up = lanes[k][1], u = lanes[k][2], blend = lanes[k][3] || 0;
+          if (col) {
+            const c = lanes[k][4] || [1, 1, 1], c3 = (r * L + k) * 3;
+            col[c3] = c[0]; col[c3 + 1] = c[1]; col[c3 + 2] = c[2];
+          }
           const x = sm.pos.x + sm.normal.x * off, z = sm.pos.z + sm.normal.z * off;
           let y = sm.pos.y + Math.tan(sm.banking) * off + up;
           if (drape && blend > 0) {
@@ -353,6 +395,7 @@ export function createTrackMesh(engine, world, track, opts = {}) {
       g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
       g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      if (col) g.setAttribute('color', new THREE.BufferAttribute(col, 3));
       g.setIndex(new THREE.BufferAttribute(idx, 1));
       geoms.push(g);
     }
@@ -371,15 +414,27 @@ export function createTrackMesh(engine, world, track, opts = {}) {
     }
     return out;
   };
-  // run-off lanes for one side: from the kerb line out onto the real hillside
+  /**
+   * Run-off lanes for one side.
+   *
+   * Starts *under* the outer face of the kerb (so the kerb's drop face has something to land
+   * on and never floats), sits a clear step below the racing surface, then drapes onto the
+   * real hillside. The tint runs dark at the kerb and brightens to roughly hillside albedo at
+   * the outer lip, which feathers the polygon boundary instead of leaving a straight seam.
+   */
   const runoffLanes = side => sm => {
     const hw = sm.width * 0.5, R = o.runoff;
-    const fr = [0.0, 0.10, 0.30, 0.62, 1.0];
+    const inner = hw + o.kerbWidth - 0.12;
+    const fr = [0.0, 0.06, 0.22, 0.55, 1.0];
+    const tint = f => {
+      const t = clamp((f - 0.28) / 0.72, 0, 1) ** 1.35;
+      return [lerp(1.0, 1.72, t), lerp(1.0, 1.70, t), lerp(1.0, 1.62, t)];
+    };
     return fr.map(f => {
-      const off = side * (hw + MARGIN * 0.9 + f * R);
-      const up = f < 0.02 ? 0.0 : -0.06 - f * 0.10;
-      return [off, up, side * (hw + f * R) / 3.2, f < 0.02 ? 0 : f * f * (3 - 2 * f)];
-    }).concat([[side * (hw + MARGIN + R + 1.4), -0.9, side * (hw + R + 1.4) / 3.2, 1]]);
+      const off = side * (inner + f * R);
+      const up = -o.kerbDrop * 0.72 - f * 0.16;
+      return [off, up, side * (inner + f * R) / 3.2, f < 0.02 ? 0 : f * f * (3 - 2 * f), tint(f)];
+    }).concat([[side * (inner + R + 1.6), -1.0, side * (inner + R + 1.6) / 3.2, 1, tint(1.35)]]);
   };
 
   const tarmacMask = new Float32Array(N + 1), gravelMask = new Float32Array(N + 1), allMask = new Float32Array(N + 1);
@@ -405,10 +460,14 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   }
 
   /* -------------------------------------------------------------- kerbs --- */
-  const kerbTar = stripeTexture({ a: [0.66, 0.10, 0.09], b: [0.86, 0.845, 0.82], blocks: 2, w: 20, h: 96, grime: 0.30, seed: 5 });
-  const kerbDirt = stripeTexture({ a: [0.80, 0.775, 0.72], b: [0.46, 0.36, 0.22], blocks: 2, w: 20, h: 96, grime: 0.45, seed: 9 });
-  const matKerbT = new THREE.MeshStandardMaterial({ map: kerbTar, roughness: 0.72, metalness: 0, side: THREE.DoubleSide });
-  const matKerbD = new THREE.MeshStandardMaterial({ map: kerbDirt, roughness: 0.94, metalness: 0, side: THREE.DoubleSide });
+  // The kerb is now CONTINUOUS around the whole circuit and genuinely extruded — a chamfer up
+  // off the racing surface, a flat rumble top and a 34 cm drop face onto the verge. Both
+  // liveries live in one two-column atlas so a single mesh can switch from stone kerbing on
+  // the straights to red/white through every corner without ever breaking the run.
+  const kerbTex = kerbAtlasTexture();
+  const matKerb = new THREE.MeshStandardMaterial({
+    map: kerbTex, roughness: 0.62, metalness: 0, side: THREE.DoubleSide,
+  });
 
   const kerbL = new Float32Array(N + 1), kerbR = new Float32Array(N + 1);
   for (let i = 0; i <= N; i++) {
@@ -417,27 +476,23 @@ export function createTrackMesh(engine, world, track, opts = {}) {
     if (c > 0) { kerbR[i] = mag; kerbL[i] = mag * 0.75; }   // left-hander: inside is left
     else if (c < 0) { kerbL[i] = mag; kerbR[i] = mag * 0.75; }
   }
-  // smear so kerbs run into and out of a corner
+  // smear so the red/white run leads into and out of a corner
   for (const arr of [kerbL, kerbR]) {
     const src = Float32Array.from(arr);
     for (let i = 0; i <= N; i++) {
       let m = 0;
-      for (let d = -7; d <= 7; d++) m = Math.max(m, src[clamp(i + d, 0, N)] * (1 - Math.abs(d) / 9));
+      for (let d = -7; d <= 7; d++) m = Math.max(m, src[(i + d + N) % N] * (1 - Math.abs(d) / 9));
       arr[i] = m > 0.14 ? 1 : 0;
     }
   }
-  for (const [side, mask] of [[-1, kerbL], [1, kerbR]]) {
-    for (const [mat, want] of [[matKerbT, 1], [matKerbD, 0]]) {
-      const m2 = new Float32Array(N + 1);
-      for (let i = 0; i <= N; i++) m2[i] = (mask[i] && (isTarmac[i] === want)) ? 1 : 0;
-      const g = kerbStrip(samples, side, m2, o);
-      if (g) {
-        const mesh = new THREE.Mesh(g, mat);
-        mesh.name = 'circuit:kerb'; mesh.receiveShadow = o.shadows; mesh.castShadow = false;
-        mesh.renderOrder = 4;
-        group.add(mesh);
-      }
-    }
+  const everywhere = new Float32Array(N + 1).fill(1);
+  for (const [side, corner] of [[-1, kerbL], [1, kerbR]]) {
+    const g = kerbStrip(samples, side, everywhere, o, i => (corner[i] ? 0 : 1));
+    if (!g) continue;
+    const mesh = new THREE.Mesh(g, matKerb);
+    mesh.name = 'circuit:kerb'; mesh.receiveShadow = o.shadows; mesh.castShadow = o.shadows;
+    mesh.renderOrder = 4;
+    group.add(mesh);
   }
 
   /* ------------------------------------------------------------- paint ---- */
@@ -451,9 +506,10 @@ export function createTrackMesh(engine, world, track, opts = {}) {
     // (6 m, six rows of squares) and run right out over the verge to read as a start line.
     const CELL = 1.35;                                  // metres per chequer square
     const rows = 6, halfLen = rows * CELL * 0.5;
-    const across = clamp(Math.round((hw * 2 + 3.6) / CELL), 8, 30);
+    // run the band kerb-to-kerb, not out over the verge — the kerb is raised now
+    const across = clamp(Math.round((hw * 2 + 0.3) / CELL), 8, 30);
     const line = decalGeometry(track, track.startS - halfLen, track.startS + halfLen,
-      -(hw + 1.8), hw + 1.8, 0.062);
+      -(hw + 0.15), hw + 0.15, 0.062);
     const tLine = startLineTexture(across, rows, 64);
     const mesh = new THREE.Mesh(line, new THREE.MeshStandardMaterial({
       map: tLine, roughness: 0.52, metalness: 0,
@@ -469,7 +525,7 @@ export function createTrackMesh(engine, world, track, opts = {}) {
     });
     for (const d of [-(halfLen + 1.5), halfLen + 1.5]) {
       const bar = decalGeometry(track, track.startS + d - 0.26, track.startS + d + 0.26,
-        -(hw + 1.7), hw + 1.7, 0.056);
+        -(hw + 0.1), hw + 0.1, 0.056);
       const bm = new THREE.Mesh(bar, barMat); bm.renderOrder = 6; paints.add(bm);
     }
 
@@ -495,37 +551,13 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   }
   group.add(paints);
 
-  /* ------------------------------------------- start-line kerbing --------- */
-  // Paint alone cannot carry the line from a chase camera, so the crossing is bracketed by
-  // real geometry: a run of red/white rumble blocks and a waist-high chequered wall each side.
+  /* ------------------------------------------- start-line furniture ------- */
+  // The circuit-wide extruded kerb already brackets the crossing, so the old run of loose
+  // red/white boxes (which floated above the surface with a visible seam in photoFinish) is
+  // gone. What is left is the pair of waist-high chequered walls that carry the line at
+  // distance.
   {
-    const blocks = [];
     const q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1), v = new THREE.Vector3();
-    for (const sgn of [-1, 1]) {
-      for (let j = -7; j <= 7; j++) {
-        const ss = track.startS + j * 1.02;
-        const s2 = track.sample(ss);
-        const off = sgn * (s2.width * 0.5 + 0.98);
-        const x = s2.pos.x + s2.normal.x * off, z = s2.pos.z + s2.normal.z * off;
-        const gy = Math.min(s2.pos.y + Math.tan(s2.banking) * off, world.heightAt(x, z) + 0.26);
-        blocks.push({ x, y: gy, z, ry: Math.atan2(s2.tangent.x, s2.tangent.z), red: ((j + 7) & 1) === 0 });
-      }
-    }
-    const kg = new THREE.BoxGeometry(1.30, 0.34, 0.98);
-    const km = new THREE.MeshStandardMaterial({ roughness: 0.66, metalness: 0 });
-    const inst = new THREE.InstancedMesh(kg, km, blocks.length);
-    const red = new THREE.Color(0.62, 0.085, 0.075), white = new THREE.Color(0.88, 0.865, 0.82);
-    blocks.forEach((b, i) => {
-      q.setFromEuler(new THREE.Euler(0, b.ry, 0));
-      inst.setMatrixAt(i, new THREE.Matrix4().compose(v.set(b.x, b.y, b.z), q, sc));
-      inst.setColorAt(i, b.red ? red : white);
-    });
-    inst.name = 'circuit:startkerb';
-    inst.castShadow = false; inst.receiveShadow = o.shadows;
-    inst.instanceMatrix.needsUpdate = true;
-    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-    group.add(inst);
-
     // chequered walls: 1.0 m tall, so they are ~12 px on screen from the back of the grid
     const wallTex = startLineTexture(6, 2, 64);
     wallTex.wrapS = THREE.RepeatWrapping; wallTex.repeat.set(1, 1);
@@ -595,7 +627,7 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   engine.scene.add(group);
   const api = {
     group, furniture,
-    materials: { tarmac: matTarmac, gravel: matGravel, kerbTarmac: matKerbT, kerbDirt: matKerbD },
+    materials: { tarmac: matTarmac, gravel: matGravel, kerb: matKerb, verge: matVerge },
     update(dt, elapsed) { furniture?.update?.(dt, elapsed); },
     dispose() {
       group.traverse(n => n.geometry?.dispose?.());
@@ -606,8 +638,14 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   return api;
 }
 
-/** Kerb strip on one side: a raised, slightly outward-sloping shelf with a drop face. */
-function kerbStrip(samples, side, mask, o) {
+/**
+ * Kerb strip on one side.
+ *
+ * Six lanes give a real MK-style extrusion instead of a painted stripe: a shallow ramp off the
+ * racing surface, a steep front chamfer, a flat rumble top, an outer chamfer and a vertical
+ * drop face onto the verge. `colOf(i)` picks the atlas column (0 = red/white, 1 = stone).
+ */
+function kerbStrip(samples, side, mask, o, colOf) {
   const N = samples.length - 1;
   const runs = [];
   let cur = [];
@@ -618,17 +656,22 @@ function kerbStrip(samples, side, mask, o) {
   if (cur.length > 2) runs.push(cur);
   if (!runs.length) return null;
   const geoms = [];
+  //          inner ramp | front chamfer | top in | top out | outer chamfer | drop face
+  const uAcross = [0.02, 0.13, 0.30, 0.78, 0.93, 0.99];
   for (const run of runs) {
-    const M = run.length, L = 4;
+    const M = run.length, L = 6;
+    const closed = M === N + 1;         // the whole lap: never taper, the ends meet
     const pos = new Float32Array(M * L * 3), nor = new Float32Array(M * L * 3), uv = new Float32Array(M * L * 2);
     for (let r = 0; r < M; r++) {
-      const sm = samples[run[r]];
-      const hw = sm.width * 0.5;
-      // taper the kerb in and out over the first/last few stations
-      const fade = clamp(Math.min(r, M - 1 - r) / 4, 0, 1);
-      const rise = o.kerbRise * fade;
-      const offs = [hw - 0.10, hw + o.kerbWidth * 0.45, hw + o.kerbWidth, hw + o.kerbWidth];
-      const ups = [0.012, rise * 0.85, rise, rise - 0.34];
+      const i = run[r];
+      const sm = samples[i];
+      const hw = sm.width * 0.5, kw = o.kerbWidth;
+      // taper an isolated kerb in and out; a closed lap stays full height throughout
+      const fade = closed ? 1 : clamp(Math.min(r, M - 1 - r) / 4, 0, 1);
+      const rise = o.kerbRise * fade, drop = o.kerbDrop * fade;
+      const offs = [hw - 0.26, hw + 0.03, hw + 0.30, hw + kw - 0.18, hw + kw, hw + kw];
+      const ups = [0.004, rise * 0.55, rise, rise * 0.97, rise * 0.66, rise - drop];
+      const cshift = colOf ? colOf(i) * 0.5 : 0;
       for (let k = 0; k < L; k++) {
         const off = side * offs[k];
         const x = sm.pos.x + sm.normal.x * off, z = sm.pos.z + sm.normal.z * off;
@@ -636,20 +679,32 @@ function kerbStrip(samples, side, mask, o) {
         const i3 = (r * L + k) * 3;
         pos[i3] = x; pos[i3 + 1] = y; pos[i3 + 2] = z;
         const i2 = (r * L + k) * 2;
-        uv[i2] = k / (L - 1);
-        uv[i2 + 1] = sm.s / 3.1;
+        uv[i2] = cshift + uAcross[k] * 0.5;
+        uv[i2 + 1] = sm.s / 1.9;
       }
     }
     const gi = (r, k) => (clamp(r, 0, M - 1) * L + clamp(k, 0, L - 1)) * 3;
-    for (let r = 0; r < M; r++) for (let k = 0; k < L; k++) {
-      const a = gi(r - 1, k), b = gi(r + 1, k), c = gi(r, k - 1), d = gi(r, k + 1);
-      const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
-      const vx = pos[d] - pos[c], vy = pos[d + 1] - pos[c + 1], vz = pos[d + 2] - pos[c + 2];
-      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-      if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
-      const l = Math.hypot(nx, ny, nz) || 1;
-      const o3 = (r * L + k) * 3;
-      nor[o3] = nx / l; nor[o3 + 1] = ny / l; nor[o3 + 2] = nz / l;
+    // The strip winds consistently across k, so the cross-product sign is decided ONCE per
+    // row from the rumble top (which must face up). Flipping per vertex — the old rule —
+    // turned the vertical drop face's outward normal upward and killed its shading, which is
+    // exactly why the kerbs read as flat paint.
+    for (let r = 0; r < M; r++) {
+      let sgn = 1;
+      {
+        const a = gi(r - 1, 2), b = gi(r + 1, 2), c = gi(r, 1), d = gi(r, 3);
+        const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
+        const vx = pos[d] - pos[c], vy = pos[d + 1] - pos[c + 1], vz = pos[d + 2] - pos[c + 2];
+        sgn = (uz * vx - ux * vz) < 0 ? -1 : 1;
+      }
+      for (let k = 0; k < L; k++) {
+        const a = gi(r - 1, k), b = gi(r + 1, k), c = gi(r, k - 1), d = gi(r, k + 1);
+        const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
+        const vx = pos[d] - pos[c], vy = pos[d + 1] - pos[c + 1], vz = pos[d + 2] - pos[c + 2];
+        let nx = (uy * vz - uz * vy) * sgn, ny = (uz * vx - ux * vz) * sgn, nz = (ux * vy - uy * vx) * sgn;
+        const l = Math.hypot(nx, ny, nz) || 1;
+        const o3 = (r * L + k) * 3;
+        nor[o3] = nx / l; nor[o3 + 1] = ny / l; nor[o3 + 2] = nz / l;
+      }
     }
     const nIdx = (M - 1) * (L - 1) * 6;
     const idx = (M * L > 65000) ? new Uint32Array(nIdx) : new Uint16Array(nIdx);

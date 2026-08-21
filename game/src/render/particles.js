@@ -54,9 +54,9 @@ const _c1 = new THREE.Color();
  *     stack fifty orange sprites and the result is still exactly that orange, never white,
  *     and it reads at full contrast against pale sand because it *replaces* the background
  *     instead of adding to it.  This is where the silhouette lives.
- *   - only the **core** — one ~0.15 m kernel per exhaust — is additive/screen.  Its
- *     footprint is a few hundred pixels, so that is the entire budget for clipped white and
- *     for what the bloom prefilter can see.
+ *   - the white-hot **core** is one ~0.14 m kernel per exhaust, also alpha-over, and it is
+ *     the *only* layer allowed near white.  Its footprint is a few hundred pixels, so that
+ *     is the whole budget for clipped white and for what the bloom prefilter can see.
  *   - **soot** sits behind the fire, dark and alpha-blended, because a flame reads by value
  *     contrast against something darker, not by being brighter than everything else.
  */
@@ -72,13 +72,12 @@ const FX_TUNE = {
   miniTurbo: { blend: 'fire', size: [0.22, 0.03], life: [0.13, 0.26], alpha: 0.55, speed: [0.8, 2.2] },
 
   /* Exhaust fire body. Alpha-over, so this orange is the orange you see, no matter how many
-   * sprites overlap. The `flame` cell carries its own white-hot-base -> cool-tip ramp, and
-   * the colour ramp cools it further over life: bright orange at birth, deep red as it dies. */
+   * sprites overlap; the colour ramp does the cooling, hot yellow-orange at birth to
+   * saturated red as it dies.
+   * The cell is `fire`, not `flame`: `flame` bakes its own orange gradient into RGB, which
+   * multiplies with the particle ramp and drags the tip of every tongue to a muddy
+   * near-black red. The neutral cell lets the ramp alone own the hue. */
   boostFlame: {
-    // `fire`, not `flame`: the `flame` cell bakes its own orange gradient into RGB, which
-    // multiplies with the particle ramp and drags the tip of every tongue to a muddy
-    // near-black red. The neutral cell lets the ramp alone own the hue — hot yellow-orange
-    // at birth, saturated red as it dies — which is the gradient that reads as fire.
     blend: 'fire', sprite: 'fire',
     size: [0.28, 0.62], life: [0.14, 0.24], alpha: 1.0,
     speed: [3.0, 6.5], spread: 0.16, jitter: 0.30, drag: 5.4, grav: 0.35,
@@ -138,9 +137,9 @@ const FX_EXTRA = {
    * bakes an orange gradient into its RGB, which would drag a blue tongue back to brown.
    */
   boostTierFlame: {
-    sprite: 'fire', blend: 'fire', count: 1, life: [0.13, 0.23], size: [0.26, 0.60],
+    sprite: 'fire', blend: 'fire', count: 1, life: [0.13, 0.23], size: [0.23, 0.52],
     speed: [3.4, 7.0], spread: 0.20, jitter: 0.42, drag: 5.2, grav: 0.4, turb: [0.05, 3.0],
-    alpha: 0.68, colorA: [0.37, 0.77, 1.0], colorB: [0.055, 0.20, 0.77], fadeIn: 0.04, spin: 0.7,
+    alpha: 0.60, colorA: [0.34, 0.75, 1.0], colorB: [0.05, 0.18, 0.74], fadeIn: 0.04, spin: 0.7,
   },
   /** Grit lifted off the road by the exhaust blast — gives the fire something to sit in. */
   boostGrit: {
@@ -390,11 +389,17 @@ export class ParticleBatch {
     // sprite adds its full energy, so ten 0.9-alpha quads land at 9.0 and the framebuffer
     // clamps a huge region to flat white, with no shape, no hue and a bloom source that
     // reads as an HDR value of ~9 after the prefilter inverts the tone curve. Screen
-    // blending — `out = dst + src * (1 - dst)` — spends the *remaining headroom* instead,
-    // so a stack converges smoothly on white, never overshoots 1.0 (the scene target is
-    // tone-mapped and sRGB-encoded, so dst is always in [0,1]), and the red channel of an
-    // orange flame saturates well before green and blue: the core goes white-hot while the
-    // body stays orange. It also caps what the bloom prefilter can ever see.
+    // blending — out = dst + src * (1 - dst) — spends the *remaining headroom* instead,
+    // so a stack converges smoothly on white and never overshoots 1.0 (the scene target is
+    // tone-mapped and sRGB-encoded, so dst is always in [0,1]). It caps what the bloom
+    // prefilter can ever see, which is why explosion cores and shock rings live here.
+    //
+    // What screen blending is NOT good for is a flame in a sunlit outdoor game: `1 - dst`
+    // is the headroom left over the *background*, and over a limestone road at display 0.85
+    // there is almost none, so a screen-blended plume vanishes instead of blowing out. The
+    // flame body, the drift sparks and the embers therefore use the alpha-over 'fire' batch
+    // (see createVFX) — alpha-over is idempotent in hue and always wins against its
+    // background, which is what makes a coloured flame read at any exposure.
     this.premultiplied = blend === 'screen';
     if (this.premultiplied) {
       mat.blending = THREE.CustomBlending;
@@ -1611,7 +1616,7 @@ function createKartRig(vfx, world, target, o = {}) {
           local(e, wp);
           // splayed outwards and set a little further back, so the tier colour rides the
           // outside of the orange core the way MK8's mini-turbo flame does
-          wp.addScaledVector(right, (e[0] < 0 ? -1 : 1) * (0.08 + rand() * 0.12));
+          wp.addScaledVector(right, (e[0] < 0 ? -1 : 1) * (0.05 + rand() * 0.09));
           wp.addScaledVector(fwd, -0.12 - rand() * 0.10);
           vfx.emit('boostTierFlame', {
             pos: wp, dir: dirv, count: 1, raw: true, vx: ivx, vy: ivy, vz: ivz,
