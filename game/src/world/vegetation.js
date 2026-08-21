@@ -270,53 +270,101 @@ function buildPine(seed, detail) {
 }
 
 /**
- * Italian cypress — the moshav's punctuation marks. Dark, narrow, near-vertical, and (this is
- * the whole point) *never* a clean cone: the outline is broken all the way up by sprigs that
- * stand proud of the spindle, and the leader is usually bent.
+ * Italian cypress — the moshav's punctuation marks.
+ *
+ * The hard part is *not* the material, it is the outline. The authored cypress cell in the
+ * atlas is itself a spindle whose only silhouette break-up is hairline twigs, and mip-mapping
+ * eats those within forty metres; stack a pile of such cards on a smooth monotonic profile and
+ * every cypress in the game collapses into one solid, dead-straight-edged triangle — the
+ * ConeGeometry read that has been the loudest defect in the frame set.
+ *
+ * So the silhouette here is *geometric*, and survives any mip level:
+ *   - the envelope is not a cone. It swells to full width by a fifth of the height, holds a
+ *     near-parallel column through the middle and only then tapers, and it is modulated both
+ *     vertically (whorl lumps) and azimuthally (one flank fuller than the other), so the
+ *     outline wanders and a yawed instance is a different tree.
+ *   - the sprig cards are small — a card is a tuft, not a slab — so a card edge is a bump in
+ *     the outline rather than a chord across it.
+ *   - a third of the cards are *proud*: placed at 1.6-2.2x the local envelope radius, well
+ *     clear of the mass, which is what actually breaks the edge into sprigs.
+ *   - card AO is driven by how deep in the column the card sits, so the mass shades like a
+ *     volume instead of a flat fill.
  */
 function buildCypress(seed, detail) {
   const r = rng(seed);
   const tb = new Builder(), fb = new Builder();
   const H = 8.5 + r() * 6.5;
-  const W = H * (0.088 + r() * 0.040);
-  const bow = (r() - 0.5) * 0.05;                 // the whole column leans a little
-  const pts = [], rad = [];
+  const W = H * (0.092 + r() * 0.044);
+  const bow = (r() - 0.5) * 0.055;                // the whole column leans a little
+  const lead = (r() - 0.5) * 0.10;                // ...and the leader bends off it near the top
+  const axisX = t => bow * t * t * H + lead * H * Math.pow(clamp(t, 0, 1), 4.5);
+  const axisZ = t => Math.sin(t * 2.3 + seed) * H * 0.012 + lead * 0.6 * H * Math.pow(clamp(t, 0, 1), 4.5);
+
+  // trunk: short and mostly buried in sprigs, but it grounds the tree and shows through the
+  // gaps at the base the way a real cypress's does
   const segs = detail ? 5 : 3;
+  const pts = [], rad = [];
   for (let i = 0; i <= segs; i++) {
     const t = i / segs;
-    pts.push([Math.sin(t * 1.7 + seed) * 0.06 * H * 0.2 + bow * t * t * H, t * H * 0.92, 0]);
-    rad.push(lerp(0.22, 0.05, t));
+    pts.push([axisX(t * 0.62), t * H * 0.60, axisZ(t * 0.62)]);
+    rad.push(lerp(0.170, 0.065, t) * (H / 12));
   }
-  addTube(tb, pts, rad, detail ? 5 : 3, 0, 2.0);
+  addTube(tb, pts, rad, detail ? 5 : 4, 0, 2.0);
+
   const rect = slotRect('cypress');
-  const axisX = t => Math.sin(t * 1.7 + seed) * 0.06 * H * 0.2 + bow * t * t * H;
-  // spindle profile: widest around 45 % of the height, tapering to a blunt point
-  const prof = t => Math.pow(Math.sin(Math.PI * Math.pow(clamp(t, 0, 1), 0.76)), 0.50);
-  const n = detail ? 60 : 20;
+  // Vertical envelope: fast rise, long parallel middle, blunt tapering leader — plus two
+  // out-of-phase whorl lumps, which is what stops the edge being a straight line.
+  const lumpA = 2.4 + r() * 2.2, lumpB = 5.3 + r() * 3.4, phA = r() * TAU, phB = r() * TAU;
+  const prof = t => {
+    const tc = clamp(t, 0, 1);
+    const core = Math.pow(Math.sin(Math.PI * Math.pow(tc, 0.42)), 0.42);
+    return core * (1 + 0.17 * Math.sin(tc * lumpA * Math.PI + phA)
+                     + 0.10 * Math.sin(tc * lumpB * Math.PI + phB));
+  };
+  // Azimuthal envelope: a real cypress is fuller on one flank. Without this, yaw is a no-op
+  // and every instance in a windbreak is the same silhouette.
+  const az1 = r() * TAU, az2 = r() * TAU;
+  const flank = a => 1 + 0.22 * Math.cos(a - az1) + 0.13 * Math.cos(2 * a + az2);
+
   const up = new THREE.Vector3(), right = new THREE.Vector3(), nn = new THREE.Vector3(), p = new THREE.Vector3();
-  const place = (t, radScale, sizeScale, ao) => {
-    const az = (t * 41.7 + seed) % TAU + r() * 0.6;
-    const rad2 = W * prof(t) * radScale;
-    p.set(axisX(t) + Math.cos(az) * rad2, t * H * 0.94, Math.sin(az) * rad2);
-    nn.set(Math.cos(az), 0.30, Math.sin(az)).normalize();
-    up.set(nn.x * 0.34, 1.0, nn.z * 0.34).normalize();
+  const CARD = detail ? 1 : 1.55;                 // the far LOD covers with fewer, larger tufts
+  const place = (t, radScale, sizeScale, aoScale) => {
+    const az = r() * TAU;
+    const env = W * prof(t) * flank(az);
+    const rad2 = env * radScale;
+    p.set(axisX(t) + Math.cos(az) * rad2, t * H * 0.965, axisZ(t) + Math.sin(az) * rad2);
+    nn.set(Math.cos(az) * 1.15, 0.34, Math.sin(az) * 1.15).normalize();
+    up.set(nn.x * 0.30, 1.0, nn.z * 0.30).normalize();
     right.set(-Math.sin(az), 0, Math.cos(az));
-    const s = (detail ? 1 : 2.0) * sizeScale;
-    const h = H * 0.185 * s, w = W * 2.1 * s;
-    p.addScaledVector(up, -h * 0.42);
+    const s = CARD * sizeScale;
+    const h = H * 0.150 * s, w = W * 1.45 * s;
+    p.addScaledVector(up, -h * 0.44);
+    // depth-based occlusion: a card buried on the axis is in shadow, one out on the envelope
+    // is in the sun. This is what turns the pile of quads into a lit volume.
+    const ao = clamp((0.40 + 0.60 * Math.min(1, radScale * 0.85)) * aoScale
+                     * (0.80 + 0.24 * t) * (0.86 + 0.20 * r()), 0.34, 1);
     addCard(fb, p, up, right, w, h, rect, nn, r(), 0.035, ao, r() > 0.5);
   };
+
+  // the column itself
+  const n = detail ? 86 : 30;
   for (let i = 0; i < n; i++) {
-    const t = 0.05 + (i / n) * 0.95 + (r() - 0.5) * 0.025;
-    place(t, 0.35 + r() * 0.55, 0.82 + r() * 0.42, clamp(0.58 + 0.42 * (0.3 + 0.7 * t), 0.58, 1));
+    const t = 0.035 + (i / n) * 0.945 + (r() - 0.5) * 0.03;
+    place(t, 0.20 + r() * 0.72, 0.86 + r() * 0.40, 1.0);
   }
-  // sprigs that stand proud of the spindle — the silhouette break-up
-  const nOut = detail ? 16 : 6;
+  // the sprigs that stand *proud* of the column — the actual silhouette break-up. These sit
+  // 1.6-2.2x out on the envelope, far enough clear that their own edges are the outline.
+  const nOut = detail ? 30 : 14;
   for (let i = 0; i < nOut; i++) {
-    const t = 0.12 + r() * 0.86;
-    place(t, 1.05 + r() * 0.55, 0.60 + r() * 0.34, 1.0);
+    const t = 0.07 + Math.pow(r(), 0.85) * 0.90;
+    place(t, 1.55 + r() * 0.70, 0.42 + r() * 0.30, 1.08);
   }
-  return { trunk: tb.build(H), foliage: fb.build(H, 2.2), H, R: W * 2.0 };
+  // a blunt, ragged leader: a handful of short tufts around the bent tip, so the top is never
+  // a needle point
+  const nTip = detail ? 7 : 4;
+  for (let i = 0; i < nTip; i++) place(0.88 + r() * 0.10, 0.30 + r() * 1.6, 0.34 + r() * 0.26, 1.10);
+
+  return { trunk: tb.build(H), foliage: fb.build(H, 2.0), H, R: W * 2.4 };
 }
 
 /** Palestine oak / Tabor oak — dense dark rounded crown on a short thick bole. */
@@ -909,7 +957,7 @@ function build(engine, world, opts) {
   const mats = {
     pine:      foliage('pine', { color: 0x9fba86, bend: 0.30, flutter: 1.0, translucency: 0.5, roughness: 0.9 }),
     pine2:     foliage('pine2', { color: 0xb4c898, bend: 0.34, flutter: 1.1, translucency: 0.6, roughness: 0.9 }),
-    cypress:   foliage('cypress', { color: 0x8fae7c, bend: 0.16, flutter: 0.6, translucency: 0.35 }),
+    cypress:   foliage('cypress', { color: 0x86a06e, bend: 0.16, flutter: 0.6, translucency: 0.24 }),
     oak:       foliage('oak', { color: 0xa8bf8c, bend: 0.24, flutter: 1.1, translucency: 0.6 }),
     terebinth: foliage('terebinth', { color: 0xc4d0a0, bend: 0.26, flutter: 1.2, translucency: 0.72 }),
     olive:     foliage('olive', { color: 0xd0d4c0, bend: 0.22, flutter: 1.3, translucency: 0.85, wrap: 0.55, roughness: 0.8 }),
@@ -999,7 +1047,11 @@ function build(engine, world, opts) {
 
   defSpecies('pine', { lodMax: [340, 1100], build: d => variantParts(buildPine, 1400, d, mats.pine, barkMats.pine, 'pine') });
   defSpecies('pine2', { lodMax: [300, 1000], build: d => variantParts(buildPine, 3187, d, mats.pine2, barkMats.pine, 'pine2') });
-  defSpecies('cypress', { lodMax: [300, 900], build: T(buildCypress, mats.cypress, barkMats.cypress) });
+  // A cypress is the tallest, narrowest, most silhouette-critical thing on the skyline and
+  // its near mesh is tiny (152 leaf tris), so it earns a much longer full-mesh radius than
+  // the 82 m default: at 82 m a 14 m column is still 150 px tall and any impostor shows.
+  defSpecies('cypress', { lodMax: [380, 900], r0: 145, r1: 430,
+    build: T(buildCypress, mats.cypress, barkMats.cypress) });
   defSpecies('oak', { lodMax: [260, 800], build: d => variantParts(buildOak, 2200, d, mats.oak, barkMats.oak, 'oak') });
   defSpecies('terebinth', { lodMax: [200, 600], build: T(buildTerebinth, mats.terebinth, barkMats.oak) });
   defSpecies('olive', { lodMax: [520, 1600], build: T(buildOlive, mats.olive, barkMats.olive) });
@@ -1433,10 +1485,12 @@ function build(engine, world, opts) {
       const slope = world.slopeAt(x, z);
       if (slope > 0.62) return;
       const y = world.heightAt(x, z);
-      const lod = d < NEAR_TREE * q ? 0 : 1;
       const mix = TREE_MIX[cls] || TREE_MIX[CLS.SHRUB];
       const sp = pickFrom(mix, hash2i(i, j, 6079));
       const S = species[sp];
+      // per-species full-mesh radius, not one global one: a cypress column reads as an
+      // impostor much further out than a round oak crown does
+      const lod = d < (S ? S.r0 : NEAR_TREE) * q ? 0 : 1;
       // Independent height and spread jitter plus a slow canopy swell across the hillside.
       // A stand where every tree is the same silhouette at the same scale is the single
       // loudest "instanced prop" tell there is.
@@ -1590,6 +1644,25 @@ function build(engine, world, opts) {
       state.quality = clamp(t, 0.1, 1.5);
       state.lodScale = clamp(0.35 + state.quality * 0.75, 0.3, 1.35);
       state.dirty = true;
+    },
+    /**
+     * Plant one extra tree from another system. The track dressing wants cypress lines along
+     * the verge and olives in the grove; routing them through here gets them the real species
+     * geometry, the real alpha foliage, the wind and the LOD ladder, instead of a cone.
+     * `sp` is any species name ('cypress', 'olive', 'almond', 'palm', 'oak', ...). Safe to
+     * call after boot — the next repack picks it up.
+     */
+    plant(sp, x, z, o = {}) {
+      if (!species[sp] || !world.inBounds(x, z)) return false;
+      const rr = rng(((x * 131.7 + z * 977.3) | 0) ^ 0x5f3a);
+      planted.push({
+        sp, x, z, y: world.heightAt(x, z),
+        yaw: o.yaw ?? rr() * TAU,
+        s: o.scale ?? (0.85 + rr() * 0.40),
+        tint: o.tint ?? rr(),
+      });
+      state.dirty = true;
+      return true;
     },
     setWind(strength, direction) {
       if (strength != null) wind.uWindStrength.value = strength;

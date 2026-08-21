@@ -68,6 +68,19 @@ export const DEFAULTS = {
   kartClear: 4.6,         // a rival this close to the eye backs the rig off and lifts it …
   kartLift: 0.80,         // … by up to this much, instead of being sliced open by the frame
   kartBack: 1.15,
+  /* item boxes in the lens — see nearProps() */
+  boxClear: 7.6,          // an item box within this of the kart gets the rig out of its way
+  boxFull: 3.0,           // … at full strength once it is this close
+  boxLift: 2.55,          // metres the eye climbs over the row
+  boxBack: 3.70,          // … and metres it drops back, so the row swings out to the edges
+  boxSpan: 2.6,           // vertical half-window: only boxes on the kart's own deck count
+  /* fixed cinematic plates: keeping the subject legible — see plateFov() */
+  plateFill: 0.170,       // fraction of frame height a head-on subject should occupy
+  plateSubjH: 1.55,       // metres of kart + driver that has to fill it
+  plateFovMin: 26,        // never squeeze the lens past this
+  plateNear: 8,           // subjects nearer than this are already big enough
+  plateFar: 45,           // … and beyond this a plate is a landscape, not a portrait
+  plateClosing: 6.0,      // m/s the field must be closing on the lens to count as head-on
   /* misc */
   lookBackTime: 0.16,     // seconds to swing round when look-back is held
   speedRef: 25.0,         // m/s that counts as "top speed" for the curves
@@ -116,7 +129,7 @@ export function createCamera(engine, world, opts = {}) {
   const st = {
     yaw: 0, fov: O.fov, roll: 0, drift: 0, driftDir: 0, air: 0, hop: 0,
     speed: 0, boost: 0, lookBack: 0, shake: 0, shakeT: 0, first: true,
-    height: 0, side: 0, kartLift: 0,
+    height: 0, side: 0, kartLift: 0, boxNear: 0,
   };
   let elapsed = 0;
 
@@ -176,6 +189,62 @@ export function createCamera(engine, world, opts = {}) {
     }
     st.kartLift = damp(st.kartLift, want, want > st.kartLift ? 9 : 3.5, dt);
     return st.kartLift;
+  }
+
+  /* ---- near-field props: the item-box rows ---------------------------------- */
+
+  /**
+   * Item boxes are 1.5 m cubes floating at windscreen height, and the rig rides barely 2.3 m
+   * over the tarmac, so driving through a box row put two of them *inside* the near volume —
+   * a metre and a half off the lens, flanking the player, filling the bottom half of the frame
+   * and burying the kart behind them (review R2, itemChaos).
+   *
+   * Two objects at the same depth cannot be separated by moving the lens, so the rig does the
+   * only thing that works: it climbs over the row and drops back off it. Higher puts the line
+   * of sight to the driver's head *above* the box tops; further back drops the boxes to half
+   * the subject's depth, which throws them out towards the frame edges at twice the parallax.
+   * Both decay away the moment the row is behind you, so the ordinary road is filmed from the
+   * ordinary place.
+   *
+   * Each box is measured from whichever is nearer, the kart or the lens. The kart's distance
+   * is what gives the move its anticipation — the rig is already up when the row arrives
+   * instead of reacting to a box that is by then filling the frame — and the lens's distance
+   * is what holds it there, because the kart clears the row a good four metres before the eye
+   * trailing it does. Measuring at the lens alone would also fight itself, the move it
+   * triggers being the move that ends it.
+   *
+   * The box list is found once and cached: they are direct children of the items root, which
+   * carries no transform, so `o.position` is already world space and no matrix walk is needed.
+   */
+  let boxCache = null, boxScan = -1e9, boxScans = 0;
+  function nearProps(kart, dt) {
+    if ((!boxCache || !boxCache.length) && boxScans < 6 && elapsed - boxScan > 1.5) {
+      // items.js builds its boxes after the rig exists; look a few times, then give up
+      // rather than walk the whole scene graph forever on a course that has none.
+      boxScan = elapsed; boxScans++;
+      boxCache = [];
+      const scene = engine && engine.scene;
+      if (scene && scene.traverse) scene.traverse(o => { if (o.name === 'itembox') boxCache.push(o); });
+    }
+    let want = 0;
+    const list = boxCache;
+    if (list) {
+      const fade = Math.max(O.boxClear - O.boxFull, 0.5);
+      for (let i = 0; i < list.length; i++) {
+        const o = list[i];
+        if (o.visible === false) continue;
+        const p = o.position;
+        if (Math.abs(p.y - kart.y) > O.boxSpan && Math.abs(p.y - pos.y) > O.boxSpan + 2) continue;
+        const kx = p.x - kart.x, kz = p.z - kart.z;
+        const ex = p.x - pos.x, ez = p.z - pos.z;
+        const d2 = Math.min(kx * kx + kz * kz, ex * ex + ez * ez);
+        if (d2 >= O.boxClear * O.boxClear) continue;
+        const w = clamp((O.boxClear - Math.sqrt(d2)) / fade, 0, 1);
+        if (w > want) want = w;
+      }
+    }
+    st.boxNear = damp(st.boxNear, want, want > st.boxNear ? 8 : 2.4, dt);
+    return st.boxNear;
   }
 
   function applyLook(p, at, fov, roll = 0) {
@@ -246,9 +315,11 @@ export function createCamera(engine, world, opts = {}) {
     // over it, so a pass close enough to touch is a pass in frame and not a sliced-open kart
     // pasted across the HUD.
     const near = rivalNear(v, dt);
+    const clutter = nearProps(s.pos, dt);
     const back = O.back + O.backSpeed * st.speed + O.backBoost * st.boost + O.airBack * st.air
-      + near * O.kartBack;
-    const hgt = O.height + O.heightSpeed * st.speed + O.airHeight * st.air + near * O.kartLift;
+      + near * O.kartBack + clutter * O.boxBack;
+    const hgt = O.height + O.heightSpeed * st.speed + O.airHeight * st.air + near * O.kartLift
+      + clutter * O.boxLift;
     const side = -st.driftDir * O.driftSide * st.drift * (1 - st.lookBack);
     st.side = damp(st.side, side, 7, dt);
     st.hop = damp(st.hop, 0, O.hopLambda, dt);
@@ -428,6 +499,7 @@ export function createCamera(engine, world, opts = {}) {
   }
 
   const CLEAR = 0.55;               // metres of air kept between the lens and a solid
+  const NEARVOL = 3.2;              // the eye's own near volume: a solid in here is a clip
   function resolveFixed(p, at) {
     clearGround(p, at);
     // a crane shot is above everything trackside; don't pay for a ray it cannot hit
@@ -444,11 +516,61 @@ export function createCamera(engine, world, opts = {}) {
     let hits = null;
     try { hits = _ray.intersectObjects(list, false); } catch (e) { hits = null; }
     if (hits && hits.length) {
-      const t = hits[0].distance;
-      if (t < dist - 0.02) p.copy(at).addScaledVector(tmp, Math.max(t - CLEAR, Math.min(dist, 1.2)));
+      // Only ironmongery *in the eye's own near volume* is a fault. A gantry leg or a
+      // hoarding halfway down the sight line is composition, not a clip, and the old rule —
+      // which planted the lens in front of the first hit whatever its distance — would haul
+      // a plate authored 15 m past the line back under the gantry it was framing, taking the
+      // subject with it. So take the first hit *inside* that volume — the face the lens has
+      // buried itself behind — and step back out in front of it, never past half the shot.
+      let t = -1;
+      for (const h of hits) if (h.distance > dist - NEARVOL && h.distance < dist - 0.02) { t = h.distance; break; }
+      if (t > 0) p.copy(at).addScaledVector(tmp, Math.max(t - CLEAR, dist * 0.55));
     }
     clearGround(p, at);
     return p;
+  }
+
+  /**
+   * Keep a head-on plate's subject legible.
+   *
+   * A hand-placed plate carries a focal length chosen by eye, and on a plate the field is
+   * *driving at* — a finish-line shot — a wide lens turns the thing the frame is about into
+   * forty pixels of kart under a lot of scenery, with whatever ironmongery stands between
+   * cropping the borders. So a plate the karts are closing on is treated as a portrait: the
+   * lens tightens until the leader fills `plateFill` of the frame height, which both makes
+   * the driver read and throws the near trackside metal outside the frame entirely.
+   *
+   * Plates the field is standing still on (a grid), driving away from, or nowhere near are
+   * left exactly as authored — closing speed is what separates a head-on shot from a wide.
+   */
+  const _axis = V(), _sub = V();
+  function plateFov(eye, at, fov) {
+    if (!target || !target.state) return fov;
+    _axis.subVectors(at, eye);
+    const dist = _axis.length();
+    if (dist < 0.5) return fov;
+    _axis.multiplyScalar(1 / dist);                     // view axis
+    const half = THREE.MathUtils.degToRad(fov) * 0.5;
+    const aspect = camera.aspect || (16 / 9);
+    const coneH = Math.atan(Math.tan(half) * aspect);   // ~half the frame's diagonal spread
+    let best = Infinity;
+    const consider = s => {
+      if (!s || !s.pos || !s.vel) return;
+      _sub.set(s.pos.x - eye.x, s.pos.y + 0.55 - eye.y, s.pos.z - eye.z);
+      const d = _sub.length();
+      if (d < O.plateNear || d > O.plateFar || d >= best) return;
+      _sub.multiplyScalar(1 / d);
+      if (Math.acos(clamp(_sub.dot(_axis), -1, 1)) > coneH) return;    // outside the frame
+      // closing on the lens? _sub points eye -> kart, so driving at us is a negative dot
+      if (-(s.vel.x * _sub.x + s.vel.y * _sub.y + s.vel.z * _sub.z) < O.plateClosing) return;
+      best = d;
+    };
+    consider(target.state);
+    const rivals = target.rivals;
+    if (rivals) for (const o of rivals) consider(o && (o.state || (o.vehicle && o.vehicle.state)));
+    if (!Number.isFinite(best)) return fov;
+    const want = 2 * Math.atan(O.plateSubjH / (2 * best * O.plateFill)) * 180 / Math.PI;
+    return clamp(Math.min(fov, want), Math.min(O.plateFovMin, fov), fov);
   }
 
   function fixedUpdate() {
@@ -496,7 +618,8 @@ export function createCamera(engine, world, opts = {}) {
       tmp2.set(l[0], l[1], l[2]);
       const eye = resolveFixed(V(p[0], p[1], p[2]), tmp2);
       fixed.pos = [eye.x, eye.y, eye.z];
-      fixed.look = l; fixed.fov = f ?? fixed.fov;
+      fixed.look = l;
+      fixed.fov = plateFov(eye, tmp2, f ?? fixed.fov);
       mode = 'fixed'; fixedUpdate(); return api;
     },
     /** Jump the rig to where it wants to be, killing the spring (used after a teleport). */
