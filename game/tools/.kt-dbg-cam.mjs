@@ -9,9 +9,10 @@ page.on('pageerror', e => console.log('[pageerror]', e.message));
 page.on('console', m => { const t=m.text(); if(t.startsWith('DBG')) console.log(t); });
 await page.goto(url, { waitUntil: 'load', timeout: 180000 });
 await page.waitForFunction(() => window.__game && (window.__game.ready || window.__game.error), null, { timeout: 600000 });
+await page.evaluate(() => window.__game.setView('photoFinish'));
+await page.evaluate(n => new Promise(res => { let i=0; const st=()=>(++i>=n?res():requestAnimationFrame(st)); requestAnimationFrame(st); }), 8);
 const out = await page.evaluate(() => {
   const g = window.__game;
-  g.setView('photoFinish');
   const cam = g.engine.camera;
   const trk = g.track;
   const s0 = trk.startS;
