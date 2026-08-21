@@ -72,6 +72,9 @@ function patternFn(spec) {
   const N = makeFbm(spec.seed);
   const base = hex2rgb(spec.base), dark = hex2rgb(spec.dark), belly = hex2rgb(spec.belly);
   const white = [246, 242, 233];
+  // Guaranteed-dark keyline. `spec.dark` is only "dark" for dark cats — Shelly's is 0xd8cfbe —
+  // so anything that has to read as a graphic edge at 15 px uses this instead.
+  const key = mix3(dark, [24, 19, 16], 0.58);
   const R = rng(spec.seed + 7);
   const blobs = [];
   for (let i = 0; i < 10; i++) blobs.push([R(), R(), 0.08 + R() * 0.16, R() < 0.5 ? 0 : 1]);
@@ -151,9 +154,17 @@ function patternFn(spec) {
       c = mix3(c, belly, clamp(m, 0, 1) * 0.88);
     }
     if (part === 'ear') {
-      // ear: base fur with a slightly darker rim; the pink inner is separate geometry
-      c = mix3(base, c, 0.30);
-      c = mix3(c, dark, smoothstep(0.78, 1.0, v) * 0.12);
+      // The ear carries the silhouette, so it is painted as a graphic, not as fur: a hard
+      // keyline down both edges and a dark tip, over the coat colour. That edge is what lets
+      // the point survive against bright sky AND against dark asphalt at race distance.
+      c = mix3(base, c, 0.35);
+      // UVs are planar over the ear's bounding box, so the ear's real left/right edge at
+      // height v sits at u = 0.5 ± (1-v)/2. Normalising by that keeps the keyline on the
+      // actual outline instead of flooding the whole triangle.
+      const halfSpan = Math.max(0.12, (1 - v) * 0.5);
+      const tEdge = clamp(Math.abs(u - 0.5) / halfSpan, 0, 1);
+      const rim = Math.max(smoothstep(0.60, 0.97, tEdge), smoothstep(0.76, 0.99, v));
+      c = mix3(c, key, clamp(rim, 0, 1) * 0.88);
     }
 
     if (isLimb) c = mix3(c, [0, 0, 0], 0.04);
@@ -268,7 +279,7 @@ function eyeTexture(colorHex, slit) {
   const c = hex2rgb(colorHex);
   ctx.fillStyle = '#f2efe6'; ctx.fillRect(0, 0, S, S);      // sclera
   // iris fills most of the front face; the front of the sphere is at u=0.5
-  const cx = S * 0.5, cy = S * 0.5, rr = S * 0.40;
+  const cx = S * 0.5, cy = S * 0.5, rr = S * 0.455;    // iris nearly fills the visible eye
   const grd = ctx.createRadialGradient(cx, cy - rr * 0.25, rr * 0.15, cx, cy, rr);
   grd.addColorStop(0, `rgb(${Math.min(255, c[0] * 1.35 | 0)},${Math.min(255, c[1] * 1.35 | 0)},${Math.min(255, c[2] * 1.35 | 0)})`);
   grd.addColorStop(0.62, `rgb(${c[0]},${c[1]},${c[2]})`);
@@ -289,8 +300,8 @@ function eyeTexture(colorHex, slit) {
   ctx.beginPath(); ctx.arc(cx, cy, rr * 0.97, 0, TAU); ctx.stroke();
   // pupil
   ctx.fillStyle = '#08070a'; ctx.beginPath();
-  if (slit) ctx.ellipse(cx, cy, rr * 0.17, rr * 0.72, 0, 0, TAU);
-  else ctx.ellipse(cx, cy, rr * 0.40, rr * 0.46, 0, 0, TAU);
+  if (slit) ctx.ellipse(cx, cy, rr * 0.27, rr * 0.76, 0, 0, TAU);
+  else ctx.ellipse(cx, cy, rr * 0.46, rr * 0.52, 0, 0, TAU);
   ctx.fill();
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
@@ -365,27 +376,53 @@ function lathe(profile, seg = 22) {
   return new THREE.LatheGeometry(pts, seg);
 }
 /**
- * Ears are the whole silhouette read. From the chase camera all you get of a driver is the
- * dome clearing the seat back, and at the R1 size the ears barely broke that dome's outline —
- * so the grid read as "pale blobs in the seats". Scaled up 22%: still Nintendo-proportioned,
- * but unmistakably a cat from 40 m.
+ * Ears are the whole silhouette read: at chase-camera range a driver is ~14 px tall and the
+ * only thing that separates "cat" from "orange sphere" is two points breaking the dome.
+ *
+ * R2 shipped these as 254 mm-wide, 181 mm-tall *flaps* — wider than tall, and wider than the
+ * 236 mm gap between the two ear bones, so the left and right plates crossed the midline and
+ * overlapped each other and the helmet. That intersection is the "doubled head" both R2
+ * critics saw. A real cat ear is markedly TALLER than its base is wide, so it is rebuilt to
+ * that ratio: the shape now reads as a point, and the two ears can never touch.
+ *
+ * Shapes stay per-cat distinct (that is how you tell the roster apart at range) but every
+ * variant keeps the same tall triangular mass.
  */
+const EAR_W = { round: 0.088, fold: 0.082, curl: 0.078 };
+const EAR_H = { round: 0.176, tuft: 0.256, fold: 0.150, curl: 0.206, notch: 0.226 };
 function earShape(kind) {
   const s = new THREE.Shape();
-  const K = 1.22;
-  const w = (kind === 'round' ? 0.118 : 0.104) * K;
-  const h = (kind === 'round' ? 0.118 : kind === 'tuft' ? 0.165 : 0.148) * K;
+  const w = EAR_W[kind] ?? 0.078;                 // half-width at the base
+  const h = EAR_H[kind] ?? 0.238;                 // height — always >> 2w
   s.moveTo(-w, 0);
   if (kind === 'round') {
-    s.bezierCurveTo(-w * 1.15, h * 0.55, -w * 0.62, h, 0, h);
-    s.bezierCurveTo(w * 0.62, h, w * 1.15, h * 0.55, w, 0);
+    // British-shorthair: broad rounded tip, still taller than the base is wide
+    s.bezierCurveTo(-w * 1.08, h * 0.50, -w * 0.86, h * 0.96, 0, h);
+    s.bezierCurveTo(w * 0.86, h * 0.96, w * 1.08, h * 0.50, w, 0);
   } else if (kind === 'notch') {
-    s.bezierCurveTo(-w * 1.05, h * 0.5, -w * 0.5, h * 0.92, -w * 0.06, h);
-    s.lineTo(w * 0.10, h * 0.70); s.lineTo(w * 0.30, h * 0.86);
-    s.bezierCurveTo(w * 0.75, h * 0.55, w * 1.02, h * 0.3, w, 0);
+    // battle-scarred: a clean V bitten out of the trailing edge
+    s.bezierCurveTo(-w * 1.00, h * 0.46, -w * 0.66, h * 0.82, -w * 0.10, h);
+    s.lineTo(w * 0.16, h * 0.66);
+    s.lineTo(w * 0.44, h * 0.78);
+    s.bezierCurveTo(w * 0.82, h * 0.50, w * 1.00, h * 0.26, w, 0);
+  } else if (kind === 'curl') {
+    // American curl: the tip sweeps back over the skull
+    s.bezierCurveTo(-w * 1.02, h * 0.44, -w * 1.15, h * 0.80, -w * 1.50, h);
+    s.bezierCurveTo(-w * 0.55, h * 0.92, w * 0.30, h * 0.74, w * 0.98, h * 0.42);
+    s.quadraticCurveTo(w * 1.05, h * 0.18, w, 0);
+  } else if (kind === 'fold') {
+    // Scottish fold: short and blunt, folded forward by its bone tilt
+    s.bezierCurveTo(-w * 1.10, h * 0.52, -w * 0.80, h * 0.98, 0, h);
+    s.bezierCurveTo(w * 0.80, h * 0.98, w * 1.10, h * 0.52, w, 0);
+  } else if (kind === 'tuft') {
+    // lynx point: very tall, needle tip
+    s.bezierCurveTo(-w * 0.94, h * 0.44, -w * 0.36, h * 0.80, -w * 0.04, h);
+    s.lineTo(w * 0.04, h);
+    s.bezierCurveTo(w * 0.36, h * 0.80, w * 0.94, h * 0.44, w, 0);
   } else {
-    s.bezierCurveTo(-w * 1.02, h * 0.52, -w * 0.42, h * 0.9, 0, h);
-    s.bezierCurveTo(w * 0.42, h * 0.9, w * 1.02, h * 0.52, w, 0);
+    // the default: a clean pointed cat ear with a slight outward flare at the base
+    s.bezierCurveTo(-w * 1.04, h * 0.40, -w * 0.52, h * 0.78, 0, h);
+    s.bezierCurveTo(w * 0.52, h * 0.78, w * 1.04, h * 0.40, w, 0);
   }
   s.lineTo(-w, 0);
   return s;
@@ -539,9 +576,22 @@ export function createCat(id, opts = {}) {
     clearcoat: 1.0, clearcoatRoughness: 0.04, envMapIntensity: 1.8,
     emissive: new THREE.Color(spec.suit[0]).multiplyScalar(0.20), emissiveIntensity: 1.0,
   });
+  // Guaranteed-dark "key" colour for the graphic marks that carry the face at range. spec.dark
+  // is only actually dark on dark cats (Shelly's is 0xd8cfbe), so it is pushed toward black.
+  const keyRGB = mix3(hex2rgb(spec.dark), [24, 19, 16], 0.58);
+  M.socket = new THREE.MeshStandardMaterial({
+    color: new THREE.Color().setRGB(keyRGB[0] / 255, keyRGB[1] / 255, keyRGB[2] / 255, THREE.SRGBColorSpace),
+    roughness: 0.74, metalness: 0.0,
+  });
   M.chrome = new THREE.MeshStandardMaterial({ color: 0xd8dde2, roughness: 0.18, metalness: 1.0 });
   M.glass = new THREE.MeshPhysicalMaterial({ color: 0x2a3d52, roughness: 0.05, metalness: 0.0, clearcoat: 1, transparent: true, opacity: 0.55 });
   M.pink = new THREE.MeshPhysicalMaterial({ color: spec.nose, roughness: 0.45, clearcoat: 0.4, clearcoatRoughness: 0.25 });
+  // The nose is a 3 px mark on a pale muzzle, so it is pushed a couple of stops deeper than the
+  // inner-ear pink or it disappears into the mask.
+  M.nose = new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color(spec.nose).lerp(new THREE.Color(0x5c2830), 0.42),
+    roughness: 0.38, clearcoat: 0.5, clearcoatRoughness: 0.20,
+  });
   M.sclera = new THREE.MeshPhysicalMaterial({ color: 0xf7f4ec, roughness: 0.14, clearcoat: 1, clearcoatRoughness: 0.03 });
   M.iris = new THREE.MeshPhysicalMaterial({ map: eyeTexture(spec.eye, spec.pattern !== 'point'), color: eyeTexture(spec.eye, true) ? 0xffffff : new THREE.Color(spec.eye), roughness: 0.06, clearcoat: 1, clearcoatRoughness: 0.02 });
   M.hi = new THREE.MeshBasicMaterial({ color: 0xffffff });
@@ -588,35 +638,40 @@ export function createCat(id, opts = {}) {
   headGeo.computeVertexNormals();
   cylUV(headGeo);
   const head = add(B.head, headGeo, M.head);
-  const headShells = shellMesh(headGeo, spec, 'head', tex, shells, 0.0034, [26, 17]);
+  // Head fur is kept short. Six 3.4 mm shells added a 20 mm alpha-tested halo that both softened
+  // the silhouette at range and pushed the fur out through every hat, which is the other half of
+  // the "two overlapping heads" read.
+  const headShells = shellMesh(headGeo, spec, 'head', tex, Math.min(shells, 3), 0.0022, [26, 17]);
   for (const s of headShells) B.head.add(s);
 
   // muzzle: whisker pads + snout bridge + chin
   const muzGeo = mergeGeos([
     xform(new THREE.SphereGeometry(0.046, Math.round(14 * seg) + 5, Math.round(10 * seg) + 4), { pos: [-0.031, -0.006, 0.014], scale: [1.02, 0.86, 0.98] }),
     xform(new THREE.SphereGeometry(0.046, Math.round(14 * seg) + 5, Math.round(10 * seg) + 4), { pos: [0.031, -0.006, 0.014], scale: [1.02, 0.86, 0.98] }),
-    xform(new THREE.SphereGeometry(0.042, Math.round(12 * seg) + 4, Math.round(9 * seg) + 3), { pos: [0, 0.022, 0.008], scale: [1.15, 0.82, 1.0] }),
+    // Short bridge. R2's ran up to within 20 mm of eye level, which stranded the nose halfway
+    // up a bare forehead with the whisker pads a long way below it — a snout, not a cat face.
+    xform(new THREE.SphereGeometry(0.040, Math.round(12 * seg) + 4, Math.round(9 * seg) + 3), { pos: [0, 0.008, 0.010], scale: [1.18, 0.72, 1.0] }),
     xform(new THREE.SphereGeometry(0.038, Math.round(12 * seg) + 4, Math.round(9 * seg) + 3), { pos: [0, -0.042, -0.004], scale: [1.05, 0.9, 0.95] }),
   ]);
   muzGeo.computeVertexNormals();
   cylUV(muzGeo);
   add(B.muzzle, muzGeo, M.muzzle);
-  // nose: rounded triangle
+  // nose: rounded triangle, sitting hard on the top of the whisker pads
   {
     const ns = new THREE.Shape();
-    const w = 0.022, h = 0.017;
+    const w = 0.028, h = 0.021;
     ns.moveTo(-w, h * 0.7);
     ns.quadraticCurveTo(-w * 1.15, h * 1.35, 0, h * 1.25);
     ns.quadraticCurveTo(w * 1.15, h * 1.35, w, h * 0.7);
     ns.quadraticCurveTo(w * 0.75, -h * 0.35, 0, -h * 1.25);
     ns.quadraticCurveTo(-w * 0.75, -h * 0.35, -w, h * 0.7);
-    add(B.muzzle, xform(extrudeShape(ns, 0.016, 0.004), { pos: [0, 0.034, 0.050], rot: [-0.02, 0, 0], scale: [0.92, 0.92, 1] }), M.pink, false);
+    add(B.muzzle, xform(extrudeShape(ns, 0.018, 0.004), { pos: [0, 0.024, 0.052], rot: [-0.02, 0, 0], scale: [0.92, 0.92, 1] }), M.nose, false);
   }
   // mouth: philtrum + two arcs, plus an openable cavity for cheering
   if (fine) {
-    add(B.jaw, xform(new THREE.BoxGeometry(0.006, 0.020, 0.006), { pos: [0, 0.002, 0.062] }), M.dark, false);
+    add(B.jaw, xform(new THREE.BoxGeometry(0.006, 0.018, 0.006), { pos: [0, 0.004, 0.062] }), M.dark, false);
     for (const s of [-1, 1]) {
-      add(B.jaw, xform(new THREE.TorusGeometry(0.020, 0.0040, 5, 10, Math.PI * 0.95), { pos: [s * 0.019, -0.008, 0.056], rot: [0.30, 0, Math.PI + s * 0.10] }), M.dark, false);
+      add(B.jaw, xform(new THREE.TorusGeometry(0.022, 0.0050, 5, 10, Math.PI * 0.95), { pos: [s * 0.021, -0.006, 0.056], rot: [0.30, 0, Math.PI + s * 0.10] }), M.dark, false);
     }
   }
   const mouthOpen = add(fine ? B.jaw : B.jaw, xform(new THREE.SphereGeometry(0.030, 12, 8), { scale: [1.0, 0.85, 0.6] }), M.dark, false);
@@ -630,15 +685,16 @@ export function createCat(id, opts = {}) {
     const muz = [], brow = [];
     for (const s of [-1, 1]) {
       for (let i = 0; i < 4; i++) {
-        const len = 0.205 - i * 0.016 + R() * 0.02;
-        const g = new THREE.CylinderGeometry(0.0013, 0.0052, len, 4, 1);
+        // Thin. At 15 px a fat cream whisker is a scratch across the face, not a whisker.
+        const len = 0.175 - i * 0.014 + R() * 0.02;
+        const g = new THREE.CylinderGeometry(0.0010, 0.0032, len, 4, 1);
         g.translate(0, len * 0.5, 0);
         const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.30 + i * 0.05, 0, s * (1.18 + i * 0.17)));
         muz.push(xform(g, { pos: [s * 0.064, 0.006 - i * 0.014, 0.030], quat: q }));
       }
       for (let i = 0; i < 2; i++) {
-        const len = 0.115;
-        const g = new THREE.CylinderGeometry(0.0012, 0.0042, len, 4, 1);
+        const len = 0.100;
+        const g = new THREE.CylinderGeometry(0.0010, 0.0030, len, 4, 1);
         g.translate(0, len * 0.5, 0);
         const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.60 - i * 0.14, 0, s * (0.60 + i * 0.24)));
         brow.push(xform(g, { pos: [s * 0.090, 0.094, 0.140], quat: q }));
@@ -649,89 +705,124 @@ export function createCat(id, opts = {}) {
   }
 
   /* ---- ears */
+  // Mounted well apart on the crown and kept close to upright. The bones sit at ±0.104 and the
+  // widest ear base is ±0.088, so the two plates can never cross the midline into each other
+  // (the R2 "doubled head"). A fur wedge fairs each base into the skull so there is no seam.
   const earKind = spec.ear;
-  const earOut = spec.gear === 'helmet' ? 0.022 : 0;
+  // A cat in a hard shell wears its ears *through the crown*, so the bones ride up onto the
+  // shell; a cat in goggles or a visor mounts them straight on the skull. Either way the ear
+  // root ends up inside a solid surface, which is what stops the bare fur dome and the shell
+  // reading as two overlapping heads.
+  const domed = spec.gear === 'helmet' || spec.gear === 'cap' || spec.gear === 'bandana';
+  const earX = spec.gear === 'helmet' ? 0.098 : domed ? 0.100 : 0.104;
+  const earY = spec.gear === 'helmet' ? 0.212 : spec.gear === 'cap' ? 0.176 : spec.gear === 'bandana' ? 0.170 : 0.150;
+  const earW = EAR_W[earKind] ?? 0.078;
   for (const s of [-1, 1]) {
     const b = s < 0 ? B.earL : B.earR;
-    b.position.set(s * (0.096 + earOut), 0.146 + (earOut ? 0.010 : 0), -0.004);
-    const baseTilt = earKind === 'fold' ? 0.80 : earKind === 'curl' ? -0.45 : -0.06;
-    b.rotation.set(baseTilt, s * 0.34, s * (earKind === 'round' ? 0.36 : 0.30));
+    b.position.set(s * earX, earY, -0.006);
+    // Every kind stands up. R2 laid the fold ears 35° forward and the curl ears 17° back, and
+    // from the chase camera — which looks slightly down on the driver — both vanished into the
+    // skull. Variety now comes from the outline, never from folding the ear out of silhouette.
+    const baseTilt = earKind === 'fold' ? 0.24 : earKind === 'curl' ? -0.10 : -0.04;
+    b.rotation.set(baseTilt, s * 0.26, s * (earKind === 'round' ? 0.24 : 0.20));
     b.userData.rest = b.rotation.clone();
     const shape = earShape(earKind);
-    const outer = planarUV(extrudeShape(shape, 0.024, 0.005));
+    const outer = planarUV(extrudeShape(shape, 0.026, 0.005));
     add(b, outer, M.ear);
     const inner = planarUV(extrudeShape(shape, 0.010, 0.004));
-    add(b, xform(inner, { pos: [0, 0.008, 0.015], scale: [0.74, 0.78, 1] }), M.pink, false);
+    add(b, xform(inner, { pos: [0, 0.012, 0.016], scale: [0.66, 0.74, 1] }), M.pink, false);
+    // base wedge: fairs the flat plate's root into whatever it emerges from, so there is no
+    // floating card edge from any angle
+    add(b, xform(new THREE.SphereGeometry(earW * 0.98, 10, 7),
+      { pos: [0, 0.008, 0], scale: [1.0, domed ? 0.52 : 0.66, 0.82] }), M.ear, false);
     if (earKind === 'tuft' && fine) {
       for (let i = 0; i < 3; i++) {
-        const g = new THREE.CylinderGeometry(0.0012, 0.006, 0.055, 4);
-        g.translate(0, 0.028, 0);
-        add(b, xform(g, { pos: [(i - 1) * 0.018, 0.155, 0], rot: [0, 0, (i - 1) * 0.30 + s * 0.1] }), M.whisker, false);
+        const g = new THREE.CylinderGeometry(0.0012, 0.006, 0.060, 4);
+        g.translate(0, 0.030, 0);
+        add(b, xform(g, { pos: [(i - 1) * 0.014, 0.238, 0], rot: [0, 0, (i - 1) * 0.34 + s * 0.1] }), M.whisker, false);
       }
     }
-    if (earOut) add(B.head, xform(new THREE.TorusGeometry(0.052, 0.012, 6, 14), { pos: [s * 0.112, 0.128, -0.012], rot: [0.1, 0, s * 0.26] }), M.gear, false);
+    // ear-slot collar — sells "the ear came through the shell" and hides the seam
+    if (domed) {
+      add(B.head, xform(new THREE.TorusGeometry(earW * 1.22, 0.013, 6, 14),
+        { pos: [s * earX, earY + 0.004, -0.006], rot: [0.06, 0, s * 0.28], scale: [1, 1, 0.8] }), M.trim, false);
+    }
   }
 
   /* ---- eyes */
+  // Readability at race distance is decided here. R2's eyes sat 8 mm proud of a 200 mm skull
+  // with a near-white sclera, so at 15 px they averaged into the fur and the whole face went
+  // blank. They now stand 35 mm proud and each sits in a dark socket pod cut from the coat's
+  // key colour, so from 40 m a cat is two solid dark ovals over a pale muzzle — the same
+  // read MK8 gets from its characters.
+  const EYE_POS = [0.090, 0.046, 0.146];
   const eyes = [];
+  const socketGeos = [];
+  const r = 0.062;
   for (const s of [-1, 1]) {
     const g = new THREE.Group();
-    g.position.set(s * 0.083, 0.040, 0.126);
-    g.rotation.set(-0.06, s * 0.30, 0);
+    g.position.set(s * EYE_POS[0], EYE_POS[1], EYE_POS[2]);
+    g.rotation.set(-0.06, s * 0.26, 0);
     B.head.add(g);
-    const r = 0.055;
+    // dark socket, merged across both eyes into one draw call
+    const sock = new THREE.SphereGeometry(r * 1.24, 14, 10);
+    sock.scale(1.0, 1.08, 0.72);
+    sock.translate(0, 0, -r * 0.12);
+    socketGeos.push(xform(sock, { pos: [s * EYE_POS[0], EYE_POS[1], EYE_POS[2]],
+      quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.06, s * 0.26, 0)) }));
     add(g, new THREE.SphereGeometry(r, 16, 12), M.sclera, false);
-    const irisG = new THREE.SphereGeometry(r * 1.012, 20, 12, 0, TAU, 0, 0.86);
+    const irisG = new THREE.SphereGeometry(r * 1.012, 20, 12, 0, TAU, 0, 1.02);
     irisG.rotateX(Math.PI / 2);
     planarUV(irisG);
     add(g, irisG, M.iris, false);
     const h1 = add(g, new THREE.SphereGeometry(r * 0.26, 8, 6), M.hi, false);
     // (second highlight and brow are fine-detail only)
-    h1.position.set(s * -0.012 - 0.006, 0.021, r * 0.95);
+    h1.position.set(s * -0.012 - 0.006, 0.023, r * 0.95);
     if (fine) {
       const h2 = add(g, new THREE.SphereGeometry(r * 0.11, 6, 5), M.hi, false);
-      h2.position.set(0.014, -0.020, r * 0.96);
+      h2.position.set(0.014, -0.022, r * 0.96);
     }
     const lidUp = new THREE.Group(); g.add(lidUp);
-    const lidGeo = new THREE.SphereGeometry(r * 1.10, 16, 9, 0, TAU, 0, 1.30);
+    const lidGeo = new THREE.SphereGeometry(r * 1.05, 16, 9, 0, TAU, 0, 1.30);
     add(lidUp, lidGeo.clone(), M.head, false);
     const lidDn = new THREE.Group(); g.add(lidDn);
     const lidGeo2 = lidGeo.clone(); lidGeo2.rotateX(Math.PI);
     add(lidDn, lidGeo2, M.head, false);
-    lidUp.rotation.x = -0.95; lidDn.rotation.x = 0.95;
+    lidUp.rotation.x = -1.12; lidDn.rotation.x = 1.05;
     // brow
-    const brow = add(g, xform(new THREE.SphereGeometry(0.030, 8, 6), { rot: [0, 0, s * -0.18], scale: [1.5, 0.34, 0.5] }), M.head, false);
-    brow.position.set(0, 0.068, r * 0.62);
+    const brow = add(g, xform(new THREE.SphereGeometry(0.032, 8, 6), { rot: [0, 0, s * -0.18], scale: [1.6, 0.34, 0.5] }), M.head, false);
+    brow.position.set(0, 0.078, r * 0.62);
     eyes.push({ g, lidUp, lidDn, brow, side: s });
   }
+  add(B.head, mergeGeos(socketGeos), M.socket, false).name = 'eyeSockets';
 
   /* ---- headgear */
   const gear = new THREE.Group(); B.head.add(gear);
   let helmetShell = null;
   if (spec.gear === 'helmet') {
+    // R2's helmet was built from two half-shells with the phi gaps at the FRONT and BACK (the
+    // comment claimed "sides", the maths did not), and it was 4 mm narrower than the fur head
+    // once the shell layers were added — so the bare skull bulged out through both gaps and
+    // through the flanks. That is the second dome the critics saw. It is now one closed shell,
+    // comfortably larger than the head all the way down to below the ear line.
     const hg = new THREE.Group();
     helmetShell = hg;
-    hg.position.set(0, 0.030, -0.016);
-    hg.rotation.x = 0.16;
+    hg.position.set(0, 0.020, -0.012);
     gear.add(hg);
-    const RAD = 0.212, TH = 1.12, GAP = 0.42;
-    for (const p0 of [GAP, Math.PI + GAP]) {           // two shells, ear slots at the sides
-      const sh = new THREE.SphereGeometry(RAD, Math.round(18 * seg) + 6, Math.round(14 * seg) + 4,
-        p0, Math.PI - GAP * 2, 0, TH);
-      add(hg, xform(sh, { scale: [1.02, 1.02, 1.03] }), M.gear);
-    }
-    const ry = RAD * Math.cos(TH) * 1.02, rr = RAD * Math.sin(TH) * 1.02;
-    add(hg, xform(new THREE.TorusGeometry(rr, 0.016, 6, 26), { pos: [0, ry, 0], rot: [Math.PI / 2, 0, 0] }), M.trim, false);
-    // centre stripe + peak
-    const stripe = new THREE.SphereGeometry(RAD * 1.035, 16, 14, Math.PI / 2 - 0.16, 0.32, 0, TH * 0.92);
+    const RAD = 0.226, TH = 1.36;
+    add(hg, new THREE.SphereGeometry(RAD, Math.round(20 * seg) + 8, Math.round(15 * seg) + 5, 0, TAU, 0, TH), M.gear);
+    const ry = RAD * Math.cos(TH), rr = RAD * Math.sin(TH);
+    add(hg, xform(new THREE.TorusGeometry(rr, 0.017, 6, 26), { pos: [0, ry, 0], rot: [Math.PI / 2, 0, 0] }), M.trim, false);
+    // crown stripe front-to-back: the strongest identity mark on a 15 px helmet
+    const stripe = new THREE.SphereGeometry(RAD * 1.022, 18, 16, Math.PI / 2 - 0.20, 0.40, 0, TH * 0.97);
     add(hg, stripe, M.trim, false);
-    const peak = new THREE.CylinderGeometry(rr * 1.06, rr * 1.06, 0.016, 16, 1, false, Math.PI - 0.72, 1.44);
-    add(hg, xform(peak, { pos: [0, ry + 0.020, 0.022], rot: [-0.34, 0, 0], scale: [1, 1, 1.18] }), M.trim, false);
+    const peak = new THREE.CylinderGeometry(rr * 1.04, rr * 1.04, 0.016, 16, 1, false, Math.PI - 0.80, 1.60);
+    add(hg, xform(peak, { pos: [0, ry + 0.024, 0.026], rot: [-0.30, 0, 0], scale: [1, 1, 1.16] }), M.trim, false);
   } else if (spec.gear === 'cap') {
-    const shell = new THREE.SphereGeometry(0.198, 20, 12, 0, TAU, 0, 0.78);
-    add(gear, xform(shell, { pos: [0, 0.020, -0.030], scale: [1.03, 0.92, 1.0] }), M.gear);
-    add(gear, xform(new THREE.CylinderGeometry(0.19, 0.19, 0.012, 14, 1, false, Math.PI - 0.85, 1.7), { pos: [0, 0.118, 0.055], rot: [-0.22, 0, 0], scale: [1, 1, 1.25] }), M.trim, false);
-    add(gear, xform(new THREE.SphereGeometry(0.020, 8, 6), { pos: [0, 0.192, -0.025] }), M.trim, false);
+    const shell = new THREE.SphereGeometry(0.216, 20, 12, 0, TAU, 0, 0.88);
+    add(gear, xform(shell, { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.gear);
+    add(gear, xform(new THREE.CylinderGeometry(0.196, 0.196, 0.012, 14, 1, false, Math.PI - 0.85, 1.7), { pos: [0, 0.126, 0.062], rot: [-0.22, 0, 0], scale: [1, 1, 1.25] }), M.trim, false);
+    add(gear, xform(new THREE.SphereGeometry(0.021, 8, 6), { pos: [0, 0.216, -0.020] }), M.trim, false);
   } else if (spec.gear === 'goggles') {
     const strap = new THREE.TorusGeometry(0.196, 0.017, 8, 24);
     add(gear, xform(strap, { pos: [0, 0.075, -0.010], rot: [1.30, 0, 0], scale: [1.03, 1.0, 1] }), M.gear, false);
@@ -740,8 +831,8 @@ export function createCat(id, opts = {}) {
       add(gear, xform(new THREE.CylinderGeometry(0.046, 0.046, 0.006, 14), { pos: [s * 0.083, 0.113, 0.146], rot: [1.28, 0, 0] }), M.glass, false);
     }
   } else if (spec.gear === 'bandana') {
-    const shell = new THREE.SphereGeometry(0.200, 20, 12, 0, TAU, 0, 0.92);
-    add(gear, xform(shell, { pos: [0, 0.010, -0.045], scale: [1.03, 0.88, 1.0] }), M.gear);
+    const shell = new THREE.SphereGeometry(0.218, 20, 12, 0, TAU, 0, 0.98);
+    add(gear, xform(shell, { pos: [0, 0.008, -0.040], scale: [1.03, 0.90, 1.0] }), M.gear);
     add(gear, xform(new THREE.SphereGeometry(0.038, 8, 6), { pos: [-0.150, 0.055, -0.135], scale: [1, 0.8, 1] }), M.gear, false);
     for (let i = 0; i < 2; i++) {
       add(gear, xform(new THREE.ConeGeometry(0.030, 0.16, 6), { pos: [-0.190 - i * 0.030, -0.015 - i * 0.045, -0.185 - i * 0.02], rot: [0.3, 0, 1.9 + i * 0.35], scale: [1, 1, 0.45] }), M.gear, false);
@@ -761,10 +852,10 @@ export function createCat(id, opts = {}) {
   if (DOM) {
     const helm = spec.gear === 'helmet';
     // radius, non-uniform scale and parent of the surface the badge lies on
-    const bR = helm ? 0.212 : 0.198;
-    const bS = helm ? [1.02, 1.02, 1.03] : [1.05, 0.96, 1.00];
+    const bR = helm ? 0.226 : 0.198;
+    const bS = helm ? [1.0, 1.0, 1.0] : [1.05, 0.96, 1.00];
     const bParent = helm ? helmetShell : B.head;
-    const yLocal = helm ? 0.012 : 0.030;                 // below a cap brim, above the collar
+    const yLocal = helm ? 0.072 : 0.030;                 // below a cap brim, above the collar
     const thetaC = Math.acos(clamp(yLocal / bR, -1, 1));
     const hp = 0.40, ht = 0.38;
     const bg = new THREE.SphereGeometry(bR, 14, 10, -Math.PI / 2 - hp, hp * 2, thetaC - ht, ht * 2);
@@ -921,9 +1012,11 @@ export function createCat(id, opts = {}) {
     for (const s of [-1, 1]) {
       const b = s < 0 ? B.earL : B.earR;
       const rest = b.userData.rest;
-      const back = S.speed * 0.50 + tuck * 0.25 + fl * 0.85 + sl * 0.55 - ch * 0.22;
-      const splay = Math.abs(dr) * 0.45 * (dr * s > 0 ? 1.25 : 0.6) + S.air * 0.15;
-      b.rotation.set(rest.x + back + flick * 0.35 * (s > 0 ? 1 : 0.4) + Math.sin(t * 5.3 + s) * 0.02 * S.speed,
+      // Clamped hard: an ear laid flat is an ear you cannot see, and the ears are the only
+      // thing that says "cat" from the chase camera. Full flatten is reserved for a hit.
+      const back = clamp(S.speed * 0.20 + tuck * 0.12 + fl * 0.62 + sl * 0.30 - ch * 0.14, -0.20, 0.66);
+      const splay = clamp(Math.abs(dr) * 0.26 * (dr * s > 0 ? 1.25 : 0.6) + S.air * 0.10, 0, 0.34);
+      b.rotation.set(rest.x + back + flick * 0.30 * (s > 0 ? 1 : 0.4) + Math.sin(t * 5.3 + s) * 0.02 * S.speed,
         rest.y + s * splay * 0.4 - S.lookYaw * 0.12,
         rest.z + s * (splay + fl * 0.35 - ch * 0.18) + Math.sin(t * 4.1 + s * 2) * 0.015);
     }
@@ -939,8 +1032,8 @@ export function createCat(id, opts = {}) {
     const closeU = clamp(Math.max(blinkV, tuck * 0.28, fl * 0.55, sl * 0.42, ch * 0.30), 0, 1);
     const closeD = clamp(Math.max(blinkV * 0.35, ch * 0.55, fl * 0.35), 0, 1);
     for (const e of eyes) {
-      e.lidUp.rotation.x = lerp(-0.95, 0.55, closeU);
-      e.lidDn.rotation.x = lerp(0.95, 0.30, closeD);
+      e.lidUp.rotation.x = lerp(-1.12, 0.55, closeU);
+      e.lidDn.rotation.x = lerp(1.05, 0.30, closeD);
       e.g.rotation.y = e.side * 0.30 + S.lookYaw * 0.35;
       e.g.rotation.x = -0.06 + S.lookPitch * 0.30;
       e.brow.position.y = 0.072 + ch * 0.014 - fl * 0.010;
