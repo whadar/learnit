@@ -281,13 +281,26 @@ export function createItemSystem(world, track, opts = {}) {
   function attachShadow(p, radius) {
     if (!visuals || !MESHES.makeBlobShadow) return;
     try {
-      p.shadowFx = MESHES.makeBlobShadow(radius ?? 0.34);
+      p.shadowFx = MESHES.makeBlobShadow(radius ?? 0.40);
       fxRoot.add(p.shadowFx.object3D);
     } catch (e) { p.shadowFx = null; }
   }
+  /**
+   * Road height directly under a point, not under the centre line.
+   *
+   * trackMesh lays its surface at `sm.pos.y + tan(banking) * off`, so on any banked or cambered
+   * stretch the tarmac a metre and a half out to the side sits well above the spline. Placing
+   * the blob at the spline height buried it under the road, which is why the first pass drew
+   * shadows the depth test then threw away.
+   */
+  function roadY(pos, s) {
+    const sm = sample(s);
+    const lat = (pos.x - sm.pos.x) * sm.normal.x + (pos.z - sm.pos.z) * sm.normal.z;
+    return sm.pos.y + Math.tan(sm.banking || 0) * lat;
+  }
   function placeShadow(p) {
     if (!p.shadowFx) return;
-    const gy = p.gy ?? (p.pos.y - (p.hover ?? 0.5));
+    const gy = p.gs !== undefined ? roadY(p.pos, p.gs) : (p.pos.y - (p.hover ?? 0.5));
     const n = surfaceNormal(p.pos.x, p.pos.z, _sn);
     p.shadowFx.place(p.pos.x, p.pos.z, gy, Math.max(p.pos.y - gy, 0), n.x, n.y, n.z);
   }
@@ -771,7 +784,7 @@ export function createItemSystem(world, track, opts = {}) {
       p.pos.x = rec.pos.x + Math.sin(rec.yaw + a) * r;
       p.pos.z = rec.pos.z + Math.cos(rec.yaw + a) * r;
       p.pos.y = rec.pos.y + 0.55 + Math.sin(p.age * 3 + (p.slot ?? 0)) * 0.06;
-      p.gy = sample(rec.s).pos.y;
+      p.gs = rec.s;
       return;
     }
 
@@ -783,7 +796,7 @@ export function createItemSystem(world, track, opts = {}) {
       p.pos.x = damp(p.pos.x, tx, 12, dt);
       p.pos.z = damp(p.pos.z, tz, 12, dt);
       p.pos.y = damp(p.pos.y, rec.pos.y + 0.45, 10, dt);
-      p.gy = sample(rec.s).pos.y;
+      p.gs = rec.s;
       p.yaw = rec.yaw;
       return;
     }
@@ -797,7 +810,7 @@ export function createItemSystem(world, track, opts = {}) {
       p.pos.x = sm.pos.x + sm.normal.x * p.lateral;
       p.pos.z = sm.pos.z + sm.normal.z * p.lateral;
       p.pos.y = sm.pos.y + p.hover + Math.sin(p.age * 7) * 0.12;
-      p.gy = sm.pos.y;
+      p.gs = p.s;
       p.yaw = Math.atan2(sm.tangent.x * p.dir, sm.tangent.z * p.dir);
       if (tgt) {
         const gap = dS(tgt.s, p.s) * p.dir;
@@ -818,7 +831,7 @@ export function createItemSystem(world, track, opts = {}) {
         p.pos.x = sm.pos.x + sm.normal.x * p.lateral;
         p.pos.z = sm.pos.z + sm.normal.z * p.lateral;
         p.pos.y = sm.pos.y + p.hover;
-        p.gy = sm.pos.y;
+        p.gs = p.s;
         const d = Math.hypot(p.pos.x - leader.pos.x, p.pos.z - leader.pos.z);
         if (d < 11 || (gap < 3 && gap > -30)) { p.phase = 'strike'; p.strikeT = 0; }
       } else {
@@ -826,7 +839,7 @@ export function createItemSystem(world, track, opts = {}) {
         p.pos.x = damp(p.pos.x, leader.pos.x, 6, dt);
         p.pos.z = damp(p.pos.z, leader.pos.z, 6, dt);
         p.pos.y = damp(p.pos.y, leader.pos.y + 1.2, 3.2, dt);
-        p.gy = sample(leader.s).pos.y;
+        p.gs = leader.s;
         if (p.strikeT > 1.3) {
           applyHit(leader, 'stall', p.owner, 'catnap', p.pos);
           for (const o of list) {
@@ -848,7 +861,7 @@ export function createItemSystem(world, track, opts = {}) {
       p.pos.x = sm.pos.x + sm.normal.x * p.lateral;
       p.pos.z = sm.pos.z + sm.normal.z * p.lateral;
       p.pos.y = sm.pos.y;
-      p.gy = sm.pos.y;
+      p.gs = p.s;
       return;
     }
 
@@ -862,7 +875,7 @@ export function createItemSystem(world, track, opts = {}) {
     p.pos.x = sm.pos.x + sm.normal.x * p.lateral;
     p.pos.z = sm.pos.z + sm.normal.z * p.lateral;
     p.pos.y = sm.pos.y + p.hover;
-    p.gy = sm.pos.y;
+    p.gs = p.s;
     p.yaw = Math.atan2(sm.tangent.x * p.dir, sm.tangent.z * p.dir);
     if ((p.bounces ?? 0) > 4) killProjectile(p);
   }
@@ -1008,7 +1021,7 @@ export function createItemSystem(world, track, opts = {}) {
         // line; on a fruit swinging round the kart it degenerates into a tapering cone hanging
         // off the fruit toward the stale tail of the buffer, which is exactly what it drew when
         // this was tried. The orbit reads from the ground blob and the bloom instead.
-        trail: false, shadowRadius: 0.30, scale: 0.7, orbitA: i * 0.1, grace: 999,
+        trail: false, shadowRadius: 0.40, scale: 0.7, orbitA: i * 0.1, grace: 999,
       });
       rec.orbiters.push(p);
     }
@@ -1030,7 +1043,12 @@ export function createItemSystem(world, track, opts = {}) {
       u.shellMat.needsUpdate = false;
       u.shellMat.emissiveIntensity = 0.30 + Math.sin(t * 2.4) * 0.10;
     }
-    if (u?.core) { u.core.rotation.y = -t * 1.9; u.core.rotation.z = t * 1.1; u.core.scale.setScalar(0.85 + Math.sin(t * 4) * 0.12); }
+    // the seed is a billboard now, so it pulses in scale and brightness rather than spinning
+    if (u?.core) {
+      const k = 0.85 + Math.sin(t * 4) * 0.12;
+      u.core.scale.setScalar((u.size ?? 1.32) * 0.62 * k);
+      u.core.material.opacity = (box.active ? 0.55 : 0.22) + Math.sin(t * 3.3) * 0.12;
+    }
     if (u?.halo) u.halo.material.opacity = (box.active ? 0.38 : 0.15) + Math.sin(t * 2.7) * 0.08;
   }
 

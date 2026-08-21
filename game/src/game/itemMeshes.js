@@ -383,15 +383,15 @@ const boxMotif = () => tex('box-motif', 256, (c, S) => {
   for (const [ax, ay, ar] of arils) {
     const x = cx + ax * R, y = cy + ay * R, rr = ar * R;
     const gg = c.createRadialGradient(x - rr * 0.38, y - rr * 0.45, rr * 0.04, x, y, rr * 1.15);
-    gg.addColorStop(0, '#ffd9dd'); gg.addColorStop(0.28, '#ff5f74');
-    gg.addColorStop(0.7, '#e01138'); gg.addColorStop(1, '#8c0a22');
+    gg.addColorStop(0, '#ffd0d6'); gg.addColorStop(0.20, '#e8394f');
+    gg.addColorStop(0.62, '#b00c2c'); gg.addColorStop(1, '#66091c');
     c.fillStyle = gg;
     c.beginPath();
     c.moveTo(x, y - rr * 1.35);                     // teardrop, point up
     c.bezierCurveTo(x + rr, y - rr * 0.5, x + rr * 0.95, y + rr, x, y + rr * 1.05);
     c.bezierCurveTo(x - rr * 0.95, y + rr, x - rr, y - rr * 0.5, x, y - rr * 1.35);
     c.fill();
-    c.strokeStyle = 'rgba(255,225,150,.75)'; c.lineWidth = S * 0.008; c.stroke();
+    c.strokeStyle = 'rgba(255,222,150,.55)'; c.lineWidth = S * 0.007; c.stroke();
   }
 
   // specular sweep across the top-left shoulder
@@ -441,12 +441,17 @@ const ringSprite = () => tex('ring', 128, (c, S) => {
 // shadow is the only cue that tells you where the thing will land; the cascade shadow map
 // smears a 0.4 m orange into nothing, so items carry their own (review R2).
 const blobSprite = () => tex('blob-shadow', 128, (c, S) => {
+  // A wide soft gradient reads as nothing at all once the tarmac under it is already in tree
+  // shade: the blob has to carry a defined dark core out to about half the plane and only
+  // then feather, or it disappears exactly where a racer most needs to read the trajectory.
+  // White RGB, alpha does the shaping: the material colour is what tints the blob, and a
+  // black-RGB mask would multiply that colour away to black no matter what it was set to.
   const g = c.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-  g.addColorStop(0, 'rgba(0,0,0,.98)');
-  g.addColorStop(0.34, 'rgba(0,0,0,.86)');
-  g.addColorStop(0.62, 'rgba(0,0,0,.40)');
-  g.addColorStop(0.84, 'rgba(0,0,0,.10)');
-  g.addColorStop(1, 'rgba(0,0,0,0)');
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.46, 'rgba(255,255,255,.94)');
+  g.addColorStop(0.68, 'rgba(255,255,255,.62)');
+  g.addColorStop(0.86, 'rgba(255,255,255,.20)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
   c.fillStyle = g; c.fillRect(0, 0, S, S);
 }, { srgb: false, wrap: THREE.ClampToEdgeWrapping });
 
@@ -1243,7 +1248,7 @@ export function createItemBoxMesh(opts = {}) {
     // between them IS the bevel highlight that says "machined metal" at a glance.
     const bar = roundedBoxGeometry(1, 0.30, 2);
     bar.scale(1 - t * 1.2, t, t);
-    const stud = new THREE.SphereGeometry(t * 1.14, 10, 8);
+    const stud = new THREE.SphereGeometry(t * 0.82, 10, 8);
     const parts = [], m4 = new THREE.Matrix4(), e = new THREE.Euler();
     for (const axis of [0, 1, 2]) for (const a of [-1, 1]) for (const b of [-1, 1]) {
       if (axis === 0) m4.compose(new THREE.Vector3(0, a * h, b * h), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1));
@@ -1270,7 +1275,7 @@ export function createItemBoxMesh(opts = {}) {
     color: 0xffffff, side: THREE.FrontSide, alphaTest: 0.10,
   })));
   const motifGeo = mat('box-motif-geo', () => {
-    const plane = new THREE.PlaneGeometry(0.70, 0.70);
+    const plane = new THREE.PlaneGeometry(0.86, 0.86);
     const d = 0.508, e = new THREE.Euler(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
     const faces = [
       [[0, 0, d], [0, 0, 0]], [[0, 0, -d], [0, Math.PI, 0]],
@@ -1284,11 +1289,15 @@ export function createItemBoxMesh(opts = {}) {
   motif.renderOrder = 5;
   g.add(motif);
 
-  // glowing seed in the middle
-  const core = mesh(mat('box-core-geo', () => new THREE.OctahedronGeometry(0.13, 0)),
-    mat('box-core', () => nf(new THREE.MeshBasicMaterial({
-      color: 0xffd684, transparent: true, opacity: 0.70, blending: THREE.AdditiveBlending, depthWrite: false,
-    }))), { scale: size, shadow: false });
+  // Glowing seed in the middle. A sprite, not an octahedron: a 6-face solid lit only by an
+  // additive basic material reads as a hard pale quad floating inside the glass at every
+  // angle, which is precisely how it looked in-frame. A billboard glow has no silhouette to
+  // give away.
+  const core = new THREE.Sprite(mat('box-core', () => nf(new THREE.SpriteMaterial({
+    map: glowSprite(), color: 0xffe2a4, transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  }))));
+  core.scale.setScalar(size * 0.62);
   core.renderOrder = 3;
   g.add(core);
 
@@ -1300,7 +1309,7 @@ export function createItemBoxMesh(opts = {}) {
   halo.renderOrder = 3;
   g.add(halo);
 
-  g.userData = { shell, shellMat, back, backMat, rim, core, halo, motifMat, size };
+  g.userData = { shell, shellMat, back, backMat, rim, core, coreSprite: true, halo, motifMat, size };
   return g;
 }
 
@@ -1314,7 +1323,7 @@ export function makeBlobShadow(radius = 0.5) {
   const m = new THREE.Mesh(
     mat('blob-geo', () => new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2)),
     new THREE.MeshBasicMaterial({
-      map: blobSprite(), color: 0x1d160e, transparent: true, opacity: 0.55,
+      map: blobSprite(), color: 0x0a0806, transparent: true, opacity: 0.70,
       depthWrite: false, side: THREE.DoubleSide,
       polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
     }));
@@ -1326,9 +1335,9 @@ export function makeBlobShadow(radius = 0.5) {
     /** `h` is metres above the surface; the blob grows and thins with it, MK8 style. */
     place(x, z, groundY, h, nx, ny, nz) {
       const k = clamp(h / 2.6, 0, 1);
-      m.position.set(x, groundY + 0.05, z);
-      m.scale.setScalar(radius * (2.0 + k * 2.4));
-      m.material.opacity = 0.62 * (1 - k * 0.72);
+      m.position.set(x, groundY + 0.06, z);
+      m.scale.setScalar(radius * (2.2 + k * 2.0));
+      m.material.opacity = 0.72 * (1 - k * 0.52);
       if (nx !== undefined) {
         n.set(nx, ny, nz);
         if (n.lengthSq() > 1e-6) m.quaternion.setFromUnitVectors(UP, n.normalize());
@@ -1376,8 +1385,12 @@ export function createPickupBurst(opts = {}) {
     play(pos, color = 0xffd27a) {
       origin.set(pos.x, pos.y, pos.z);
       t = 0; g.visible = true;
-      ring.material.color.setHex(color).lerp(new THREE.Color(0xffffff), 0.45);
-      for (const s of shards) s.material.color.setHex(color).lerp(new THREE.Color(0xfff3d0), 0.35);
+      // 0.18 toward white, not 0.45: an additive ring already lerped halfway to white and
+      // then scaled to 3.4x clipped into a blown white donut lying on the tarmac, which is
+      // what the burst looked like when the canonical frame caught one mid-play. Keeping the
+      // ring in the item's own colour lets it read as a flash of that item.
+      ring.material.color.setHex(color).lerp(new THREE.Color(0xffffff), 0.18);
+      for (const s of shards) s.material.color.setHex(color).lerp(new THREE.Color(0xfff3d0), 0.30);
     },
     update(dt) {
       if (t < 0) return;
@@ -1390,8 +1403,8 @@ export function createPickupBurst(opts = {}) {
         s.material.opacity = fade * fade;
       }
       ring.position.copy(origin);
-      ring.scale.setScalar(lerp(0.7, 3.4, Math.sqrt(k)));
-      ring.material.opacity = fade * fade * 0.85;
+      ring.scale.setScalar(lerp(0.6, 2.5, Math.sqrt(k)));
+      ring.material.opacity = fade * fade * 0.48;
       if (k >= 1) { t = -1; g.visible = false; }
     },
     dispose() { g.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); }); },

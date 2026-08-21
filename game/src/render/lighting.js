@@ -1,16 +1,15 @@
 import * as THREE from 'three';
-import { CSM } from 'three/examples/jsm/csm/CSM.js';
 import { clamp, lerp as lerpN } from '../core/mathx.js';
 
 /**
- * Lighting rig for Kat Racing: cascaded shadow maps, sky IBL and physically flavoured
+ * Lighting rig for Kat Racing: a camera-fitted sun shadow, sky IBL and physically flavoured
  * aerial perspective. Driven by `src/world/sky.js` (which owns the atmosphere itself).
  *
  *   const lighting = createLighting(engine, world, skyState);
  *
- * The rig patches materials so that (a) directional light is evaluated through the CSM
- * cascade selector instead of summing all cascade lights, and (b) fog becomes a
- * height-aware, sun-tinted aerial-perspective term. Patching composes with any
+ * The rig patches materials so that (a) they cast their FRONT faces into the shadow map —
+ * see the long note by `fitShadow()`, it is why anything has a contact shadow at all — and
+ * (b) fog becomes a height-aware, sun-tinted aerial-perspective term. Patching composes with any
  * `onBeforeCompile` another system already installed, and is re-applied automatically if
  * somebody overwrites it later, so parallel systems cannot silently break each other.
  *
@@ -140,29 +139,7 @@ export function createLighting(engine, world, sky, opts = {}) {
   const scene = engine.scene, renderer = engine.renderer;
   const pal = sky.palette;
 
-  const useCSM = opts.shadows !== false;
-  const cascades = opts.cascades ?? 3;
-  const shadowMapSize = opts.shadowMapSize ?? 2048;
-  const shadowFar = opts.shadowFar ?? 1000;
-  // Depth bias, expressed in **metres** rather than in normalised shadow-map depth. The old
-  // form (`shadowBias: -0.00008`) is a fraction of the light camera's near..far span, and
-  // that span was 3499 m — so the real bias was 28 cm and every kart, item box and traffic
-  // cone lost its contact shadow to peter-panning. `tuneCascades()` below converts this to
-  // per-cascade normalised units after every frustum update.
-  const biasMetres = opts.shadowBiasMetres ?? 0.030;
-  const lightMargin = opts.lightMargin ?? 150;
-  // three's 'practical' split (lambda 0.5) spends far too much of cascade 0 on empty
-  // distance; at kart height that shows up as stair-stepped eaves. Bias hard toward the
-  // logarithmic split so the first cascade is a tight ~50 m box.
-  const splitLambda = opts.splitLambda ?? 0.90;
-  const customSplits = (amount, near, far, target) => {
-    for (let i = 1; i < amount; i++) {
-      const uni = (near + (far - near) * i / amount) / far;
-      const log = (near * (far / near) ** (i / amount)) / far;
-      target.push(lerpN(uni, log, splitLambda));
-    }
-    target.push(1);
-  };
+  const shadows = opts.shadows !== false;
 
   const groundY = world ? world.minH : 0;
 
@@ -180,90 +157,121 @@ export function createLighting(engine, world, sky, opts = {}) {
     // keeps the far ridge a *ridge* rather than a silhouette-free band of sky.
     apMax:       { value: opts.hazeMax ?? 0.62 },
   };
-  const csmUniforms = {
-    CSM_cascades: { value: [] },
-    cameraNear:   { value: engine.camera.near },
-    shadowFar:    { value: shadowFar },
-  };
 
-  // ---- CSM -----------------------------------------------------------------------------
-  let csm = null;
+  const shadowMapSize = opts.shadowMapSize ?? 2048;
 
-  /**
-   * Fit each cascade's light camera depth range to the cascade it actually covers, then
-   * derive the depth/normal bias from that range.
-   *
-   * three's CSM gives every cascade the same `lightNear`/`lightFar`, so the near box that
-   * holds the karts was sharing a 3500 m depth range with the 1 km distance cascade. Two
-   * things go wrong: normalised bias becomes a huge distance, and the 24-bit depth buffer
-   * spends its precision on empty air. Sizing per cascade lets the contact shadow sit
-   * 3 cm from the tyre instead of 28 cm away from it.
-   */
-  function tuneCascades() {
-    if (!csm) return;
-    for (const l of csm.lights) {
-      const cam = l.shadow.camera;
-      const w = Math.max(cam.right - cam.left, 1);
-      cam.near = 1;
-      cam.far = lightMargin + w * 1.6 + 60;
-      cam.updateProjectionMatrix();
-      const span = cam.far - cam.near;
-      l.shadow.bias = -(biasMetres / span);
-      // Slope/texel term: enough to kill acne on the terrain, small enough that a 1 m object
-      // still meets its own shadow. One shadow texel is w / shadowMapSize metres.
-      l.shadow.normalBias = opts.normalBias ?? Math.max(0.02, 1.7 * (w / shadowMapSize));
-      // three's PCF filter is a 5-tap Vogel disk scaled by `shadow.radius` *in texels*, with
-      // a per-pixel rotation. At the default radius of 1 the disk collapses onto one texel
-      // and every shadow boundary is a hard stair-step — which is what the review saw on the
-      // olive canopies. 2.6 texels gives a real penumbra at every cascade scale for free
-      // (the taps are hardware-filtered), and the rotation is a deterministic function of
-      // gl_FragCoord, so screenshots stay reproducible.
-      l.shadow.radius = opts.shadowRadius ?? 2.6;
-    }
-  }
+  // ------------------------------------------------------------------------------------
+  // Shadows.
+  //
+  // This used to run three's CSM addon. It produced a shadow map that *looked* right when
+  // dumped, resolved every cascade uniform correctly, and still put no shadow on the ground
+  // under anything — because of the failure mode below, which no amount of cascade tuning
+  // can reach:
+  //
+  //   three renders shadow casters with `shadowSide = BackSide` whenever the material is
+  //   `FrontSide` (the acne dodge in WebGLShadowMap.getDepthMaterial). Every kart, cat,
+  //   item box, sign and foliage card in this game is an open, single-sided shell: it has
+  //   no back faces facing the sun, so with BackSide it writes *nothing* into the shadow
+  //   map. Probing cascade 0 at a kart's own texel returned depth 1.0 (empty) — the karts
+  //   were literally not occluders. Forcing `shadowSide = FrontSide` puts the kart roof in
+  //   the map at the right depth, which is the actual fix and is applied in setupMaterial()
+  //   below to every material this rig adopts.
+  //
+  // With that fixed, three cascades bought nothing but two extra depth passes and a large
+  // surface of cascade-selection maths, so the rig is now ONE directional light whose
+  // orthographic shadow camera is re-fitted around the player every frame on the stock
+  // three lighting path. 2048 px over a ~180 m box is ~0.09 m/texel: a 2 m kart is ~22
+  // texels across, which is a real contact shadow rather than a suggestion.
+  // ------------------------------------------------------------------------------------
+
+  // Half-width of the shadow box at ground level, in metres. Grows when the camera climbs
+  // (the vista plates look down on a lot of landscape); stays tight for the chase camera,
+  // where texel density is what sells the contact shadow.
+  const shadowExtentNear = opts.shadowExtent ?? 92;
+  const shadowExtentFar  = opts.shadowExtentFar ?? 260;
+  // How far back along the sun ray the light sits. Has to clear the tallest thing that can
+  // stand above the focus point (a cypress, the start gantry, a ridge).
+  const lightBack = opts.lightMargin ?? 240;
+  // Depth bias in **metres**, converted to the light camera's normalised depth below.
+  const biasMetres = opts.shadowBiasMetres ?? 0.020;
+
   const lightDir = new THREE.Vector3().copy(sky.sunDir).negate(); // from sun toward ground
-  if (useCSM) {
-    try {
-      csm = new CSM({
-        parent: scene,
-        camera: engine.camera,
-        cascades,
-        maxFar: shadowFar,
-        mode: 'custom',
-        customSplitsCallback: customSplits,
-        shadowMapSize,
-        shadowBias: 0,          // set per cascade by tuneCascades()
-        lightDirection: lightDir.clone(),
-        lightIntensity: pal.sunIntensity,
-        lightNear: 1,
-        lightFar: 3500,
-        lightMargin,
-      });
-      csm.fade = true;
-      csm.updateFrustums();
-      for (const l of csm.lights) l.color.copy(pal.sunColor);
-      tuneCascades();
-    } catch (e) {
-      console.warn('[lighting] CSM unavailable, falling back to a single shadow map:', e);
-      csm = null;
-    }
-  }
 
-  // The canonical sun handle other systems read. With CSM active the cascade lights do the
-  // actual lighting, so this one is kept out of the scene graph (intensity contributed once).
+  // The canonical sun handle other systems read (vegetation.js reads .position/.color).
   const sun = new THREE.DirectionalLight(pal.sunColor.clone(), pal.sunIntensity);
   sun.position.copy(sky.sunDir).multiplyScalar(2000);
   sun.target.position.set(0, 0, 0);
-  if (!csm) {
+  scene.add(sun, sun.target);
+
+  if (shadows) {
     sun.castShadow = true;
     sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
-    sun.shadow.normalBias = opts.normalBias ?? 0.05;
-    sun.shadow.bias = opts.shadowBias ?? -(biasMetres / 3999);
-    const c = sun.shadow.camera;
-    c.left = -260; c.right = 260; c.top = 260; c.bottom = -260; c.near = 1; c.far = 4000;
-    c.updateProjectionMatrix();
-    scene.add(sun, sun.target);
+    // three's PCF filter is a 5-tap Vogel disk scaled by `shadow.radius` *in texels*, with a
+    // per-pixel rotation. At the default radius of 1 the disk collapses onto one texel and
+    // every boundary is a hard stair-step. 2.2 texels gives a real penumbra for free (the
+    // taps are hardware-compared), and the rotation is a deterministic function of
+    // gl_FragCoord, so screenshots stay reproducible.
+    sun.shadow.radius = opts.shadowRadius ?? 2.2;
   }
+
+  const _lightBasis = new THREE.Matrix4();
+  const _lightBasisInv = new THREE.Matrix4();
+  const _focus = new THREE.Vector3();
+  const _fwd = new THREE.Vector3();
+  const _up = new THREE.Vector3(0, 1, 0);
+  const _origin = new THREE.Vector3();
+  let shadowExtent = shadowExtentNear;
+
+  /**
+   * Re-aim the shadow camera at the ground just ahead of the view camera and size its depth
+   * range to the box it actually covers, so the normalised bias stays a few centimetres
+   * instead of the ~28 cm a 3.5 km light frustum used to cost.
+   */
+  function fitShadow() {
+    if (!shadows) return;
+    const cam = engine.camera;
+    cam.getWorldDirection(_fwd);
+
+    // Ground under the camera decides how wide to spread the map: a chase camera sits ~3 m
+    // up and wants density, a hilltop plate sits 40 m up and wants coverage.
+    const camGround = world ? world.heightAt(cam.position.x, cam.position.z) : 0;
+    const height = Math.max(0, cam.position.y - (Number.isFinite(camGround) ? camGround : 0));
+    shadowExtent = clamp(shadowExtentNear + height * 3.2, shadowExtentNear, shadowExtentFar);
+
+    // Push the focus down the view axis so the box is spent on what is in frame, not on the
+    // ground behind the camera.
+    _focus.copy(cam.position).addScaledVector(_fwd, shadowExtent * 0.55);
+    const gy = world ? world.heightAt(_focus.x, _focus.z) : 0;
+    _focus.y = Number.isFinite(gy) ? gy + 2 : cam.position.y;
+
+    // Snap the focus to whole shadow texels in light space, otherwise the map crawls with
+    // sub-texel camera motion and every shadow edge shimmers.
+    _lightBasis.lookAt(_origin, lightDir, _up);
+    _lightBasisInv.copy(_lightBasis).invert();
+    const texel = (shadowExtent * 2) / shadowMapSize;
+    _focus.applyMatrix4(_lightBasisInv);
+    _focus.x = Math.floor(_focus.x / texel) * texel;
+    _focus.y = Math.floor(_focus.y / texel) * texel;
+    _focus.applyMatrix4(_lightBasis);
+
+    sun.target.position.copy(_focus);
+    sun.position.copy(_focus).addScaledVector(lightDir, -lightBack);
+    sun.target.updateMatrixWorld();
+
+    const c = sun.shadow.camera;
+    c.left = -shadowExtent; c.right = shadowExtent;
+    c.top = shadowExtent; c.bottom = -shadowExtent;
+    c.near = 1;
+    c.far = lightBack + shadowExtent * 2.2;
+    c.updateProjectionMatrix();
+
+    const span = c.far - c.near;
+    sun.shadow.bias = -(biasMetres / span);
+    // Slope term, in metres: enough to kill acne on the terrain now that casters render
+    // their FRONT faces, small enough that a 1 m object still meets its own shadow.
+    sun.shadow.normalBias = opts.normalBias ?? Math.max(0.05, 1.8 * texel);
+  }
+  fitShadow();
 
   // ---- ambient: sky/ground hemisphere + a terra-rossa bounce --------------------------
   const hemi = new THREE.HemisphereLight(pal.skyAmbient, pal.groundAmbient, pal.hemiIntensity);
@@ -309,11 +317,10 @@ export function createLighting(engine, world, sky, opts = {}) {
   const adopted = new Set();
 
   function shaderMaterialWants(mat) {
-    // Opt a custom ShaderMaterial in only when its source actually includes the chunks we
-    // rewrote — otherwise the defines would reference uniforms it never declares.
+    // Opt a custom ShaderMaterial in only when its source actually includes the chunk we
+    // rewrote — otherwise the define would reference uniforms it never declares.
     const vs = mat.vertexShader || '', fs = mat.fragmentShader || '';
     return {
-      csm: mat.lights === true && fs.includes('lights_fragment_begin'),
       ap: vs.includes('project_vertex') && vs.includes('fog_vertex') && fs.includes('fog_fragment'),
     };
   }
@@ -322,15 +329,24 @@ export function createLighting(engine, world, sky, opts = {}) {
     if (!mat || mat.isSpriteMaterial || mat.isPointsMaterial || mat.isLineBasicMaterial ||
         mat.isLineDashedMaterial || mat.isShadowMaterial) return;
 
-    let wantCSM = !!csm && LIT(mat);
     let wantAP = LIT(mat) || !!mat.isMeshBasicMaterial;
-
     if (mat.isShaderMaterial || mat.isRawShaderMaterial) {
-      const w = shaderMaterialWants(mat);
-      wantCSM = !!csm && w.csm; wantAP = w.ap;
-      if (mat.isRawShaderMaterial) { wantCSM = false; wantAP = false; }
+      wantAP = mat.isRawShaderMaterial ? false : shaderMaterialWants(mat).ap;
     }
-    if (!wantCSM && !wantAP) return;
+
+    // THE contact-shadow fix. three defaults a FrontSide material's shadow pass to BackSide
+    // (see WebGLShadowMap.getDepthMaterial), which is only safe for closed solids. Karts,
+    // cats, item boxes, signage and every foliage card here are open single-sided shells, so
+    // their back faces do not exist and they wrote nothing at all into the shadow map — the
+    // whole field floated. Rendering the FRONT faces records the surface the sun actually
+    // hits, at the height it actually is, which is what a contact shadow is made of.
+    // `shadowSide` is honoured per draw, so a material that has deliberately chosen one is
+    // left alone.
+    if (shadows && mat.shadowSide == null && !mat.isShadowMaterial) {
+      mat.shadowSide = THREE.FrontSide;
+    }
+
+    if (!wantAP) return;
 
     const ud = mat.userData;
     if (ud.__ktLightFn && mat.onBeforeCompile === ud.__ktLightFn) return; // already ours, untouched
@@ -342,19 +358,15 @@ export function createLighting(engine, world, sky, opts = {}) {
 
     const fn = function (shader, r) {
       ud.__ktLightPrev?.call(this, shader, r);
-      if (wantAP) Object.assign(shader.uniforms, apUniforms);
-      if (wantCSM) Object.assign(shader.uniforms, csmUniforms);
+      Object.assign(shader.uniforms, apUniforms);
     };
     ud.__ktLightFn = fn;
     mat.onBeforeCompile = fn;
 
     mat.defines = mat.defines || {};
-    if (wantAP) mat.defines.AERIAL_PERSPECTIVE = '';
-    if (wantCSM) {
-      mat.defines.USE_CSM = 1;
-      mat.defines.CSM_CASCADES = cascades;
-      if (csm.fade) mat.defines.CSM_FADE = '';
-    }
+    mat.defines.AERIAL_PERSPECTIVE = '';
+    // Legacy CSM defines from an earlier rig would now reference uniforms nothing supplies.
+    delete mat.defines.USE_CSM; delete mat.defines.CSM_CASCADES; delete mat.defines.CSM_FADE;
     mat.needsUpdate = true;
     adopted.add(mat);
   }
@@ -377,19 +389,6 @@ export function createLighting(engine, world, sky, opts = {}) {
     });
   }
 
-  function refreshCSMUniforms() {
-    if (!csm) return;
-    const t = csmUniforms.CSM_cascades.value;
-    while (t.length < csm.breaks.length) t.push(new THREE.Vector2());
-    t.length = csm.breaks.length;
-    for (let i = 0; i < csm.cascades; i++) {
-      t[i].x = csm.breaks[i - 1] || 0;
-      t[i].y = csm.breaks[i];
-    }
-    csmUniforms.cameraNear.value = engine.camera.near;
-    csmUniforms.shadowFar.value = Math.min(engine.camera.far, csm.maxFar);
-  }
-  refreshCSMUniforms();
 
   // ---- sun / palette application --------------------------------------------------------
   function applyPalette() {
@@ -397,11 +396,6 @@ export function createLighting(engine, world, sky, opts = {}) {
     sun.position.copy(sky.sunDir).multiplyScalar(2000);
     sun.color.copy(pal.sunColor);
     sun.intensity = pal.sunIntensity;
-    if (csm) {
-      csm.lightDirection.copy(lightDir);
-      csm.lightIntensity = pal.sunIntensity;
-      for (const l of csm.lights) { l.color.copy(pal.sunColor); l.intensity = pal.sunIntensity; }
-    }
     hemi.color.copy(pal.skyAmbient);
     hemi.groundColor.copy(pal.groundAmbient);
     hemi.intensity = pal.hemiIntensity;
@@ -427,23 +421,29 @@ export function createLighting(engine, world, sky, opts = {}) {
   // PCFSoftShadowMap is deprecated in this three build and silently downgrades; ask for the
   // supported filter directly so the console stays clean and the look is predictable.
   if (renderer.shadowMap.type === THREE.PCFSoftShadowMap) renderer.shadowMap.type = THREE.PCFShadowMap;
-  if (opts.lazyShadows !== false) renderer.shadowMap.autoUpdate = false;
+  // One depth pass instead of three, so it can be redrawn whenever the fit actually moves
+  // rather than on a timer. `lazyShadows` still skips the pass on frames where neither the
+  // camera nor the scene changed.
+  renderer.shadowMap.autoUpdate = false;
   let frame = 0;
 
   const system = {
     update(dt) {
       if ((frame++ % 30) === 0) scan();
-      if (csm) { csm.update(); }
       const cam = engine.camera;
       const moved = cam.position.distanceToSquared(lastCamPos) > 2.5e-3 ||
                     Math.abs(cam.quaternion.dot(lastCamQuat)) < 0.99999;
-      if (!renderer.shadowMap.autoUpdate && (moved || dirty || (frame % 30) === 0)) {
+      // The shadow box follows the camera, so a moved camera means a new fit AND a new map;
+      // karts and items move every frame regardless, which is why this also refreshes on a
+      // short timer when nothing else changed.
+      if (moved || dirty || (frame % 3) === 0) {
+        fitShadow();
         renderer.shadowMap.needsUpdate = true;
       }
       if (moved) { lastCamPos.copy(cam.position); lastCamQuat.copy(cam.quaternion); }
       dirty = false;
     },
-    resize() { if (csm) { csm.updateFrustums(); tuneCascades(); refreshCSMUniforms(); dirty = true; } },
+    resize() { fitShadow(); dirty = true; },
   };
   engine.add(system);
 
@@ -451,7 +451,8 @@ export function createLighting(engine, world, sky, opts = {}) {
   const env = buildEnv();
 
   const api = {
-    sun, hemi, bounce, csm, fog,
+    sun, hemi, bounce, fog,
+    csm: null,               // the CSM rig is gone; kept null so sky.js's handle stays valid
     envMap: env,
     apUniforms,
     setupMaterial,
@@ -459,12 +460,12 @@ export function createLighting(engine, world, sky, opts = {}) {
     /** Re-read sky.palette / sky.sunDir after a time-of-day change. */
     refresh(rebuildEnv = true) {
       applyPalette();
-      if (csm) { csm.updateFrustums(); tuneCascades(); refreshCSMUniforms(); }
+      fitShadow();
       if (rebuildEnv) api.envMap = buildEnv();
       // Nothing to recompile: every patched shader holds the *same* uniform objects.
     },
     dispose() {
-      csm?.remove?.(); csm?.dispose?.();
+      sun.shadow?.dispose?.();
       envRT?.dispose?.(); pmrem?.dispose?.();
     },
     update: system.update,
