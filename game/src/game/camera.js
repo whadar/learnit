@@ -74,13 +74,19 @@ export const DEFAULTS = {
   boxLift: 2.55,          // metres the eye climbs over the row
   boxBack: 3.70,          // … and metres it drops back, so the row swings out to the edges
   boxSpan: 2.6,           // vertical half-window: only boxes on the kart's own deck count
-  /* fixed cinematic plates: keeping the subject legible — see plateFov() */
-  plateFill: 0.170,       // fraction of frame height a head-on subject should occupy
+  /* fixed cinematic plates: keeping the subject legible — see plateFrame() */
+  plateFill: 0.210,       // fraction of frame height a head-on subject should occupy
   plateSubjH: 1.55,       // metres of kart + driver that has to fill it
-  plateFovMin: 26,        // never squeeze the lens past this
+  plateFovMin: 21,        // never squeeze the lens past this
   plateNear: 8,           // subjects nearer than this are already big enough
   plateFar: 45,           // … and beyond this a plate is a landscape, not a portrait
   plateClosing: 6.0,      // m/s the field must be closing on the lens to count as head-on
+  plateAimH: 0.86,        // metres above the kart's base the plate aims at (chest / driver)
+  plateMate: 6.0,         // a rival within this much of the leader's depth is "nose to nose"
+  plateSpread: 0.60,      // … and the pair may fill this much of the frame width
+  plateDeck: 11.0,        // a plate this far over the ground is a landscape, never a portrait
+  plateLambda: 7.5,       // how fast a tracking plate pans/zooms onto its subject
+  plateSweepR: 1.05,      // radius of the lens volume swept back from subject to eye
   /* misc */
   lookBackTime: 0.16,     // seconds to swing round when look-back is held
   speedRef: 25.0,         // m/s that counts as "top speed" for the curves
@@ -140,7 +146,13 @@ export function createCamera(engine, world, opts = {}) {
   const tmp = V(), tmp2 = V();
 
   /* ---- fixed-plate + photo state ---- */
-  const fixed = { pos: [0, 40, 0], look: [0, 0, 0], fov: 55 };
+  const fixed = {
+    pos: [0, 40, 0], look: [0, 0, 0], fov: 55,
+    look0: [0, 0, 0],     // the pose exactly as authored — a tracking plate never leaves it far
+    fov0: 55,
+    deck: false,          // deck-level plate (can become a portrait) vs a crane shot
+    first: true,
+  };
   const photo = { pos: V(0, 40, 0), yaw: 0, pitch: -0.35, fov: 52, speed: 26 };
 
   /* ------------------------------------------------------------ helpers ---- */
@@ -477,10 +489,10 @@ export function createCamera(engine, world, opts = {}) {
    * A hand-placed plate knows the tarmac but not the ironmongery standing on it: aim a lens
    * down the start straight and it can end up inside a gantry leg, a pit-wall hoarding or a
    * tyre stack, which is exactly what the review caught under the start/finish gate. So
-   * before a fixed plate is committed, the sight line is swept back from the *subject* to the
-   * eye: whatever solid trackside furniture it meets first, the lens is planted just in front
-   * of it. Resolved once per `setFixed()` — the pose does not move afterwards — so the ray
-   * never costs a frame.
+   * before a fixed plate is committed, the lens's own volume is swept back from the *subject*
+   * to the eye: whatever solid trackside furniture it meets first, the lens is planted just in
+   * front of it. Resolved once per `setFixed()` — the eye does not move afterwards — so the
+   * sweep never costs a frame.
    */
   const _ray = new THREE.Raycaster();
   let blockers = null;
@@ -500,84 +512,182 @@ export function createCamera(engine, world, opts = {}) {
 
   const CLEAR = 0.55;               // metres of air kept between the lens and a solid
   const NEARVOL = 3.2;              // the eye's own near volume: a solid in here is a clip
+
+  /**
+   * Sweep the lens's own volume back from the subject to the eye and report the nearest solid
+   * it meets, as a distance from the subject. -1 when the run is clear.
+   *
+   * The old test was a single hair-thin ray down the middle of the sight line, so anything the
+   * lens had buried itself in *beside* the axis — a gantry leg, a hoarding post, a tyre stack
+   * a metre off the lens — read as clear air and stayed in the plate, cropping a corner of the
+   * frame. A camera is not a hair: it has a near plane about a metre across, and it is that
+   * volume which must be clear. So the run is swept as a cylinder of that radius — seven
+   * parallel probes, the axis plus a ring around it, nearest hit wins.
+   *
+   * The sweep only ever answers "is the lens inside something". What the plate is *pointed at*
+   * and how tight it is are plateFrame()'s job, below; between them they are what stopped the
+   * finish plate filming the underside of the start gate instead of the race.
+   */
+  const _dir = V(), _rt = V(), _upv = V(), _org = V();
+  function sweepBack(at, p) {
+    const list = cameraBlockers();
+    if (!list.length) return -1;
+    _dir.subVectors(p, at);
+    const dist = _dir.length();
+    if (dist < 0.4) return -1;
+    _dir.multiplyScalar(1 / dist);
+    // a basis across the sight line, so the probes ring the axis instead of stringing out along it
+    _rt.set(-_dir.z, 0, _dir.x);
+    if (_rt.lengthSq() < 1e-8) _rt.set(1, 0, 0); else _rt.normalize();
+    _upv.crossVectors(_dir, _rt).normalize();
+    let best = -1;
+    for (let i = 0; i < 7; i++) {
+      _org.copy(at);
+      if (i) {
+        const a = (i - 1) * (Math.PI / 3);
+        _org.addScaledVector(_rt, Math.cos(a) * O.plateSweepR)
+          .addScaledVector(_upv, Math.sin(a) * O.plateSweepR);
+      }
+      _ray.set(_org, _dir);
+      _ray.near = 0.05; _ray.far = dist;
+      let hits = null;
+      try { hits = _ray.intersectObjects(list, false); } catch (e) { hits = null; }
+      if (!hits || !hits.length) continue;
+      for (const h of hits) {
+        // Only ironmongery *in the eye's own near volume* is a fault. A gantry leg or a
+        // hoarding halfway down the sight line is composition, not a clip, and planting the
+        // lens in front of the first hit whatever its distance would haul a plate authored
+        // well past the line back under the gate it was framing, subject and all.
+        if (h.distance <= dist - NEARVOL || h.distance >= dist - 0.02) continue;
+        if (best < 0 || h.distance < best) best = h.distance;
+        break;
+      }
+    }
+    return best;
+  }
+
   function resolveFixed(p, at) {
     clearGround(p, at);
-    // a crane shot is above everything trackside; don't pay for a ray it cannot hit
+    // a crane shot is above everything trackside; don't pay for a sweep it cannot hit
     const gy = groundY(p.x, p.z);
-    if (Number.isFinite(gy) && p.y > gy + 11) return p;
-    const list = cameraBlockers();
-    if (!list.length) return p;
-    tmp.subVectors(p, at);
-    const dist = tmp.length();
-    if (dist < 0.4) return p;
-    tmp.multiplyScalar(1 / dist);
-    _ray.set(at, tmp);                       // from the subject out towards the lens
-    _ray.near = 0.05; _ray.far = dist;
-    let hits = null;
-    try { hits = _ray.intersectObjects(list, false); } catch (e) { hits = null; }
-    if (hits && hits.length) {
-      // Only ironmongery *in the eye's own near volume* is a fault. A gantry leg or a
-      // hoarding halfway down the sight line is composition, not a clip, and the old rule —
-      // which planted the lens in front of the first hit whatever its distance — would haul
-      // a plate authored 15 m past the line back under the gantry it was framing, taking the
-      // subject with it. So take the first hit *inside* that volume — the face the lens has
-      // buried itself behind — and step back out in front of it, never past half the shot.
-      let t = -1;
-      for (const h of hits) if (h.distance > dist - NEARVOL && h.distance < dist - 0.02) { t = h.distance; break; }
-      if (t > 0) p.copy(at).addScaledVector(tmp, Math.max(t - CLEAR, dist * 0.55));
+    if (Number.isFinite(gy) && p.y > gy + O.plateDeck) return p;
+    const t = sweepBack(at, p);
+    if (t > 0) {
+      const dist = p.distanceTo(at);
+      p.copy(at).addScaledVector(_dir, Math.max(t - CLEAR, dist * 0.45));
     }
     clearGround(p, at);
     return p;
   }
 
+  /** True when a plate stands on the deck, where a kart can drive into it. */
+  function deckLevel(p) {
+    const gy = groundY(p.x, p.z);
+    return Number.isFinite(gy) && p.y < gy + O.plateDeck;
+  }
+
   /**
-   * Keep a head-on plate's subject legible.
+   * Which karts a fixed plate is actually a portrait *of*.
    *
-   * A hand-placed plate carries a focal length chosen by eye, and on a plate the field is
-   * *driving at* — a finish-line shot — a wide lens turns the thing the frame is about into
-   * forty pixels of kart under a lot of scenery, with whatever ironmongery stands between
-   * cropping the borders. So a plate the karts are closing on is treated as a portrait: the
-   * lens tightens until the leader fills `plateFill` of the frame height, which both makes
-   * the driver read and throws the near trackside metal outside the frame entirely.
-   *
-   * Plates the field is standing still on (a grid), driving away from, or nowhere near are
-   * left exactly as authored — closing speed is what separates a head-on shot from a wide.
+   * A plate the field is driving at is a portrait; a plate it is standing still on (a grid),
+   * driving away from, or nowhere near is a landscape and is left exactly as authored. The
+   * window is the authored one: inside the authored cone, inside the near/far band, and
+   * genuinely closing on the lens. Nearest first.
    */
   const _axis = V(), _sub = V();
-  function plateFov(eye, at, fov) {
-    if (!target || !target.state) return fov;
+  const _pool = []; for (let i = 0; i < 10; i++) _pool.push({ s: null, d: 0, player: false });
+  const _cand = [];
+  function plateSubjects(eye, at, fov) {
+    _cand.length = 0;
+    if (!target || !target.state) return _cand;
     _axis.subVectors(at, eye);
     const dist = _axis.length();
-    if (dist < 0.5) return fov;
-    _axis.multiplyScalar(1 / dist);                     // view axis
+    if (dist < 0.5) return _cand;
+    _axis.multiplyScalar(1 / dist);
     const half = THREE.MathUtils.degToRad(fov) * 0.5;
     const aspect = camera.aspect || (16 / 9);
     const coneH = Math.atan(Math.tan(half) * aspect);   // ~half the frame's diagonal spread
-    let best = Infinity;
-    const consider = s => {
-      if (!s || !s.pos || !s.vel) return;
-      _sub.set(s.pos.x - eye.x, s.pos.y + 0.55 - eye.y, s.pos.z - eye.z);
+    const consider = (st2, player) => {
+      if (!st2 || !st2.pos || !st2.vel || _cand.length >= _pool.length) return;
+      _sub.set(st2.pos.x - eye.x, st2.pos.y + 0.55 - eye.y, st2.pos.z - eye.z);
       const d = _sub.length();
-      if (d < O.plateNear || d > O.plateFar || d >= best) return;
+      if (d < O.plateNear || d > O.plateFar) return;
       _sub.multiplyScalar(1 / d);
-      if (Math.acos(clamp(_sub.dot(_axis), -1, 1)) > coneH) return;    // outside the frame
+      if (Math.acos(clamp(_sub.dot(_axis), -1, 1)) > coneH) return;        // outside the frame
       // closing on the lens? _sub points eye -> kart, so driving at us is a negative dot
-      if (-(s.vel.x * _sub.x + s.vel.y * _sub.y + s.vel.z * _sub.z) < O.plateClosing) return;
-      best = d;
+      if (-(st2.vel.x * _sub.x + st2.vel.y * _sub.y + st2.vel.z * _sub.z) < O.plateClosing) return;
+      const e = _pool[_cand.length];
+      e.s = st2; e.d = d; e.player = player;
+      _cand.push(e);
     };
-    consider(target.state);
+    consider(target.state, true);
     const rivals = target.rivals;
-    if (rivals) for (const o of rivals) consider(o && (o.state || (o.vehicle && o.vehicle.state)));
-    if (!Number.isFinite(best)) return fov;
-    const want = 2 * Math.atan(O.plateSubjH / (2 * best * O.plateFill)) * 180 / Math.PI;
+    if (rivals) for (const o of rivals) consider(o && (o.state || (o.vehicle && o.vehicle.state)), false);
+    _cand.sort((a, b) => a.d - b.d);
+    return _cand;
+  }
+
+  /**
+   * Point a plate at the race and size the lens to it.
+   *
+   * A hand-placed plate carries an aim and a focal length chosen against the *tarmac* — a
+   * point on the centre line and a number of degrees — and the karts then arrive wherever the
+   * lane offsets and the camber put them. On the finish plate that meant the leaders sat off
+   * to one side of a wide frame at forty pixels a kart, with the bottom half of the shot dead
+   * asphalt and the player, whose race it is, barely in it. So a plate the field is driving at
+   * is treated as a portrait of the field: it aims at the player (the only kart the shot is
+   * ever about) and, when a rival is running alongside, at the midpoint of the pair, so the
+   * two of them come to the line nose to nose in the middle of frame. The lens then tightens
+   * until the leader fills `plateFill` of the frame height, opening again only as far as the
+   * pair needs to stay inside `plateSpread` of the width.
+   *
+   * Everything is anchored to the *authored* pose: the cone that decides who is in the shot is
+   * the authored one, so the plate can pan onto its subject but never wander off the shot the
+   * course designer framed.
+   *
+   * @returns {number} the fov to use — 0 when there is no subject and the plate stands as authored.
+   */
+  function plateFrame(eye, at, fov, outLook) {
+    const c = plateSubjects(eye, at, fov);
+    if (!c.length) return 0;
+    let lead = c[0];
+    for (let i = 0; i < c.length; i++) if (c[i].player) { lead = c[i]; break; }
+    let mate = null;
+    for (let i = 0; i < c.length; i++) {
+      if (c[i] !== lead && Math.abs(c[i].d - lead.d) <= O.plateMate) { mate = c[i]; break; }
+    }
+    const a = lead.s.pos, b = mate ? mate.s.pos : a;
+    outLook.set((a.x + b.x) * 0.5, (a.y + b.y) * 0.5 + O.plateAimH, (a.z + b.z) * 0.5);
+    const d = Math.max(outLook.distanceTo(eye), 1);
+    let want = 2 * Math.atan(O.plateSubjH / (2 * d * O.plateFill)) * 180 / Math.PI;
+    if (mate) {
+      const sep = Math.hypot(a.x - b.x, a.z - b.z) + 2.1;      // pair width + a kart of margin
+      const aspect = camera.aspect || (16 / 9);
+      const needH = 2 * Math.atan(sep / (2 * d * O.plateSpread));
+      const needV = 2 * Math.atan(Math.tan(needH * 0.5) / aspect) * 180 / Math.PI;
+      if (needV > want) want = needV;
+    }
     return clamp(Math.min(fov, want), Math.min(O.plateFovMin, fov), fov);
   }
 
-  function fixedUpdate() {
+  const _look2 = V();
+  function fixedUpdate(dt = 1 / 60) {
     tmp.set(fixed.pos[0], fixed.pos[1], fixed.pos[2]);
-    tmp2.set(fixed.look[0], fixed.look[1], fixed.look[2]);
-    pos.copy(tmp); look.copy(tmp2); st.fov = fixed.fov ?? 55;
-    applyLook(tmp, tmp2, st.fov, 0);
+    tmp2.set(fixed.look0[0], fixed.look0[1], fixed.look0[2]);
+    let wantFov = fixed.fov0;
+    if (fixed.deck) {
+      const fv = plateFrame(tmp, tmp2, fixed.fov0, _look2);
+      if (fv > 0) { wantFov = fv; tmp2.copy(_look2); }
+    }
+    pos.copy(tmp);
+    if (fixed.first) { look.copy(tmp2); st.fov = wantFov; fixed.first = false; }
+    else {
+      look.lerp(tmp2, clamp(1 - Math.exp(-O.plateLambda * dt), 0, 1));
+      st.fov = damp(st.fov, wantFov, O.plateLambda, dt);
+    }
+    fixed.look[0] = look.x; fixed.look[1] = look.y; fixed.look[2] = look.z;
+    fixed.fov = st.fov;
+    applyLook(tmp, look, st.fov, 0);
   }
 
   /* -------------------------------------------------------------- api ----- */
@@ -588,7 +698,7 @@ export function createCamera(engine, world, opts = {}) {
       case 'intro': intro(dt, ctx); break;
       case 'results': results(dt, ctx); break;
       case 'photo': photoUpdate(dt, ctx); break;
-      case 'fixed': fixedUpdate(); break;
+      case 'fixed': fixedUpdate(dt); break;
       default: chase(dt, ctx); break;
     }
     return api;
@@ -618,9 +728,11 @@ export function createCamera(engine, world, opts = {}) {
       tmp2.set(l[0], l[1], l[2]);
       const eye = resolveFixed(V(p[0], p[1], p[2]), tmp2);
       fixed.pos = [eye.x, eye.y, eye.z];
-      fixed.look = l;
-      fixed.fov = plateFov(eye, tmp2, f ?? fixed.fov);
-      mode = 'fixed'; fixedUpdate(); return api;
+      fixed.look0 = [l[0], l[1], l[2]];
+      fixed.fov0 = f ?? fixed.fov0;
+      fixed.deck = deckLevel(eye);
+      fixed.first = true;
+      mode = 'fixed'; fixedUpdate(1 / 60); return api;
     },
     /** Jump the rig to where it wants to be, killing the spring (used after a teleport). */
     snap() { st.first = true; return api; },
