@@ -393,8 +393,20 @@ function addWallBand(out, mat, a, b, y0, y1, holes, col, us, opt) {
   const N = [ox, 0, oz];
   const P = (s, y, off = 0) => [a[0] + tx * s + ox * off, y, a[1] + tz * s + oz * off];
   const uv = (s, y) => [s / us, y / us];
-  const ao = opt && opt.aoBase != null
-    ? y => { const t = smoothstep(0, 1.9, y - opt.aoBase); return [col[0] * lerp(0.70, 1, t), col[1] * lerp(0.69, 1, t), col[2] * lerp(0.68, 1, t)]; }
+  // Baked contact shading. `aoBase` darkens the metre above the ground; `eaveTop` darkens the
+  // 90 cm below the wall head. The eave band is the single strongest cue that a house is a
+  // solid object with a projecting roof (review R1 — "the roof meets the wall at a hard
+  // zero-thickness edge, no cast shadow line under the eave") and, unlike a real shadow, it
+  // survives every LOD tier, every sun angle and the 600 m draw distance.
+  const aoBase = opt && opt.aoBase != null ? opt.aoBase : null;
+  const eaveTop = opt && opt.eaveTop != null ? opt.eaveTop : null;
+  const ao = (aoBase != null || eaveTop != null)
+    ? y => {
+      let k = 1;
+      if (aoBase != null) k *= lerp(0.70, 1, smoothstep(0, 1.9, y - aoBase));
+      if (eaveTop != null) k *= lerp(0.52, 1, smoothstep(0, 0.92, eaveTop - y));
+      return [col[0] * k, col[1] * k, col[2] * k];
+    }
     : null;
   const quad = (s0, s1, ya, yb) => {
     if (s1 - s0 < 0.01 || yb - ya < 0.01) return;
@@ -990,7 +1002,8 @@ function buildOne(d, chunk, dchunk, world, M, place) {
       addWallBand(out, mat, a, b, y0, y1, holes, fcol, us,
         isGH ? { plain: true, aoBase: floorY } : {
           trimCol, soffitCol, doorCol, glassCol, shutterCol, frameCol, glassTop, glassBot,
-          aoBase: s === 0 ? floorY : null });
+          aoBase: s === 0 ? floorY : null,
+          eaveTop: s === storeys - 1 ? wallTopY : null });
     }
   }
 
@@ -1318,9 +1331,17 @@ function buildFar(d, far, wallTopY, world) {
     const f = edgeFrame(a, b);
     if (!f) continue;
     const y0 = Math.min(world.heightAt(a[0], a[1]), world.heightAt(b[0], b[1]), floorY) - 1.2;
-    S.poly([[a[0], y0, a[1]], [b[0], y0, b[1]], [b[0], wallTopY, b[1]], [a[0], wallTopY, a[1]]],
-      [[0, 0], [f.L / 4, 0], [f.L / 4, (wallTopY - y0) / 4], [0, (wallTopY - y0) / 4]],
+    // Two bands, so the distant village keeps the same baked eave shadow the near LOD has.
+    // Without it every far house is one flat value under a red lid and the moshav reads as a
+    // field of cream boxes from the hilltop (review R1).
+    const eaveY = Math.max(y0 + 0.3, wallTopY - 0.92);
+    const dk = [tint[0] * 0.52, tint[1] * 0.52, tint[2] * 0.51];
+    S.poly([[a[0], y0, a[1]], [b[0], y0, b[1]], [b[0], eaveY, b[1]], [a[0], eaveY, a[1]]],
+      [[0, 0], [f.L / 4, 0], [f.L / 4, (eaveY - y0) / 4], [0, (eaveY - y0) / 4]],
       tint, [f.ox, 0, f.oz]);
+    S.poly([[a[0], eaveY, a[1]], [b[0], eaveY, b[1]], [b[0], wallTopY, b[1]], [a[0], wallTopY, a[1]]],
+      [[0, (eaveY - y0) / 4], [f.L / 4, (eaveY - y0) / 4], [f.L / 4, (wallTopY - y0) / 4], [0, (wallTopY - y0) / 4]],
+      [tint, tint, dk, dk], [f.ox, 0, f.oz]);
   }
   // flat window patches: two triangles each, enough to read as fenestration at 200 m
   if (d.kind === 'house') {

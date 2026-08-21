@@ -44,6 +44,28 @@ function mat(key, make) {
 function std(key, p) { return mat(key, () => new THREE.MeshStandardMaterial(p)); }
 function phys(key, p) { return mat(key, () => new THREE.MeshPhysicalMaterial(p)); }
 
+/**
+ * Turn a basic material into a soft fresnel rim shell. Drawn on the BACK faces of a slightly
+ * enlarged copy of the mesh, the alpha peaks at the silhouette and falls to nothing toward
+ * the centre, so a projectile fringes itself in its own colour instead of wearing the hard
+ * flat annulus a plain back-faced sphere gives (review R1 — "no rim light on the oranges").
+ */
+function rimify(m, power = 2.4, gain = 1.7) {
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vRimN;\nvarying vec3 vRimV;')
+      .replace('#include <begin_vertex>',
+        '#include <begin_vertex>\nvRimN = normalize(normalMatrix * normal);\nvRimV = normalize(-(modelViewMatrix * vec4(transformed, 1.0)).xyz);');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vRimN;\nvarying vec3 vRimV;')
+      .replace('#include <opaque_fragment>',
+        `float rimF = pow(1.0 - abs(dot(normalize(vRimN), normalize(vRimV))), ${power.toFixed(2)});\n`
+        + `diffuseColor.a *= clamp(rimF * ${gain.toFixed(2)}, 0.0, 1.0);\n#include <opaque_fragment>`);
+  };
+  m.customProgramCacheKey = () => 'rim' + power + '_' + gain;
+  return m;
+}
+
 function mesh(geo, material, { pos, rot, scale, shadow = true } = {}) {
   const m = new THREE.Mesh(geo, material);
   if (pos) m.position.set(pos[0], pos[1], pos[2]);
@@ -117,15 +139,22 @@ export function mergeGeometries(list) {
 
 /* ---------------------------------------------------------------- textures */
 
+// Real citrus peel is dimpled, not scratched: each oil gland is a small round pit with a
+// lit shoulder. Drawn as pit + highlight pairs and tiled 3x2 so the sphere's pole pinch does
+// not smear it into the diagonal streaks the R1 critics saw.
 const citrusPeel = () => tex('citrus-peel', 128, (c, S) => {
-  c.fillStyle = '#8a8a8a'; c.fillRect(0, 0, S, S);
+  c.fillStyle = '#909090'; c.fillRect(0, 0, S, S);
   const r = rng(21);
-  for (let i = 0; i < 1400; i++) {
-    const x = r() * S, y = r() * S, rad = 0.7 + r() * 1.5;
-    c.fillStyle = r() > 0.5 ? 'rgba(255,255,255,.55)' : 'rgba(0,0,0,.45)';
-    c.beginPath(); c.arc(x, y, rad, 0, TAU); c.fill();
+  for (let i = 0; i < 620; i++) {
+    const x = r() * S, y = r() * S, rad = 1.1 + r() * 1.7;
+    const g = c.createRadialGradient(x - rad * 0.3, y - rad * 0.3, 0, x, y, rad);
+    g.addColorStop(0, 'rgba(0,0,0,.55)');
+    g.addColorStop(0.62, 'rgba(120,120,120,.30)');
+    g.addColorStop(1, 'rgba(255,255,255,.42)');
+    c.fillStyle = g;
+    c.beginPath(); c.arc(x, y, rad * 1.5, 0, TAU); c.fill();
   }
-}, { srgb: false });
+}, { srgb: false, repeat: [3, 2] });
 
 const melonSkin = () => tex('melon-skin', 256, (c, S) => {
   const g = c.createLinearGradient(0, 0, 0, S);
@@ -224,37 +253,56 @@ const stripeFeather = () => tex('feather-stripe', 128, (c, S) => {
   }
 });
 
-/** Gold-on-clear Israeli motif for the item box faces: pomegranate, citrus, olive branch. */
+/**
+ * The item-box face glyph. Painted as a SOLID crimson pomegranate with a gold rim, not a
+ * hairline gold outline: the box floats against a blown-out sky as often as against dark
+ * tarmac, and an additive pale-gold line disappears completely against the sky (review R1 —
+ * "translucent grey-blue glass boxes, no interior glyph"). A filled, high-chroma glyph
+ * silhouettes against both.
+ */
 const boxMotif = () => tex('box-motif', 256, (c, S) => {
   c.clearRect(0, 0, S, S);
-  const gold = '#fff0c0';
-  c.strokeStyle = gold; c.fillStyle = gold; c.lineWidth = 12; c.lineJoin = 'round';
   const cx = S / 2, cy = S * 0.56, R = S * 0.30;
-  // pomegranate body
-  c.beginPath(); c.arc(cx, cy, R, 0, TAU); c.stroke();
-  // crown
+  const crimson = '#c8143c', deep = '#7d0a24', gold = '#ffe08a';
+  c.lineJoin = 'round'; c.lineCap = 'round';
+
+  // crown, behind the body
+  c.fillStyle = deep;
   c.beginPath();
-  const cw = R * 0.42, cyt = cy - R;
+  const cw = R * 0.46, cyt = cy - R * 0.86;
   c.moveTo(cx - cw, cyt);
   for (let i = 0; i < 5; i++) {
     const x0 = cx - cw + (i / 5) * cw * 2, x1 = cx - cw + ((i + 1) / 5) * cw * 2;
-    c.lineTo((x0 + x1) / 2, cyt - R * (i % 2 ? 0.30 : 0.52));
-    c.lineTo(x1, cyt - R * 0.06);
+    c.lineTo((x0 + x1) / 2, cyt - R * (i % 2 ? 0.34 : 0.60));
+    c.lineTo(x1, cyt - R * 0.02);
   }
-  c.stroke();
+  c.lineTo(cx + cw, cyt + R * 0.30); c.lineTo(cx - cw, cyt + R * 0.30);
+  c.closePath(); c.fill();
+  c.lineWidth = 9; c.strokeStyle = gold; c.stroke();
+
+  // body: a filled fruit with a lit shoulder so it reads as volume, not a sticker
+  const g = c.createRadialGradient(cx - R * 0.32, cy - R * 0.36, R * 0.10, cx, cy, R * 1.05);
+  g.addColorStop(0, '#ff5d70'); g.addColorStop(0.45, crimson); g.addColorStop(1, deep);
+  c.fillStyle = g;
+  c.beginPath(); c.ellipse(cx, cy, R, R * 1.02, 0, 0, TAU); c.fill();
+  c.lineWidth = 13; c.strokeStyle = gold; c.stroke();
+
   // seeds
+  c.fillStyle = gold;
   for (let i = 0; i < 7; i++) {
-    const a = i / 7 * TAU, rr = R * 0.5;
-    c.beginPath(); c.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.9, R * 0.11, 0, TAU); c.fill();
+    const a = i / 7 * TAU + 0.3, rr = R * 0.52;
+    c.beginPath(); c.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.9, R * 0.115, 0, TAU); c.fill();
   }
-  // olive sprig either side
-  c.lineWidth = 5;
+  c.beginPath(); c.arc(cx, cy, R * 0.13, 0, TAU); c.fill();
+
+  // olive sprig either side, in gold so it holds against the crimson
+  c.lineWidth = 8; c.strokeStyle = gold;
   for (const s of [-1, 1]) {
-    c.beginPath(); c.moveTo(cx + s * R * 1.35, cy + R * 0.55);
-    c.quadraticCurveTo(cx + s * R * 1.7, cy - R * 0.15, cx + s * R * 1.35, cy - R * 0.85); c.stroke();
+    c.beginPath(); c.moveTo(cx + s * R * 1.34, cy + R * 0.58);
+    c.quadraticCurveTo(cx + s * R * 1.72, cy - R * 0.15, cx + s * R * 1.34, cy - R * 0.88); c.stroke();
     for (let i = 0; i < 3; i++) {
-      const t = 0.2 + i * 0.3, y = cy + R * 0.55 - t * R * 1.4;
-      c.beginPath(); c.ellipse(cx + s * (R * 1.62), y, R * 0.16, R * 0.09, s * 0.7, 0, TAU); c.fill();
+      const t = 0.2 + i * 0.3, y = cy + R * 0.58 - t * R * 1.46;
+      c.beginPath(); c.ellipse(cx + s * (R * 1.62), y, R * 0.17, R * 0.095, s * 0.7, 0, TAU); c.fill();
     }
   }
 });
@@ -324,11 +372,22 @@ function leaf(len = 0.20, w = 0.11, color = 0x3f7a35) {
   s.moveTo(0, 0);
   s.quadraticCurveTo(w, len * 0.42, 0, len);
   s.quadraticCurveTo(-w, len * 0.42, 0, 0);
-  const g = new THREE.ExtrudeGeometry(s, { depth: 0.012, bevelEnabled: false, curveSegments: 6 });
+  const g = new THREE.ExtrudeGeometry(s, { depth: 0.012, bevelEnabled: false, curveSegments: 8 });
   g.translate(0, 0, -0.006);
+  // Curl the blade across and along its length. A dead-flat extrusion shades as one value and
+  // reads as the alpha quad the R1 critics called out; a curled blade catches a highlight on
+  // the fold and separates from the fruit behind it.
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const t = len > 1e-6 ? y / len : 0;
+    p.setZ(i, z + (x / Math.max(w, 1e-6)) * (x / Math.max(w, 1e-6)) * w * 0.55 - Math.sin(t * Math.PI) * len * 0.12);
+    p.setY(i, y);
+  }
+  g.computeVertexNormals();
   return mesh(g, std('leaf' + color, {
-    color, roughness: 0.44, side: THREE.DoubleSide,
-    emissive: new THREE.Color(color).multiplyScalar(0.22), emissiveIntensity: 1,
+    color, roughness: 0.36, side: THREE.DoubleSide,
+    emissive: new THREE.Color(color).multiplyScalar(0.34), emissiveIntensity: 1,
   }));
 }
 
@@ -389,14 +448,14 @@ export function makeJaffa(scale = 1) {
   g.add(mesh(new THREE.SphereGeometry(0.28, 22, 18), phys('jaffa-skin', {
     color: 0xff8a10, roughness: 0.38, metalness: 0.0,
     clearcoat: 0.85, clearcoatRoughness: 0.22,
-    bumpMap: citrusPeel(), bumpScale: 0.75,
+    bumpMap: citrusPeel(), bumpScale: 0.34,
     emissive: 0xc24a05, emissiveIntensity: 0.42,
     envMapIntensity: 1.6,
   })));
-  const rim = mesh(new THREE.SphereGeometry(0.28, 20, 14), mat('jaffa-rim', () => new THREE.MeshBasicMaterial({
-    color: 0xff9f2e, transparent: true, opacity: 0.26, side: THREE.BackSide,
+  const rim = mesh(new THREE.SphereGeometry(0.28, 20, 14), mat('jaffa-rim', () => rimify(new THREE.MeshBasicMaterial({
+    color: 0xffb43c, transparent: true, opacity: 0.9, side: THREE.BackSide,
     blending: THREE.AdditiveBlending, depthWrite: false,
-  })), { scale: 1.10, shadow: false });
+  }), 2.6, 1.8)), { scale: 1.16, shadow: false });
   rim.renderOrder = 2;
   g.add(rim);
   g.add(mesh(new THREE.CylinderGeometry(0.022, 0.03, 0.07, 8),
@@ -960,8 +1019,8 @@ export function createItemBoxMesh(opts = {}) {
   // in the emissive COLOUR, not the intensity: a hot cyan-white emissive at that intensity is
   // what turns the box from a pale glass cube into a lantern against the sky (review R1).
   const shellMat = mat('box-shell', () => new THREE.MeshPhysicalMaterial({
-    color: 0xa8ecff, map: iridescentSheen(), roughness: 0.04, metalness: 0.0,
-    transparent: true, opacity: 0.74, side: THREE.DoubleSide,
+    color: 0x7fd8f5, map: iridescentSheen(), roughness: 0.04, metalness: 0.0,
+    transparent: true, opacity: 0.60, side: THREE.DoubleSide,
     iridescence: 1.0, iridescenceIOR: 2.2, iridescenceThicknessRange: [140, 640],
     clearcoat: 1.0, clearcoatRoughness: 0.03, envMapIntensity: 2.4,
     emissive: 0x63d8ff, emissiveIntensity: 0.30, depthWrite: false,
@@ -995,9 +1054,14 @@ export function createItemBoxMesh(opts = {}) {
   g.add(mesh(frameGeo, gold, { shadow: false }));
 
   // etched pomegranate motif on all six faces, one draw
+  // Normal-blended, not additive: additive over a blown-out sky is a no-op, which is exactly
+  // why the mid-distance boxes read as empty white frames in oliveGrove (review R1).
   const motifMat = mat('box-motif-mat', () => new THREE.MeshBasicMaterial({
     map: boxMotif(), transparent: true, opacity: 1.0, depthWrite: false,
-    color: 0xffb43a, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+    // FrontSide, not DoubleSide: the six face planes all point outward, so culling the back
+    // ones stops the far side's glyph painting over the near side's now that this blends
+    // normally instead of additively.
+    color: 0xffffff, side: THREE.FrontSide, alphaTest: 0.04,
   }));
   const motifGeo = mat('box-motif-geo', () => {
     const plane = new THREE.PlaneGeometry(size * 0.62, size * 0.62);

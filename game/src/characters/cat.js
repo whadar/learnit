@@ -364,10 +364,17 @@ function lathe(profile, seg = 22) {
   const pts = profile.map(p => new THREE.Vector2(Math.max(p[0], 0.0006), p[1]));
   return new THREE.LatheGeometry(pts, seg);
 }
+/**
+ * Ears are the whole silhouette read. From the chase camera all you get of a driver is the
+ * dome clearing the seat back, and at the R1 size the ears barely broke that dome's outline —
+ * so the grid read as "pale blobs in the seats". Scaled up 22%: still Nintendo-proportioned,
+ * but unmistakably a cat from 40 m.
+ */
 function earShape(kind) {
   const s = new THREE.Shape();
-  const w = kind === 'round' ? 0.118 : 0.104;
-  const h = kind === 'round' ? 0.118 : kind === 'tuft' ? 0.165 : 0.148;
+  const K = 1.22;
+  const w = (kind === 'round' ? 0.118 : 0.104) * K;
+  const h = (kind === 'round' ? 0.118 : kind === 'tuft' ? 0.165 : 0.148) * K;
   s.moveTo(-w, 0);
   if (kind === 'round') {
     s.bezierCurveTo(-w * 1.15, h * 0.55, -w * 0.62, h, 0, h);
@@ -700,8 +707,10 @@ export function createCat(id, opts = {}) {
 
   /* ---- headgear */
   const gear = new THREE.Group(); B.head.add(gear);
+  let helmetShell = null;
   if (spec.gear === 'helmet') {
     const hg = new THREE.Group();
+    helmetShell = hg;
     hg.position.set(0, 0.030, -0.016);
     hg.rotation.x = 0.16;
     gear.add(hg);
@@ -741,6 +750,29 @@ export function createCat(id, opts = {}) {
     add(gear, xform(new THREE.TorusGeometry(0.196, 0.016, 8, 22), { pos: [0, 0.088, -0.012], rot: [1.35, 0, 0], scale: [1.03, 1, 1] }), M.gear, false);
     const v = new THREE.CylinderGeometry(0.185, 0.185, 0.085, 18, 1, true, Math.PI - 0.85, 1.7);
     add(gear, xform(v, { pos: [0, 0.075, 0.008], rot: [-0.10, 0, 0], scale: [1, 1, 1.03] }), M.glass, false);
+  }
+
+  // Racing number across the back of the head. The chase camera looks at the back of the
+  // driver for the entire race and there was nothing there but a bare dome, which is most of
+  // why the R1 critics read the grid as "pale blobs in the seats". Same identity badge MK8
+  // paints on its helmets. Modelled as a spherical patch cut from the SAME sphere as whatever
+  // it sits on (the helmet shell, otherwise the head itself) and pushed out 1.5%, so it hugs
+  // the surface instead of floating or clipping.
+  if (DOM) {
+    const helm = spec.gear === 'helmet';
+    // radius, non-uniform scale and parent of the surface the badge lies on
+    const bR = helm ? 0.212 : 0.198;
+    const bS = helm ? [1.02, 1.02, 1.03] : [1.05, 0.96, 1.00];
+    const bParent = helm ? helmetShell : B.head;
+    const yLocal = helm ? 0.012 : 0.030;                 // below a cap brim, above the collar
+    const thetaC = Math.acos(clamp(yLocal / bR, -1, 1));
+    const hp = 0.40, ht = 0.38;
+    const bg = new THREE.SphereGeometry(bR, 14, 10, -Math.PI / 2 - hp, hp * 2, thetaC - ht, ht * 2);
+    const bm = new THREE.MeshStandardMaterial({
+      map: numberTexture(spec.num, helm ? '#1b1b20' : '#f4f1e6', helm ? '#f4f1e6' : '#2b2b32'),
+      transparent: true, alphaTest: 0.35, roughness: 0.32, metalness: 0.0, side: THREE.DoubleSide,
+    });
+    add(bParent, xform(bg, { scale: [bS[0] * 1.015, bS[1] * 1.015, bS[2] * 1.015] }), bm, false);
   }
 
   /* ---- arms */

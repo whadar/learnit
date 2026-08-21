@@ -190,7 +190,7 @@ export function buildRoadTextures(p) {
         const tone = 0.88 + macro * 0.22 + (grain - 0.5) * 0.24;
         r *= tone; g *= tone; b *= tone * 1.03;
         h = grain * 1.1 + macro * 0.4;
-        rough = 0.68 + (grain - 0.5) * 0.20 + macro * 0.10;
+        rough = (chip ? 0.93 : 0.885) + (grain - 0.5) * 0.10 + macro * 0.05;
 
         // pale limestone chippings sitting proud of the binder
         const cf = chip ? 6.4 : 5.4;
@@ -206,7 +206,7 @@ export function buildRoadTextures(p) {
         pol *= 0.72 + NF(U, V, 0.22, seed + 617, 3) * 0.55;
         const wear = clamp(pol, 0, 1);
         r = lerp(r, r * 1.44 + 0.017, wear); g = lerp(g, g * 1.43 + 0.0165, wear); b = lerp(b, b * 1.40 + 0.0155, wear);
-        rough -= wear * 0.20; h -= wear * 0.30;
+        rough -= wear * 0.10; h -= wear * 0.30;
 
         // repair patches: half are fresh dark seal, half are old bleached ones
         for (const pa of patches) {
@@ -219,7 +219,7 @@ export function buildRoadTextures(p) {
           if (m <= 0) continue;
           const pt = pa.tone * (0.92 + NF(U, V, 1.4, pa.seed, 3) * 0.20);
           r = lerp(r, base[0] * pt, m * 0.9); g = lerp(g, base[1] * pt, m * 0.9); b = lerp(b, base[2] * pt, m * 0.9);
-          rough = lerp(rough, 0.80, m);
+          rough = lerp(rough, 0.87, m);
           const seam = m * (1 - m) * 4;
           r -= seam * 0.022; g -= seam * 0.022; b -= seam * 0.022; h -= seam * 0.9;
         }
@@ -236,14 +236,14 @@ export function buildRoadTextures(p) {
         const cx = RG(U, V, 0.85, seed + 211, 3);
         const crack = clamp((cx - 0.855) * 8, 0, 1) * clamp(0.25 + macro * 0.9, 0, 1);
         r = lerp(r, base[0] * 0.45, crack); g = lerp(g, base[1] * 0.45, crack); b = lerp(b, base[2] * 0.45, crack);
-        h -= crack * 2.0; rough = lerp(rough, 0.88, crack);
+        h -= crack * 2.0; rough = lerp(rough, 0.93, crack);
         // oil marks down the middle
         for (const s of stains) {
           let dv = Math.abs(V - s.v); dv = Math.min(dv, p.vMetres - dv);
           const d = Math.hypot((U - s.u) * 1.6, dv);
           const m = clamp(1 - d / s.r, 0, 1) ** 1.6 * 0.5;
           r = lerp(r, r * 0.62, m); g = lerp(g, g * 0.62, m); b = lerp(b, b * 0.66, m);
-          rough = lerp(rough, 0.34, m);
+          rough = lerp(rough, 0.62, m);
         }
         // wind-drifted dust banked against the edges — warm, pale, and always OUTBOARD of
         // the painted edge line, so it never eats the contrast that makes the edge readable.
@@ -293,7 +293,7 @@ export function buildRoadTextures(p) {
           pa *= onRoad;
           const pc = p.paintCol || [0.60, 0.585, 0.545];
           r = lerp(r, pc[0], pa); g = lerp(g, pc[1], pa); b = lerp(b, pc[2], pa);
-          rough = lerp(rough, 0.50, pa); h += pa * 0.55;
+          rough = lerp(rough, 0.66, pa); h += pa * 0.55;
         }
       }
 
@@ -331,6 +331,10 @@ export function createRoadMaterial(tex, opts = {}) {
   const m = new THREE.MeshStandardMaterial({
     map: tex.map, normalMap: tex.normalMap, roughnessMap: tex.roughnessMap,
     roughness: 1, metalness: 0, color: 0xffffff,
+    // A dusty, sun-baked road takes almost nothing from the sky. Left at 1.0 the IBL sheen
+    // washed the ribbon out to sand at grazing angles, which is what made the surface albedo
+    // look like it changed from frame to frame.
+    envMapIntensity: opts.envMapIntensity ?? 0.45,
     normalScale: new THREE.Vector2(opts.normalScale ?? 1.0, opts.normalScale ?? 1.0),
     polygonOffset: true, polygonOffsetFactor: opts.offsetFactor ?? -2, polygonOffsetUnits: opts.offsetUnits ?? -4,
     side: THREE.FrontSide, dithering: true,

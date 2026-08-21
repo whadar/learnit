@@ -71,7 +71,7 @@ export const NUMBER_PAINT = {
   4: 0xe0357c,   // Tamar   — magenta
   5: 0xf5901c,   // Kobi    — orange
   6: 0xf2556e,   // Nofar   — coral
-  7: 0xf3b820,   // Mitzi   — golden yellow
+  7: 0xe8332c,   // Mitzi   — racing red (the player: gold vanished against sand)
   8: 0x8bd23a,   // Dror    — lime
   9: 0x3a74e8,   // Layla   — royal blue
   12: 0x18b07a,  // Yaffa   — jade
@@ -189,6 +189,35 @@ function plateTexture(num) {
   c.fillStyle = '#1a1a1a'; c.font = 'bold 72px Helvetica, Arial, sans-serif';
   c.textAlign = 'center'; c.textBaseline = 'middle';
   c.fillText('KAT ' + num, W / 2 + 16, H / 2 + 4);
+  return tex(cv);
+}
+/**
+ * Racing-number badge for the top of the rear wing. The chase camera spends the whole race
+ * looking straight down at that panel, and it was the one big surface with nothing on it — so
+ * the R1 critics could not tell eight karts apart at 40 m. The canvas is cut to the plate's
+ * aspect so the glyph is never stretched, and it is drawn upside-down because the plane is
+ * laid flat with its texture +V pointing forward along the kart.
+ */
+function roundelTexture(num, ringHex, aspect = 1) {
+  const H = 192, W = Math.max(64, Math.round(H * aspect));
+  const cv = cvs(W, H), c = cv.getContext('2d');
+  c.clearRect(0, 0, W, H);
+  c.save();
+  c.translate(W / 2, H / 2); c.rotate(Math.PI); c.translate(-W / 2, -H / 2);
+  const ring = '#' + (ringHex >>> 0).toString(16).padStart(6, '0');
+  const m = H * 0.07, r = H * 0.26;
+  c.fillStyle = 'rgba(18,20,24,0.45)';
+  roundRect(c, m, m + H * 0.035, W - m * 2, H - m * 2, r); c.fill();
+  c.fillStyle = '#f7f3e7';
+  roundRect(c, m, m, W - m * 2, H - m * 2, r); c.fill();
+  c.lineWidth = H * 0.085; c.strokeStyle = ring; c.stroke();
+  c.lineWidth = H * 0.022; c.strokeStyle = 'rgba(22,24,28,0.9)';
+  roundRect(c, m + H * 0.055, m + H * 0.055, W - m * 2 - H * 0.11, H - m * 2 - H * 0.11, r * 0.7); c.stroke();
+  c.fillStyle = '#15171b';
+  c.font = 'bold ' + Math.round(H * 0.62) + 'px Helvetica, Arial, sans-serif';
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(String(num), W / 2, H / 2 + H * 0.035);
+  c.restore();
   return tex(cv);
 }
 function treadTextures() {
@@ -356,7 +385,8 @@ function buildStandard(G, M, add, seg) {
   add(G, xf(box(0.98, 0.09, 0.05, 0.02), { pos: [0, 0.895, -1.19], rot: [-0.20, 0, 0] }), M.trim);
   exhausts(G, M, add, -0.86, 0.46);
   headlights(G, M, add, 1.01, 0.34, 0.25);
-  return { deck: 0.44, sideX: 0.625, sideY: 0.33, sideZ: -0.06, sideW: 0.92, sideH: 0.32 };
+  return { deck: 0.44, sideX: 0.625, sideY: 0.33, sideZ: -0.06, sideW: 0.92, sideH: 0.32,
+    wing: { y: 0.845, z: -1.07, w: 0.90, d: 0.29, tilt: -0.20 } };
 }
 function buildSport(G, M, add, seg) {
   add(G, xf(plate(rr(1.04, 1.94, 0.36), 0.08), { pos: [0, 0.090, -0.02] }), M.dark);
@@ -381,7 +411,8 @@ function buildSport(G, M, add, seg) {
   add(G, xf(box(1.18, 0.11, 0.05, 0.02), { pos: [0, 0.945, -1.24], rot: [-0.24, 0, 0] }), M.trim);
   exhausts(G, M, add, -0.92, 0.42);
   headlights(G, M, add, 1.32, 0.28, 0.17);
-  return { deck: 0.40, sideX: 0.645, sideY: 0.28, sideZ: -0.12, sideW: 0.96, sideH: 0.28 };
+  return { deck: 0.40, sideX: 0.645, sideY: 0.28, sideZ: -0.12, sideW: 0.96, sideH: 0.28,
+    wing: { y: 0.880, z: -1.12, w: 1.08, d: 0.31, tilt: -0.24 } };
 }
 function buildBuggy(G, M, add, seg) {
   add(G, xf(plate(rr(1.00, 1.72, 0.24), 0.10), { pos: [0, 0.185, -0.02] }), M.dark);
@@ -416,7 +447,8 @@ function buildBuggy(G, M, add, seg) {
   }
   exhausts(G, M, add, -0.92, 0.62);
   headlights(G, M, add, 0.98, 0.44, 0.26);
-  return { deck: 0.60, sideX: 0.64, sideY: 0.45, sideZ: -0.10, sideW: 0.86, sideH: 0.30 };
+  return { deck: 0.60, sideX: 0.64, sideY: 0.45, sideZ: -0.10, sideW: 0.86, sideH: 0.30,
+    wing: { y: 1.055, z: -0.30, w: 0.94, d: 0.52, tilt: 0 } };
 }
 function buildPipe(G, M, add, seg) {
   add(G, xf(plate(rr(0.86, 1.62, 0.18), 0.05), { pos: [0, 0.115, -0.02] }), M.dark);
@@ -442,7 +474,8 @@ function buildPipe(G, M, add, seg) {
   for (const s of [-1, 1]) add(G, xf(box(0.05, 0.26, 0.06, 0.02), { pos: [s * 0.24, 0.565, -0.95], rot: [-0.22, 0, 0] }), M.chrome);
   exhausts(G, M, add, -0.84, 0.46);
   headlights(G, M, add, 1.00, 0.28, 0.20);
-  return { deck: 0.42, sideX: 0.66, sideY: 0.36, sideZ: -0.02, sideW: 0.72, sideH: 0.24 };
+  return { deck: 0.42, sideX: 0.66, sideY: 0.36, sideZ: -0.02, sideW: 0.72, sideH: 0.24,
+    wing: { y: 0.690, z: -0.98, w: 0.74, d: 0.23, tilt: -0.22 } };
 }
 function seatAndHoop(G, M, add, y, z, back, seg, tall) {
   add(G, xf(box(0.56, 0.09, 0.46, 0.07), { pos: [0, y - 0.02, z + 0.02] }), M.seat);
@@ -502,24 +535,33 @@ export function createKart(id, opts = {}) {
   const paintCol = new THREE.Color(NUMBER_PAINT[num] ?? liv.paint);
   const M = {
     paint: new THREE.MeshPhysicalMaterial({
-      color: paintCol, roughness: 0.22, metalness: 0.06,
-      clearcoat: 1.0, clearcoatRoughness: 0.035, envMap: env, envMapIntensity: 1.9,
+      color: paintCol, roughness: 0.21, metalness: 0.06,
+      clearcoat: 1.0, clearcoatRoughness: 0.04, envMap: env, envMapIntensity: 1.7,
       emissive: paintCol.clone().multiplyScalar(0.22), emissiveIntensity: 1.0,
       specularIntensity: 1.0, specularColor: new THREE.Color(0xffffff),
+      // A small sheen lobe is a free grazing-angle rim: it lights the panel edge that faces
+      // away from the sun, which is most of what separates a kart from the sand behind it
+      // (review R1 — "dark silhouettes, no rim light"). Kept low and warm — at 0.85 with a
+      // white sheen colour the sky-facing panels bleached the paint to pastel.
+      sheen: 0.30, sheenRoughness: 0.34, sheenColor: new THREE.Color(0xffd9a8),
     }),
     trim: new THREE.MeshPhysicalMaterial({
       color: liv.trim, roughness: 0.26, metalness: 0.06, clearcoat: 1.0, clearcoatRoughness: 0.06,
       envMap: env, envMapIntensity: 1.6, emissive: new THREE.Color(liv.trim).multiplyScalar(0.14),
     }),
-    // Floorpan, engine and underbody: a deep tint of the body colour rather than neutral
-    // charcoal, so the parts of the kart that face away from the sun still say "this is the
-    // blue one" instead of dropping to a black mass.
+    // Floorpan, engine, rear bumper. This is the single biggest surface the chase camera sees,
+    // so it cannot be a dark tint of the body colour: a 30% gold is mud, a 30% green is olive
+    // sludge. Cool graphite carrying ~20% of the body hue reads as machined metal and lets the
+    // paint stay the only saturated thing on the kart.
     dark: new THREE.MeshStandardMaterial({
-      color: paintCol.clone().multiplyScalar(0.30).addScalar(0.10),
-      roughness: 0.40, metalness: 0.45, envMap: env, envMapIntensity: 1.4,
+      color: new THREE.Color(0x30343c).lerp(paintCol, 0.13),
+      roughness: 0.34, metalness: 0.62, envMap: env, envMapIntensity: 1.7,
     }),
     chrome: new THREE.MeshStandardMaterial({ color: 0xd6dce2, roughness: 0.11, metalness: 1.0, envMap: env, envMapIntensity: 2.0 }),
-    rubber: new THREE.MeshStandardMaterial({ color: 0x54545e, roughness: 0.82, metalness: 0.0, envMap: env, envMapIntensity: 0.6 }),
+    // Tyres were rendering as featureless black holes: at 0x54545e / roughness 0.82 the tread
+    // normal map has nothing to catch. A lighter carcass with a tighter lobe puts a highlight
+    // on the shoulder so the blocks and the sidewall lettering actually read.
+    rubber: new THREE.MeshStandardMaterial({ color: 0x767683, roughness: 0.62, metalness: 0.0, envMap: env, envMapIntensity: 1.15 }),
     rim: new THREE.MeshStandardMaterial({ color: 0xe6ebef, roughness: 0.18, metalness: 0.95, envMap: env, envMapIntensity: 1.8 }),
     seat: new THREE.MeshPhysicalMaterial({
       color: new THREE.Color(liv.seat).lerp(new THREE.Color(0xffffff), 0.22),
@@ -527,6 +569,10 @@ export function createKart(id, opts = {}) {
       sheenColor: new THREE.Color(0xffffff), envMap: env, envMapIntensity: 1.0,
     }),
     lamp: new THREE.MeshPhysicalMaterial({ color: 0xfff3d0, emissive: 0xffe6a8, emissiveIntensity: 1.1, roughness: 0.05, metalness: 0, clearcoat: 1, envMap: env }),
+    // Rear lamps. The chase camera stares at the back of the kart for the entire race and the
+    // only thing there was a yellow plate; two hot red lenses give the tail a focal point and
+    // read at any distance, the way every MK8 kart's rear cluster does.
+    tail: new THREE.MeshPhysicalMaterial({ color: 0xff2a1e, emissive: 0xff2416, emissiveIntensity: 2.2, roughness: 0.10, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.04, envMap: env }),
     hub: new THREE.MeshStandardMaterial({ color: liv.trim, roughness: 0.24, metalness: 0.6, envMap: env, envMapIntensity: 1.4 }),
     spring: new THREE.MeshStandardMaterial({ color: 0xc8352f, roughness: 0.4, metalness: 0.5, envMap: env }),
     glass: new THREE.MeshPhysicalMaterial({ color: 0x25313d, roughness: 0.05, metalness: 0, clearcoat: 1, transparent: true, opacity: 0.5, envMap: env }),
@@ -555,11 +601,37 @@ export function createKart(id, opts = {}) {
       p.rotation.y = s * Math.PI / 2;
       chassis.add(p);
     }
+    if (metrics.wing) {
+      const w = metrics.wing;
+      // Sized to the wing, not to a circle: the plate is 45% of the span by 92% of the chord,
+      // which is about twice the readable area a disc fitted inside the chord would give, and
+      // pushed forward off the trailing-edge lip that was cropping it.
+      const sx = w.w * 0.46, sz = w.d * 0.92;
+      const rm = new THREE.MeshStandardMaterial({
+        map: roundelTexture(num, NUMBER_PAINT[num] ?? liv.paint, sx / sz), transparent: true, alphaTest: 0.08,
+        roughness: 0.24, metalness: 0.05, envMap: env, envMapIntensity: 1.2, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+      });
+      const rd = new THREE.Mesh(new THREE.PlaneGeometry(sx, sz), rm);
+      const ct = Math.cos(w.tilt), st = Math.sin(w.tilt);
+      const zc = w.z + w.d * 0.16;
+      rd.position.set(0, w.y + 0.040 * ct + (zc - w.z) * -st, zc + 0.040 * st);
+      rd.rotation.x = Math.PI / 2 + w.tilt;
+      chassis.add(rd);
+    }
     const pm = new THREE.MeshStandardMaterial({ map: plateTexture(num), roughness: 0.4, metalness: 0.1, envMap: env });
     const pl = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.17, 0.02), pm);
     pl.position.set(0, metrics.deck * 0.55, -1.06);
     pl.rotation.y = Math.PI;
     chassis.add(pl);
+    const lensParts = [];
+    for (const s2 of [-1, 1]) {
+      lensParts.push(xf(box(0.17, 0.085, 0.05, 0.028, 0.014),
+        { pos: [s2 * 0.315, metrics.deck * 0.55 + 0.03, -1.055] }));
+      lensParts.push(xf(box(0.20, 0.115, 0.03, 0.035, 0.012),
+        { pos: [s2 * 0.315, metrics.deck * 0.55 + 0.03, -1.035] }));
+    }
+    add(chassis, mergeSimple(lensParts), M.tail, false);
   }
 
   mergeByMaterial(chassis);                  // one draw call per material for the static body

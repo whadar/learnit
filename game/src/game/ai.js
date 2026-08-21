@@ -79,7 +79,7 @@ export function buildRacingLine(track, opts = {}) {
     apexLook: 80,
     smooth: 2,
     // vehicle envelope (defaults track src/physics/vehicle.js)
-    latGrip: 1.06,         // the kart measures ~1.2 g on clean tarmac (tools/sim skidpad); the line is
+    latGrip: 1.14,         // the kart measures ~1.2 g on clean tarmac (tools/sim skidpad); the line is
                            // built at ~87 % of that, because a profile with no margin left is a
                            // profile every kerb, crest and dusty apex throws into the olives.
     bankAssist: 0.55,      // how much of the banking angle is worth extra lateral grip

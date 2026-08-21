@@ -461,7 +461,8 @@ export function createRace(world, track, opts = {}) {
    * oriented footprint (kart-shaped, yaw-aware) and a couple of relaxation passes, because
    * separating a chain of eight karts one pair at a time simply pushes the overlap along it.
    */
-  const KART_HALF_LEN = 0.92, KART_HALF_WID = 0.92;
+  // the chassis is ~2.0 m long over the wheels and ~1.4 m wide; the ellipse sits just inside
+  const KART_HALF_LEN = 1.00, KART_HALF_WID = 0.68;
   const _bumpA = { pos: null, vel: null, mass: 200, radius: 0.92, yaw: 0, halfLen: KART_HALF_LEN, halfWid: KART_HALF_WID };
   const _bumpB = { pos: null, vel: null, mass: 200, radius: 0.92, yaw: 0, halfLen: KART_HALF_LEN, halfWid: KART_HALF_WID };
   function fillBump(o, v) {
@@ -503,7 +504,25 @@ export function createRace(world, track, opts = {}) {
 
   /* --------------------------------------------------------------- update -- */
   const zeroInput = { throttle: 0, brake: 0, steer: 0, drift: 0, item: 0, look: 0 };
-  const holdInput = { throttle: 0, brake: 0.35, steer: 0, drift: 0, item: 0, look: 0 };
+  const holdInput = { throttle: 0, brake: 1, steer: 0, drift: 0, item: 0, look: 0 };
+
+  /**
+   * Hold the field on the grid.
+   *
+   * Amikam's start straight runs downhill, and locked brakes on a slope are not enough: over a
+   * seven-second intro and a three-second countdown the whole grid crept out of its slots, so
+   * the cover shot of the game was eight karts scattered down the road at 26 km/h with the
+   * lights still red. The wheels still carry load and the suspension still settles — only the
+   * kart's horizontal velocity is bled off, and it is released the instant the flag drops.
+   */
+  function holdOnGrid(v, dt) {
+    const st = v.state;
+    const k = Math.exp(-11 * dt);
+    st.vel.x *= k; st.vel.z *= k;
+    if (Math.hypot(st.vel.x, st.vel.z) < 0.3) { st.vel.x = 0; st.vel.z = 0; }
+    st.speed = Math.hypot(st.vel.x, st.vel.y, st.vel.z);
+    st.forwardSpeed = 0;
+  }
   let itemPressed = false;
 
   function update(dt) {
@@ -516,7 +535,7 @@ export function createRace(world, track, opts = {}) {
       if (state.phaseTime >= O.introTime) setPhase('countdown');
       // karts idle on the grid: step the physics so they settle onto their suspension, on the
       // brakes so a sloping grid does not roll the field into the first corner before the lights
-      for (const r of racers) r.vehicle.update(dt, holdInput);
+      for (const r of racers) { r.vehicle.update(dt, holdInput); holdOnGrid(r.vehicle, dt); }
       return api;
     }
 
@@ -561,6 +580,7 @@ export function createRace(world, track, opts = {}) {
           const gated = { throttle: inp.throttle, brake: 0, steer: 0, drift: 0, item: 0, look: 0 };
           // holding the throttle on the grid revs but never moves the kart
           r.vehicle.update(dt, holdInput);
+          holdOnGrid(r.vehicle, dt);
           void gated;
           continue;
         }
