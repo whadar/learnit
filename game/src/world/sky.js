@@ -475,12 +475,12 @@ export function createSky(engine, world, opts = {}) {
   // pixel has clipped there, no amount of grading in the composer brings it back. So the
   // image's exposure belongs to the atmosphere module, next to the light levels it has to
   // balance against. Review round 1 measured 7–11% clipped pixels and a mean luminance of
-  // 178 on driftCorner at 0.72; 0.71 with half the ambient fill puts the sunlit limestone back under the shoulder and
+  // 178 on driftCorner at 0.72; 0.73 with half the ambient fill (and a sun raised to match) puts the sunlit limestone back under the shoulder and
   // is what lets the sky keep a gradient at all. An explicit `?exposure=` always wins.
   {
     const q = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null;
     if (!(q && q.has('exposure')) && opts.toneExposure !== false) {
-      engine.renderer.toneMappingExposure = opts.toneExposure ?? 0.71;
+      engine.renderer.toneMappingExposure = opts.toneExposure ?? 0.73;
     }
   }
 
@@ -587,7 +587,7 @@ export function createSky(engine, world, opts = {}) {
       _warm.b * lerp(1, phys[2], w),
       THREE.LinearSRGBColorSpace);
     const up = clamp(Math.sin(Math.max(elev, 0) * D2R), 0, 1);
-    palette.sunIntensity = (opts.sunIntensity ?? 5.2) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
+    palette.sunIntensity = (opts.sunIntensity ?? 5.9) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
 
     // Sky colours straight out of the same scattering model the dome renders.
     //

@@ -97,34 +97,82 @@ function twig(ctx, x0, y0, x1, y1, bow, w, col) {
 // Each of these fills a square cell of side S with one authored spray, base at the
 // bottom-centre. They are called twice (colour pass and alpha pass) with the same seed.
 
+/**
+ * A soft irregular blob of the average leaf colour, drawn *under* a spray. Mip-mapping eats
+ * thin twiggy detail — two levels down a card of hairline leaves is 30 % alpha everywhere and
+ * the alpha test deletes it. The under-mass keeps the middle of every card solid so the spray
+ * silhouette survives to the far LOD while the drawn leaves still break the outline.
+ */
+function underMass(ctx, S, r, col, rx, ry, cx, cy, lobes = 7, rough = 0.34) {
+  ctx.save(); ctx.translate(cx, cy);
+  ctx.beginPath();
+  const N = 46;
+  const ph = r() * 6.28;
+  for (let i = 0; i <= N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const k = 1 + rough * Math.sin(a * lobes + ph) * 0.6 + rough * 0.5 * Math.sin(a * (lobes * 1.9) + ph * 2.1);
+    const x = Math.cos(a) * rx * k, y = Math.sin(a) * ry * k;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  ctx.closePath(); ctx.fillStyle = jit(col, r, 0.10); ctx.fill();
+  ctx.restore();
+}
+
 function cellPine(ctx, S, seed, sparse) {
   const r = rng(seed);
   const bx = S * 0.5, by = S * 0.995;
   const nodes = [];
   const stemCol = css(104, 84, 58);
   // a short woody armature: the tuft is a pom-pom of needle bundles, not a frond
-  const arms = sparse ? 3 : 4;
+  const arms = sparse ? 4 : 5;
   for (let b = 0; b < arms; b++) {
-    const ang = (-Math.PI / 2) + (b - (arms - 1) / 2) * 0.44 + (r() - 0.5) * 0.18;
-    const L = S * (0.40 + r() * 0.18);
+    const ang = (-Math.PI / 2) + (b - (arms - 1) / 2) * 0.40 + (r() - 0.5) * 0.18;
+    const L = S * (0.34 + r() * 0.16);
     const ex = bx + Math.cos(ang) * L, ey = by + Math.sin(ang) * L;
-    twig(ctx, bx, by, ex, ey, (r() - 0.5) * 0.14, S * 0.013, stemCol);
-    for (let k = 1; k <= 4; k++)
-      nodes.push({ x: bx + (ex - bx) * (k / 4), y: by + (ey - by) * (k / 4), a: ang, s: 0.42 + k * 0.16 });
+    twig(ctx, bx, by, ex, ey, (r() - 0.5) * 0.14, S * 0.016, stemCol);
+    for (let k = 1; k <= 5; k++)
+      nodes.push({ x: bx + (ex - bx) * (k / 5), y: by + (ey - by) * (k / 5), a: ang, s: 0.34 + k * 0.15 });
   }
   ctx.lineCap = 'round';
-  // Aleppo-pine needles are paired, 6-12 cm, and radiate almost spherically from each bundle
-  const dark = [64, 96, 52], mid = [96, 130, 66], lit = [148, 178, 100];
+  // Aleppo-pine needles are paired, 6-12 cm, and radiate almost spherically from each bundle.
+  // They are drawn FAT on purpose: a 1 px needle is 40 % alpha two mip levels down and the
+  // whole tuft dissolves into confetti at 60 m. Bundles first as a soft mass, needles on top.
+  const dark = [58, 88, 48], mid = [92, 126, 62], lit = [150, 180, 100];
   for (const nd of nodes) {
-    const count = sparse ? 26 : 40;
+    const R0 = S * (0.070 + 0.030 * r()) * (0.55 + nd.s);
+    ctx.beginPath();
+    ctx.ellipse(nd.x, nd.y - R0 * 0.10, R0 * 0.86, R0 * 0.74, (r() - 0.5), 0, Math.PI * 2);
+    ctx.fillStyle = jit(dark, r, 0.16); ctx.fill();
+  }
+  for (const nd of nodes) {
+    const count = sparse ? 34 : 46;
     for (let i = 0; i < count; i++) {
       const a = r() * Math.PI * 2;
       const up = Math.abs(Math.sin(a));
-      const L = S * (0.055 + 0.045 * r()) * (0.6 + nd.s);
-      const ex = nd.x + Math.cos(a) * L, ey = nd.y + Math.sin(a) * L * 0.92 + L * 0.16;
+      const L = S * (0.075 + 0.055 * r()) * (0.55 + nd.s);
+      const ex = nd.x + Math.cos(a) * L, ey = nd.y + Math.sin(a) * L * 0.92 + L * 0.14;
       const g = r();
-      twig(ctx, nd.x, nd.y, ex, ey, (r() - 0.5) * 0.30, S * (0.0042 + 0.0022 * g),
-        jit(g > 0.80 ? lit : g > 0.34 ? mid : dark, r, 0.24 + up * 0.1));
+      twig(ctx, nd.x, nd.y, ex, ey, (r() - 0.5) * 0.30, S * (0.0092 + 0.0048 * g),
+        jit(g > 0.76 ? lit : g > 0.32 ? mid : dark, r, 0.22 + up * 0.1));
+    }
+  }
+  // a scatter of sunlit needle tips over the top so the card is not one flat value
+  for (let i = 0; i < (sparse ? 40 : 60); i++) {
+    const nd = nodes[(r() * nodes.length) | 0];
+    const a = -Math.PI * 0.5 + (r() - 0.5) * 2.4;
+    const L = S * (0.055 + 0.045 * r());
+    twig(ctx, nd.x, nd.y, nd.x + Math.cos(a) * L, nd.y + Math.sin(a) * L, (r() - 0.5) * 0.3,
+      S * 0.0075, jit(lit, r, 0.18));
+  }
+  // a couple of small cones on the older sprays — pure silhouette interest
+  if (!sparse) {
+    for (let i = 0; i < 2; i++) {
+      const nd = nodes[(r() * nodes.length) | 0];
+      ctx.save(); ctx.translate(nd.x, nd.y); ctx.rotate((r() - 0.5) * 1.2);
+      const cw = S * 0.030, ch = S * 0.058;
+      ctx.beginPath(); ctx.ellipse(0, 0, cw, ch, 0, 0, Math.PI * 2);
+      ctx.fillStyle = jit([124, 92, 56], r, 0.14); ctx.fill();
+      ctx.restore();
     }
   }
 }
@@ -132,52 +180,71 @@ function cellPine(ctx, S, seed, sparse) {
 function cellCypress(ctx, S, seed) {
   const r = rng(seed);
   const bx = S * 0.5, by = S * 0.99;
-  twig(ctx, bx, by, bx + (r() - 0.5) * S * 0.06, by - S * 0.9, 0.03, S * 0.02, css(84, 62, 44));
-  const dark = [40, 66, 38], mid = [58, 92, 50], lit = [96, 128, 70];
-  for (let b = 0; b < 26; b++) {
-    const t = 0.05 + b / 26 * 0.93;
-    const y = by - S * 0.9 * t;
-    const side = b % 2 ? 1 : -1;
-    const spread = S * 0.40 * Math.sin(Math.PI * Math.pow(t, 0.6)) * (0.55 + r() * 0.6);
-    const ex = bx + side * spread, ey = y - S * 0.10 * (0.4 + r() * 0.8);
-    twig(ctx, bx, y, ex, ey, side * 0.12, S * 0.010, css(...mid));
-    const n = 13 + ((r() * 8) | 0);
+  const dark = [34, 58, 34], mid = [52, 84, 46], lit = [104, 134, 74];
+  // Italian cypress foliage is a flat fan of scale-leaf sprigs. Draw the sprig mass first as
+  // a soft dark spindle so the card keeps its coverage under mipping, then the sprigs on top.
+  ctx.beginPath();
+  const N0 = 30;
+  const prof = t => S * 0.30 * Math.pow(Math.sin(Math.PI * Math.pow(t, 0.62)), 0.62);
+  for (let i = 0; i <= N0; i++) { const t = i / N0; ctx.lineTo(bx - prof(t) * 0.80, by - S * 0.95 * t); }
+  for (let i = N0; i >= 0; i--) { const t = i / N0; ctx.lineTo(bx + prof(t) * 0.80, by - S * 0.95 * t); }
+  ctx.closePath(); ctx.fillStyle = jit(dark, r, 0.10); ctx.fill();
+  twig(ctx, bx, by, bx + (r() - 0.5) * S * 0.05, by - S * 0.92, 0.02, S * 0.022, css(76, 58, 42));
+  for (let b2 = 0; b2 < 40; b2++) {
+    const t = 0.03 + b2 / 40 * 0.95;
+    const y = by - S * 0.93 * t;
+    const side = b2 % 2 ? 1 : -1;
+    const spread = prof(t) * (0.55 + r() * 0.75);
+    const ex = bx + side * spread, ey = y - S * 0.11 * (0.4 + r() * 0.9);
+    twig(ctx, bx, y, ex, ey, side * 0.14, S * 0.016, jit(mid, r, 0.18));
+    const n = 12 + ((r() * 7) | 0);
     for (let i = 0; i < n; i++) {
       const t2 = i / n;
       const px = bx + (ex - bx) * t2, py = y + (ey - y) * t2;
-      const rr = S * (0.017 + 0.013 * r()) * (1 - t2 * 0.35);
+      const rr = S * (0.024 + 0.016 * r()) * (1 - t2 * 0.30);
       ctx.beginPath();
-      ctx.ellipse(px + (r() - 0.5) * S * 0.02, py + (r() - 0.5) * S * 0.02, rr, rr * 0.62,
+      ctx.ellipse(px + (r() - 0.5) * S * 0.02, py + (r() - 0.5) * S * 0.02, rr, rr * 0.60,
         side * 0.5 + (r() - 0.5), 0, Math.PI * 2);
       const g = r();
-      ctx.fillStyle = jit(g > 0.72 ? lit : (g > 0.32 ? mid : dark), r, 0.22);
+      ctx.fillStyle = jit(g > 0.80 ? lit : (g > 0.34 ? mid : dark), r, 0.20);
       ctx.fill();
     }
+  }
+  // ragged sprigs poking past the spindle so the silhouette is never a clean cone edge
+  for (let i = 0; i < 26; i++) {
+    const t = 0.10 + r() * 0.86;
+    const y = by - S * 0.93 * t;
+    const side = r() > 0.5 ? 1 : -1;
+    const L = prof(t) * (1.0 + r() * 0.55) + S * 0.02;
+    const ex = bx + side * L, ey = y - S * (0.02 + r() * 0.10);
+    twig(ctx, bx + side * prof(t) * 0.4, y, ex, ey, side * 0.2, S * (0.012 + r() * 0.008),
+      jit(r() > 0.6 ? lit : mid, r, 0.2));
   }
 }
 
 function cellOak(ctx, S, seed, dense) {
   const r = rng(seed);
   const bx = S * 0.5, by = S * 0.99;
-  const stems = dense ? 5 : 3;
+  const stems = dense ? 6 : 4;
   const tips = [];
+  underMass(ctx, S, r, [52, 80, 42], S * 0.34, S * 0.30, bx, by - S * 0.40, 8, 0.36);
   for (let b = 0; b < stems; b++) {
-    const ang = -Math.PI / 2 + (b - (stems - 1) / 2) * 0.42 + (r() - 0.5) * 0.16;
-    const L = S * (0.50 + r() * 0.22);
+    const ang = -Math.PI / 2 + (b - (stems - 1) / 2) * 0.40 + (r() - 0.5) * 0.16;
+    const L = S * (0.44 + r() * 0.22);
     const ex = bx + Math.cos(ang) * L, ey = by + Math.sin(ang) * L;
-    twig(ctx, bx, by, ex, ey, (r() - 0.5) * 0.2, S * 0.014, css(92, 74, 52));
+    twig(ctx, bx, by, ex, ey, (r() - 0.5) * 0.2, S * 0.017, css(92, 74, 52));
     for (let k = 1; k <= 4; k++) tips.push({ x: bx + (ex - bx) * (k / 4), y: by + (ey - by) * (k / 4), a: ang });
   }
-  const n = dense ? 132 : 84;
+  const n = dense ? 150 : 96;
   for (let i = 0; i < n; i++) {
     const nd = tips[(r() * tips.length) | 0];
     const a = nd.a + (r() - 0.5) * 2.6;
-    const L = S * (0.058 + r() * 0.036), W = L * (0.66 + r() * 0.22);
+    const L = S * (0.082 + r() * 0.048), W = L * (0.70 + r() * 0.24);
     ctx.save();
     ctx.translate(nd.x + Math.cos(a) * S * (0.02 + r() * 0.13), nd.y + Math.sin(a) * S * (0.02 + r() * 0.13));
     ctx.rotate(a + Math.PI / 2 + (r() - 0.5) * 0.5);
     const g = r();
-    drawLeaf(ctx, L, W, jit(g > 0.78 ? [104, 138, 66] : (g > 0.34 ? [62, 96, 46] : [44, 72, 38]), r, 0.22),
+    drawLeaf(ctx, L, W, jit(g > 0.74 ? [122, 156, 76] : (g > 0.32 ? [70, 104, 50] : [46, 74, 40]), r, 0.22),
       'rgba(20,34,16,0.30)', 4, true);
     ctx.restore();
   }
@@ -186,28 +253,38 @@ function cellOak(ctx, S, seed, dense) {
 function cellOlive(ctx, S, seed) {
   const r = rng(seed);
   const bx = S * 0.5, by = S * 0.99;
-  for (let b = 0; b < 9; b++) {
-    const ang = -Math.PI / 2 + (b - 4) * 0.19 + (r() - 0.5) * 0.14;
-    const L = S * (0.52 + r() * 0.30);
+  // Olive foliage is bicoloured: grey-green above, near-white felted underside. Half the
+  // leaves of a real tree show their pale side, which is what makes a grove read silver.
+  underMass(ctx, S, r, [118, 130, 104], S * 0.32, S * 0.30, bx, by - S * 0.42, 9, 0.32);
+  for (let b = 0; b < 11; b++) {
+    const ang = -Math.PI / 2 + (b - 5) * 0.175 + (r() - 0.5) * 0.14;
+    const L = S * (0.46 + r() * 0.30);
     const ex = bx + Math.cos(ang) * L, ey = by + Math.sin(ang) * L;
-    twig(ctx, bx, by, ex, ey, (r() - 0.5) * 0.18, S * 0.007, css(132, 124, 100));
-    const pairs = 10 + ((r() * 4) | 0);
+    twig(ctx, bx, by, ex, ey, (r() - 0.5) * 0.18, S * 0.010, css(146, 140, 116));
+    const pairs = 11 + ((r() * 4) | 0);
     for (let k = 1; k <= pairs; k++) {
       const t = k / (pairs + 0.4);
       const px = bx + (ex - bx) * t, py = by + (ey - by) * t;
       for (const side of [-1, 1]) {
-        const la = ang + side * (0.72 + r() * 0.34);
-        const L2 = S * (0.068 + r() * 0.030), W2 = L2 * (0.26 + r() * 0.08);
+        const la = ang + side * (0.66 + r() * 0.34);
+        const L2 = S * (0.082 + r() * 0.034), W2 = L2 * (0.30 + r() * 0.09);
         ctx.save();
         ctx.translate(px, py);
         ctx.rotate(la + Math.PI / 2);
-        const silver = r() > 0.62;
+        const g = r();
         drawLeaf(ctx, L2, W2,
-          silver ? jit([170, 178, 152], r, 0.14) : jit([94, 116, 72], r, 0.24),
-          silver ? 'rgba(150,158,132,0.6)' : 'rgba(150,162,128,0.55)', 0, false);
+          g > 0.52 ? jit([196, 202, 176], r, 0.10) : jit([98, 122, 78], r, 0.22),
+          g > 0.52 ? 'rgba(176,182,158,0.55)' : 'rgba(154,166,132,0.5)', 0, false);
         ctx.restore();
       }
     }
+  }
+  // a few black olives — tiny, but they sell the species instantly at close range
+  for (let i = 0; i < 7; i++) {
+    const a2 = -Math.PI / 2 + (r() - 0.5) * 1.6, L = S * (0.20 + r() * 0.42);
+    ctx.beginPath();
+    ctx.ellipse(bx + Math.cos(a2) * L, by + Math.sin(a2) * L, S * 0.017, S * 0.022, 0, 0, Math.PI * 2);
+    ctx.fillStyle = jit([54, 44, 52], r, 0.2); ctx.fill();
   }
 }
 
@@ -840,12 +917,38 @@ const WIND_BODY = /* glsl */`
 }
 `;
 
+
+// Coverage-preserving alpha for alpha-tested foliage. Mip-mapping averages a spray of leaves
+// down toward its mean alpha, so past ~40 m every card drops below the alpha test at once and
+// the canopy disintegrates into confetti. Rescaling alpha about the test threshold by the
+// texture LOD keeps a card's silhouette area roughly constant all the way out.
+const ALPHA_PARS = /* glsl */`
+#ifdef VEG_ALPHASHARP
+  uniform vec2  uAtlasSize;
+  uniform float uAlphaRef;
+#endif
+`;
+
+const ALPHA_BODY = /* glsl */`
+#ifdef VEG_ALPHASHARP
+{
+  vec2 tdx = dFdx( vMapUv * uAtlasSize );
+  vec2 tdy = dFdy( vMapUv * uAtlasSize );
+  float lod = 0.5 * log2( max( dot( tdx, tdx ), dot( tdy, tdy ) ) + 1e-8 );
+  float k = 1.0 + clamp( lod, 0.0, 5.0 ) * 0.42;
+  diffuseColor.a = clamp( ( diffuseColor.a - uAlphaRef ) * k + uAlphaRef, 0.0, 1.0 );
+}
+#endif
+`;
+
 const TRANS_PARS = /* glsl */`
 uniform vec3  uSunDir;
 uniform vec3  uSunColor;
 uniform float uTrans;
 uniform float uTransPow;
+uniform float uWrap;
 #ifdef VEG_AO
+  uniform float uAo;
   varying float vVegAo;
 #endif
 `;
@@ -856,8 +959,15 @@ const TRANS_BODY = /* glsl */`
 {
   vec3  sunV  = normalize( ( viewMatrix * vec4( uSunDir, 0.0 ) ).xyz );
   float back  = pow( clamp( -dot( geometryViewDir, sunV ), 0.0, 1.0 ), uTransPow );
-  float sheen = 1.0 - 0.55 * clamp( dot( geometryNormal, sunV ), 0.0, 1.0 );
+  float ndl   = dot( geometryNormal, sunV );
+  float sheen = 1.0 - 0.55 * clamp( ndl, 0.0, 1.0 );
   reflectedLight.indirectDiffuse += uSunColor * ( uTrans * back * sheen ) * diffuseColor.rgb;
+  // Wrapped fill. A leaf card is a paper-thin slice of a canopy that scatters light in every
+  // direction; lit strictly by N.L half of every puff falls off a cliff into black, which is
+  // exactly the "half bright-green / half near-black" tell. Wrap the terminator around by
+  // 0.62 and add back only the difference, so the sunlit side is untouched.
+  float wrapd = clamp( ( ndl + 0.62 ) / 1.62, 0.0, 1.0 );
+  reflectedLight.indirectDiffuse += uSunColor * ( uWrap * max( 0.0, wrapd * wrapd - max( ndl, 0.0 ) ) ) * diffuseColor.rgb;
 }
 `;
 
@@ -872,10 +982,18 @@ export function patchVegetationMaterial(mat, wind, opts = {}) {
     uGustScale:{ value: opts.gustScale ?? 0.028 },
     uTrans:    { value: opts.translucency ?? 0.0 },
     uTransPow: { value: opts.transPow ?? 3.2 },
+    uWrap:     { value: opts.wrap ?? 0.0 },
+    uAo:       { value: opts.aoStrength ?? 0.75 },
   };
+  if (opts.alphaSharp) {
+    const img = opts.alphaSharp.image || {};
+    extra.uAtlasSize = { value: new THREE.Vector2(img.width || 1024, img.height || 1024) };
+    extra.uAlphaRef = { value: opts.alphaRef ?? 0.34 };
+  }
   const lit = opts.lit !== false;
   mat.defines = mat.defines || {};
   if (lit) mat.defines.VEG_AO = '';
+  if (opts.alphaSharp) mat.defines.VEG_ALPHASHARP = '';
   if (opts.billboard) mat.defines.VEG_BILLBOARD = '';
   const prev = mat.onBeforeCompile;
   mat.onBeforeCompile = function (shader, renderer) {
@@ -885,11 +1003,16 @@ export function patchVegetationMaterial(mat, wind, opts = {}) {
       .replace('void main() {', WIND_PARS + '\nvoid main() {')
       .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n' + BILLBOARD_NORMAL)
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + BILLBOARD_BODY + AO_BODY + WIND_BODY);
+    if (opts.alphaSharp) {
+      shader.fragmentShader = shader.fragmentShader
+        .replace('void main() {', ALPHA_PARS + '\nvoid main() {')
+        .replace('#include <map_fragment>', '#include <map_fragment>\n' + ALPHA_BODY);
+    }
     if (lit) {
       shader.fragmentShader = shader.fragmentShader
         .replace('void main() {', TRANS_PARS + '\nvoid main() {')
         .replace('#include <color_fragment>',
-          '#include <color_fragment>\n\t#ifdef VEG_AO\n\tdiffuseColor.rgb *= vVegAo;\n\t#endif');
+          '#include <color_fragment>\n\t#ifdef VEG_AO\n\tdiffuseColor.rgb *= mix( 1.0, vVegAo, uAo );\n\t#endif');
       if (opts.sphericalNormals) {
         // Spherical canopy normals must survive DoubleSide: three flips them for back faces,
         // which would black out half of every card.
@@ -924,6 +1047,8 @@ export function createFoliageMaterial(atlas, wind, opts = {}) {
   patchVegetationMaterial(mat, wind, {
     bend: opts.bend ?? 0.20, flutter: opts.flutter ?? 1.0, gustScale: opts.gustScale ?? 0.028,
     translucency: opts.translucency ?? 0.55, transPow: opts.transPow ?? 3.0,
+    wrap: opts.wrap ?? 0.45, aoStrength: opts.aoStrength ?? 0.80,
+    alphaSharp: opts.alphaSharp === false ? null : atlas, alphaRef: mat.alphaTest,
     sphericalNormals: opts.sphericalNormals !== false && !opts.billboard,
     billboard: !!opts.billboard, lit: true,
   });
@@ -933,6 +1058,7 @@ export function createFoliageMaterial(atlas, wind, opts = {}) {
   });
   patchVegetationMaterial(dm, wind, {
     bend: opts.bend ?? 0.20, flutter: opts.flutter ?? 1.0, gustScale: opts.gustScale ?? 0.028,
+    alphaSharp: opts.alphaSharp === false ? null : atlas, alphaRef: mat.alphaTest,
     billboard: !!opts.billboard, lit: false,
   });
   mat.userData.depthMaterial = dm;

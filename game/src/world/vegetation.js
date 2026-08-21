@@ -79,15 +79,20 @@ class Builder {
 
 const _a = new THREE.Vector3(), _b = new THREE.Vector3();
 
-/** One flat leaf card: base-centre at p, growing along `up`, `w` wide and `h` tall. */
-function addCard(b, p, up, right, w, h, rect, nrm, ph, fl, ao = 1) {
+/**
+ * One flat leaf card: base-centre at p, growing along `up`, `w` wide and `h` tall.
+ * `mir` flips the card's U so the same authored spray does not read as a stamped pattern
+ * when eighty of them are stacked into one crown.
+ */
+function addCard(b, p, up, right, w, h, rect, nrm, ph, fl, ao = 1, mir = false) {
   const hw = w * 0.5;
+  const u0 = mir ? rect[2] : rect[0], u1 = mir ? rect[0] : rect[2];
   const corner = (sx, sy) => {
     const x = p.x + right.x * sx * hw + up.x * sy * h;
     const y = p.y + right.y * sx * hw + up.y * sy * h;
     const z = p.z + right.z * sx * hw + up.z * sy * h;
     return b.v(x, y, z, nrm.x, nrm.y, nrm.z,
-      sx < 0 ? rect[0] : rect[2], sy < 0.5 ? rect[1] : rect[3], ph, fl * (0.25 + sy),
+      sx < 0 ? u0 : u1, sy < 0.5 ? rect[1] : rect[3], ph, fl * (0.25 + sy),
       ao * (0.78 + 0.22 * sy));
   };
   b.quad(corner(-1, 0), corner(1, 0), corner(1, 1), corner(-1, 1));
@@ -133,50 +138,85 @@ function addTube(b, pts, radii, rs, ph, uvLen = 1.6, uRepeat = 2) {
 }
 
 /**
- * A puff of leaf cards on an ellipsoid shell. Normals point radially out of the puff centre,
- * which is what makes a pile of flat cards shade like a solid canopy.
+ * Deterministic value noise on a metric grid, smoothstep-interpolated. Used for the things
+ * that must vary *coherently* across the landscape rather than per plant — canopy height,
+ * where the olive terraces sit — so neighbouring trees agree with each other.
+ */
+function smoothHash(x, z, cell, seed) {
+  const fx = x / cell, fz = z / cell;
+  const i = Math.floor(fx), j = Math.floor(fz);
+  const sx = fx - i, sz = fz - j;
+  const u = sx * sx * (3 - 2 * sx), v = sz * sz * (3 - 2 * sz);
+  const a = hash2i(i, j, seed), b = hash2i(i + 1, j, seed);
+  const c = hash2i(i, j + 1, seed), d = hash2i(i + 1, j + 1, seed);
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+}
+
+/**
+ * A puff of leaf cards on an ellipsoid shell. Normals point radially out of the puff centre
+ * (biased upward, because a canopy is lit from the sky as much as from the sun), which is what
+ * makes a pile of flat cards shade like a solid mass.
+ *
+ * Cards are placed on an ellipsoid *inset* by half a card, so no card hangs outside the crown
+ * envelope. Cards that stick out past the silhouette are what read as leaves floating detached
+ * in the sky once the trunk falls behind a roofline.
  */
 function addPuff(b, r, cx, cy, cz, rx, ry, rz, count, rect, w, h, o = {}) {
   const pitch = o.pitch ?? 0.55, flut = o.flutter ?? 0.05, shell = o.shell ?? 0.45;
+  const nUp = o.normalUp ?? 0.62, aoMin = o.aoMin ?? 0.56;
+  const flat = o.flatten ?? 0;      // 0 = free card pitch, 1 = plate lying horizontally
+  const ix = Math.max(rx * 0.16, rx - w * 0.42);
+  const iy = Math.max(ry * 0.16, ry - h * 0.34);
+  const iz = Math.max(rz * 0.16, rz - w * 0.42);
   const up = new THREE.Vector3(), right = new THREE.Vector3(), n = new THREE.Vector3(), p = new THREE.Vector3();
   for (let i = 0; i < count; i++) {
     const th = r() * TAU, cph = 2 * r() - 1, sph = Math.sqrt(Math.max(0, 1 - cph * cph));
     const dx = sph * Math.cos(th), dy = cph, dz = sph * Math.sin(th);
     const rad = Math.pow(shell + (1 - shell) * r(), 0.4);
-    p.set(cx + dx * rx * rad, cy + dy * ry * rad, cz + dz * rz * rad);
-    n.set(dx / rx, dy / ry + 0.18, dz / rz).normalize();
+    p.set(cx + dx * ix * rad, cy + dy * iy * rad, cz + dz * iz * rad);
+    n.set(dx / rx, dy / ry + nUp, dz / rz).normalize();
     up.set(n.x * pitch, lerp(1, n.y, pitch) + 0.12, n.z * pitch).normalize();
+    if (flat) {
+      // a pine plate is a horizontal spray, not an upright leaf; tip the card over
+      up.set(lerp(up.x, n.x * 0.25, flat), lerp(up.y, 0.32, flat), lerp(up.z, n.z * 0.25, flat)).normalize();
+    }
     right.set(-Math.sin(th + 1.2), 0, Math.cos(th + 1.2));
     right.addScaledVector(up, -right.dot(up));
     if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
     right.normalize();
-    const s = 0.75 + r() * 0.5;
+    const s = 0.78 + r() * 0.44;
     p.addScaledVector(up, -h * s * 0.42);
     // baked canopy occlusion: cards buried in the middle of the puff are darker than the
     // sunlit shell, which is most of what turns a pile of flat quads into a solid crown
-    const ao = clamp(0.40 + 0.52 * rad + 0.24 * Math.max(dy, 0), 0.34, 1.0);
-    addCard(b, p, up, right, w * s, h * s, rect, n, r(), flut, ao);
+    const ao = clamp(aoMin + (1 - aoMin) * (0.62 * rad + 0.44 * Math.max(dy, 0)), aoMin, 1.0);
+    addCard(b, p, up, right, w * s, h * s, rect, n, r(), flut, ao, r() > 0.5);
   }
 }
 
 /* ============================================================== the species === */
 // Each builder returns { trunk, foliage, H, R }. `detail` 1 = near mesh, 0 = mid card cluster.
 
-/** Aleppo / Jerusalem pine: bare leaning bole, high irregular umbrella of needle plates. */
+/**
+ * Aleppo / Jerusalem pine (*Pinus halepensis*) — the tree that covers Ramot Menashe.
+ * A pale leaning bole clear of branches for the bottom half, then a broad, flat-topped,
+ * *irregular* umbrella of horizontal needle plates. The crown is built as one dome shell of
+ * overlapping plates rather than a spray per branch tip: individual sparse puffs on the ends
+ * of long limbs is exactly what makes a pine read as a pole with confetti tied to it.
+ */
 function buildPine(seed, detail) {
   const r = rng(seed);
   const tb = new Builder(), fb = new Builder();
-  const H = 11.5 + r() * 4.5;
+  const H = 11.0 + r() * 6.0;
   const rs = detail ? 6 : 4;
-  const lean = (r() - 0.5) * 0.11;
-  const clear = 0.46 + r() * 0.12;
+  const lean = (r() - 0.5) * 0.14;
+  const clear = 0.48 + r() * 0.10;
   const segs = detail ? 7 : 3;
   const pts = [], rad = [];
   for (let i = 0; i <= segs; i++) {
     const t = i / segs;
-    pts.push([Math.sin(t * 2.3 + seed) * lean * H * 0.7 + t * lean * H * 1.5, t * H * 0.93,
+    pts.push([Math.sin(t * 2.3 + seed) * lean * H * 0.7 + t * lean * H * 1.5, t * H * 0.90,
               Math.cos(t * 1.6 + seed * 0.7) * lean * H * 0.5]);
-    rad.push(lerp(0.36, 0.06, Math.pow(t, 0.72)));
+    rad.push(lerp(0.42, 0.07, Math.pow(t, 0.70)));
   }
   addTube(tb, pts, rad, rs, 0, 2.2);
   const at = t => {
@@ -184,74 +224,99 @@ function buildPine(seed, detail) {
     return [lerp(pts[i][0], pts[i + 1][0], s), lerp(pts[i][1], pts[i + 1][1], s), lerp(pts[i][2], pts[i + 1][2], s)];
   };
   const rects = [slotRect('pineA'), slotRect('pineB'), slotRect('pineC')];
-  const nb = detail ? 9 : 5;
-  let R = 0;
+  const CR = H * (0.36 + r() * 0.10);          // crown radius
+  const yC = H * (0.80 + r() * 0.05);          // crown centre
+  const nb = detail ? 7 : 5;
+  // the limbs: they sweep up and out of the bole and end *inside* the crown envelope
+  const tips = [];
   for (let i = 0; i < nb; i++) {
-    const t0 = clear + (i / nb) * (0.98 - clear) + (r() - 0.5) * 0.04;
+    const t0 = clear + (i / nb) * (0.90 - clear) + (r() - 0.5) * 0.03;
     const base = at(t0);
     const az = i * GOLDEN + r() * 0.4;
-    // longest limbs sit just below the crown: that is what makes the umbrella
-    const shape = Math.sin(Math.PI * clamp((t0 - clear) / (1 - clear), 0, 1) * 0.82 + 0.42);
-    const len = H * (0.20 + 0.24 * shape) * (0.75 + r() * 0.5);
-    const rise = 0.30 + r() * 0.30;
+    const reach = CR * (0.52 + r() * 0.42);
     const bp = [], br = [];
     const bs = detail ? 3 : 2;
     for (let k = 0; k <= bs; k++) {
       const t = k / bs;
-      const spread = len * t;
-      bp.push([base[0] + Math.cos(az) * spread, base[1] + spread * rise * (1 - t * 0.55) + len * 0.06 * t,
-               base[2] + Math.sin(az) * spread]);
-      br.push(lerp(0.10, 0.022, t));
+      const yTarget = yC + (r() - 0.5) * H * 0.05;
+      bp.push([base[0] + Math.cos(az) * reach * t,
+               lerp(base[1], yTarget, Math.pow(t, 0.75)),
+               base[2] + Math.sin(az) * reach * t]);
+      br.push(lerp(0.13, 0.028, t));
     }
     if (detail) addTube(tb, bp, br, 4, r(), 1.4);
-    const tip = bp[bs];
-    R = Math.max(R, Math.hypot(tip[0], tip[2]) + 1.6);
-    const rect = rects[i % 3];
-    addPuff(fb, r, tip[0], tip[1] + 0.20, tip[2],
-      len * 0.46 + 0.5, len * 0.22 + 0.35, len * 0.46 + 0.5,
-      detail ? 15 : 4, rect, detail ? 1.55 : 4.6, detail ? 1.35 : 3.8,
-      { pitch: 0.82, flutter: 0.05, shell: 0.34 });
+    tips.push({ p: bp[bs], reach });
   }
-  const top = at(1.0);
-  addPuff(fb, r, top[0], top[1] - 0.6, top[2], H * 0.15, H * 0.08, H * 0.15,
-    detail ? 16 : 5, rects[0], detail ? 1.6 : 4.4, detail ? 1.4 : 3.6,
-    { pitch: 0.62, flutter: 0.055, shell: 0.3 });
-  return { trunk: tb.build(H), foliage: fb.build(H, 2.0), H, R: Math.max(R, H * 0.30) };
+  // the crown: one flattened dome of plates, so the silhouette is continuous
+  const nPlate = detail ? 46 : 8;
+  addPuff(fb, r, 0, yC + CR * 0.06, 0, CR * 0.92, CR * 0.30, CR * 0.92,
+    nPlate, rects[0], detail ? CR * 0.52 : CR * 1.18, detail ? CR * 0.44 : CR * 1.00,
+    { pitch: 0.80, flutter: 0.05, shell: 0.34, flatten: 0.55, aoMin: 0.50 });
+  // plates hung on the limb tips, kept inside the same envelope
+  for (let i = 0; i < tips.length; i++) {
+    const tp = tips[i].p;
+    addPuff(fb, r, tp[0] * 0.86, tp[1] + CR * 0.03, tp[2] * 0.86,
+      CR * 0.40, CR * 0.19, CR * 0.40,
+      detail ? 13 : 3, rects[(i + 1) % 3], detail ? CR * 0.46 : CR * 0.95,
+      detail ? CR * 0.40 : CR * 0.82,
+      { pitch: 0.86, flutter: 0.055, shell: 0.24, flatten: 0.62, aoMin: 0.50 });
+  }
+  // a raised, ragged leader so the top is never a clean dome
+  addPuff(fb, r, (r() - 0.5) * CR * 0.3, yC + CR * (0.26 + r() * 0.12), (r() - 0.5) * CR * 0.3,
+    CR * 0.40, CR * 0.20, CR * 0.40,
+    detail ? 12 : 3, rects[2], detail ? CR * 0.44 : CR * 0.88, detail ? CR * 0.38 : CR * 0.76,
+    { pitch: 0.70, flutter: 0.06, shell: 0.24, flatten: 0.40, aoMin: 0.56 });
+  return { trunk: tb.build(H), foliage: fb.build(H, 2.0), H, R: CR * 1.05 };
 }
 
-/** Italian cypress: dark, narrow, absolutely vertical — the moshav's punctuation marks. */
+/**
+ * Italian cypress — the moshav's punctuation marks. Dark, narrow, near-vertical, and (this is
+ * the whole point) *never* a clean cone: the outline is broken all the way up by sprigs that
+ * stand proud of the spindle, and the leader is usually bent.
+ */
 function buildCypress(seed, detail) {
   const r = rng(seed);
   const tb = new Builder(), fb = new Builder();
-  const H = 9 + r() * 6;
-  const W = H * (0.085 + r() * 0.035);
+  const H = 8.5 + r() * 6.5;
+  const W = H * (0.088 + r() * 0.040);
+  const bow = (r() - 0.5) * 0.05;                 // the whole column leans a little
   const pts = [], rad = [];
-  const segs = detail ? 5 : 2;
+  const segs = detail ? 5 : 3;
   for (let i = 0; i <= segs; i++) {
     const t = i / segs;
-    pts.push([Math.sin(t * 1.7 + seed) * 0.06 * H * 0.2, t * H * 0.9, 0]);
-    rad.push(lerp(0.20, 0.04, t));
+    pts.push([Math.sin(t * 1.7 + seed) * 0.06 * H * 0.2 + bow * t * t * H, t * H * 0.92, 0]);
+    rad.push(lerp(0.22, 0.05, t));
   }
   addTube(tb, pts, rad, detail ? 5 : 3, 0, 2.0);
   const rect = slotRect('cypress');
-  const n = detail ? 40 : 12;
+  const axisX = t => Math.sin(t * 1.7 + seed) * 0.06 * H * 0.2 + bow * t * t * H;
+  // spindle profile: widest around 45 % of the height, tapering to a blunt point
+  const prof = t => Math.pow(Math.sin(Math.PI * Math.pow(clamp(t, 0, 1), 0.76)), 0.50);
+  const n = detail ? 60 : 20;
   const up = new THREE.Vector3(), right = new THREE.Vector3(), nn = new THREE.Vector3(), p = new THREE.Vector3();
-  for (let i = 0; i < n; i++) {
-    const t = 0.06 + (i / n) * 0.94 + (r() - 0.5) * 0.03;
-    // spindle profile: widest around 45 % of the height, tapering to a point
-    const prof = Math.pow(Math.sin(Math.PI * Math.pow(clamp(t, 0, 1), 0.78)), 0.55);
-    const az = i * GOLDEN + r() * 0.3;
-    const rad2 = W * prof * (0.55 + r() * 0.6);
-    p.set(Math.cos(az) * rad2, t * H * 0.94, Math.sin(az) * rad2);
-    nn.set(Math.cos(az), 0.35, Math.sin(az)).normalize();
-    up.set(nn.x * 0.42, 1.0, nn.z * 0.42).normalize();
+  const place = (t, radScale, sizeScale, ao) => {
+    const az = (t * 41.7 + seed) % TAU + r() * 0.6;
+    const rad2 = W * prof(t) * radScale;
+    p.set(axisX(t) + Math.cos(az) * rad2, t * H * 0.94, Math.sin(az) * rad2);
+    nn.set(Math.cos(az), 0.30, Math.sin(az)).normalize();
+    up.set(nn.x * 0.34, 1.0, nn.z * 0.34).normalize();
     right.set(-Math.sin(az), 0, Math.cos(az));
-    const s = (detail ? 1 : 2.1) * (0.8 + r() * 0.5);
-    const h = H * 0.16 * s, w = W * 1.9 * s;
-    p.addScaledVector(up, -h * 0.45);
-    addCard(fb, p, up, right, w, h, rect, nn, r(), 0.03);
+    const s = (detail ? 1 : 2.0) * sizeScale;
+    const h = H * 0.185 * s, w = W * 2.1 * s;
+    p.addScaledVector(up, -h * 0.42);
+    addCard(fb, p, up, right, w, h, rect, nn, r(), 0.035, ao, r() > 0.5);
+  };
+  for (let i = 0; i < n; i++) {
+    const t = 0.05 + (i / n) * 0.95 + (r() - 0.5) * 0.025;
+    place(t, 0.35 + r() * 0.55, 0.82 + r() * 0.42, clamp(0.58 + 0.42 * (0.3 + 0.7 * t), 0.58, 1));
   }
-  return { trunk: tb.build(H), foliage: fb.build(H, 2.2), H, R: W * 1.6 };
+  // sprigs that stand proud of the spindle — the silhouette break-up
+  const nOut = detail ? 16 : 6;
+  for (let i = 0; i < nOut; i++) {
+    const t = 0.12 + r() * 0.86;
+    place(t, 1.05 + r() * 0.55, 0.60 + r() * 0.34, 1.0);
+  }
+  return { trunk: tb.build(H), foliage: fb.build(H, 2.2), H, R: W * 2.0 };
 }
 
 /** Palestine oak / Tabor oak — dense dark rounded crown on a short thick bole. */
@@ -283,13 +348,21 @@ function buildOak(seed, detail, bush, rectOverride) {
     }
     if (detail) addTube(tb, bp, br, 4, r(), 1.2);
   }
-  addPuff(fb, r, 0, stemH + H * (bush ? 0.42 : 0.44), 0, CR, CR * 0.80, CR,
-    detail ? (bush ? 26 : 56) : (bush ? 5 : 9), rect,
-    detail ? CR * 0.42 : CR * 1.9, detail ? CR * 0.38 : CR * 1.7,
-    { pitch: 0.50, flutter: 0.05, shell: 0.30 });
+  // Three overlapping lobes rather than one sphere: a Tabor oak crown is a cluster of
+  // billows, and a single ellipsoid of cards reads as a clone of every other tree.
+  const lobes = detail ? 3 : 2;
+  for (let i = 0; i < lobes; i++) {
+    const az = i * GOLDEN + r() * 0.7;
+    const rr = CR * 0.30 * (0.4 + r() * 0.9);
+    addPuff(fb, r, Math.cos(az) * rr, stemH + H * (bush ? 0.42 : 0.46) + (r() - 0.5) * CR * 0.28,
+      Math.sin(az) * rr, CR * 0.80, CR * 0.66, CR * 0.80,
+      detail ? (bush ? 15 : 26) : (bush ? 4 : 6), rect,
+      detail ? CR * 0.66 : CR * 1.5, detail ? CR * 0.58 : CR * 1.3,
+      { pitch: 0.50, flutter: 0.05, shell: 0.26, aoMin: 0.52 });
+  }
   if (detail) {   // inner core so the crown is a solid mass, not a shell of cards
-    addPuff(fb, r, 0, stemH + H * (bush ? 0.40 : 0.42), 0, CR * 0.62, CR * 0.52, CR * 0.62,
-      bush ? 8 : 18, rect, CR * 0.44, CR * 0.40, { pitch: 0.35, flutter: 0.04, shell: 0.0 });
+    addPuff(fb, r, 0, stemH + H * (bush ? 0.40 : 0.42), 0, CR * 0.60, CR * 0.50, CR * 0.60,
+      bush ? 7 : 14, rect, CR * 0.62, CR * 0.56, { pitch: 0.35, flutter: 0.04, shell: 0.0, aoMin: 0.44 });
   }
   return { trunk: tb.build(H), foliage: fb.build(H, 1.7), H, R: CR * 1.15 };
 }
@@ -337,19 +410,19 @@ function buildOlive(seed, detail) {
       }
     }
   }
-  const CR = H * 0.62;
-  const lobes = detail ? 5 : 2;
+  const CR = H * 0.58;
+  const lobes = detail ? 4 : 2;
   for (let i = 0; i < lobes; i++) {
     const az = i * GOLDEN + r();
-    const rr = CR * 0.42 * (0.5 + r() * 0.8);
-    addPuff(fb, r, Math.cos(az) * rr, forkY + H * (0.34 + r() * 0.18), Math.sin(az) * rr,
-      CR * 0.60, CR * 0.44, CR * 0.60,
-      detail ? 30 : 5, rect, detail ? CR * 0.30 : CR * 1.5, detail ? CR * 0.26 : CR * 1.3,
-      { pitch: 0.55, flutter: 0.07, shell: 0.28 });
+    const rr = CR * 0.40 * (0.5 + r() * 0.8);
+    addPuff(fb, r, Math.cos(az) * rr, forkY + H * (0.30 + r() * 0.18), Math.sin(az) * rr,
+      CR * 0.66, CR * 0.46, CR * 0.66,
+      detail ? 26 : 9, rect, detail ? CR * 0.50 : CR * 0.95, detail ? CR * 0.44 : CR * 0.84,
+      { pitch: 0.55, flutter: 0.07, shell: 0.26, aoMin: 0.58 });
   }
   if (detail) {
-    addPuff(fb, r, 0, forkY + H * 0.34, 0, CR * 0.66, CR * 0.44, CR * 0.66,
-      26, rect, CR * 0.30, CR * 0.26, { pitch: 0.4, flutter: 0.05, shell: 0.0 });
+    addPuff(fb, r, 0, forkY + H * 0.30, 0, CR * 0.64, CR * 0.44, CR * 0.64,
+      20, rect, CR * 0.48, CR * 0.42, { pitch: 0.4, flutter: 0.05, shell: 0.0, aoMin: 0.50 });
   }
   return { trunk: tb.build(H), foliage: fb.build(H, 1.6), H, R: CR * 1.1 };
 }
@@ -468,7 +541,7 @@ function buildThistle(seed, detail) {
     right.set(Math.cos(az), 0, Math.sin(az));
     n.set(-Math.sin(az), 0.5, Math.cos(az)).normalize();
     p.set(0, 0, 0);
-    addCard(fb, p, up, right, H * 0.85, H, rect, n, r(), 0.10);
+    addCard(fb, p, up, right, H * 0.85, H, rect, n, r(), 0.10, r() > 0.5);
   }
   return { trunk: null, foliage: fb.build(H, 1.4), H, R: H * 0.55 };
 }
@@ -488,7 +561,7 @@ function buildTuft(seed, kind, big) {
     const tilt = (r() - 0.5) * 0.28;
     up.set(Math.cos(az) * tilt, 1, Math.sin(az) * tilt).normalize();
     p.set((r() - 0.5) * H * 0.25, -0.02, (r() - 0.5) * H * 0.25);
-    addCard(fb, p, up, right, H * (1.05 + r() * 0.3), H * (0.85 + r() * 0.35), rect, n, r(), 0.12);
+    addCard(fb, p, up, right, H * (1.05 + r() * 0.3), H * (0.85 + r() * 0.35), rect, n, r(), 0.12, r() > 0.5);
   }
   return { trunk: null, foliage: fb.build(H, 1.15), H, R: H * 0.8 };
 }
@@ -583,7 +656,7 @@ function buildVine(seed, detail) {
     const s = detail ? 0.30 + r() * 0.16 : 0.85 + r() * 0.4;
     p.set(x, y - s * 0.45, z);
     addCard(fb, p, up, right, s * 1.1, s, rect, nn, r(), 0.10,
-      clamp(0.55 + (y - 0.58) * 0.55 + Math.abs(z) * 0.9, 0.5, 1));
+      clamp(0.55 + (y - 0.58) * 0.55 + Math.abs(z) * 0.9, 0.5, 1), r() > 0.5);
   }
   return { trunk: tb.build(H, 1.2), foliage: fb.build(H, 1.2), H, R: 1.3 };
 }
@@ -955,7 +1028,7 @@ function build(engine, world, opts) {
     build: d => variantParts(buildPost, 10100, d, null, barkMats.wood, 'post'),
   });
   defSpecies('prickly', {
-    lodMax: [280, 0], r0: 90, r1: 90,
+    lodMax: [420, 0], r0: 150, r1: 150,
     build: () => {
       const p = buildPrickly(12100);
       const parts = [{ geo: p.cactus, mat: cactusMat, tag: 'pad' }];
@@ -1068,6 +1141,106 @@ function build(engine, world, opts) {
     return n;
   }
 
+  /* ---- olive terraces along the circuit ---------------------------------------- */
+  // Ramot Menashe is terraced olive country, but Overture carries no orchard polygon along
+  // the ridge the circuit runs over, so the signature planting of the region would be missing
+  // from three quarters of the course. These are laid out the way a real grove is: contour
+  // rows parallel to the road, 7.8 m between rows and 7.6 m in the row, on the stretches where
+  // the low-frequency field says the hillside is cultivated rather than forest or maquis.
+  const GRV = 1024;
+  const groveMask = new Uint8Array(GRV * GRV);
+  const grvK = GRV / world.extent;
+  function stampGrove(x, z, rad) {
+    const i0 = Math.max(0, Math.floor((x - rad + half) * grvK));
+    const i1 = Math.min(GRV - 1, Math.ceil((x + rad + half) * grvK));
+    const j0 = Math.max(0, Math.floor((z - rad + half) * grvK));
+    const j1 = Math.min(GRV - 1, Math.ceil((z + rad + half) * grvK));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) groveMask[j * GRV + i] = 255;
+  }
+  function groveAt(x, z) {
+    const i = ((x + half) * grvK) | 0, j = ((z + half) * grvK) | 0;
+    if (i < 0 || j < 0 || i >= GRV || j >= GRV) return 0;
+    return groveMask[j * GRV + i];
+  }
+
+  const GROVE_SEED = 1029, GROVE_LO = 0.52, GROVE_HI = 0.62;
+  const groveField = (x, z) => clamp((smoothHash(x, z, 240, GROVE_SEED) - GROVE_LO) / (GROVE_HI - GROVE_LO), 0, 1);
+
+  function plantTerraces(blockers) {
+    const r = rng(20260821);
+    const STEP = 7.9, ROW = 8.6, ROWS = 5, INNER = 13.5;
+    let n = 0, cy = 0;
+    let sumX = 0, sumZ = 0;
+    for (const f of blockers || []) {
+      for (const path of f.paths || []) {
+        if (!path || path.length < 4) continue;
+        let acc = STEP;
+        let station = 0;
+        for (let i = 0; i < path.length - 1; i++) {
+          const ax = path[i][0], az = path[i][1];
+          const L = Math.hypot(path[i + 1][0] - ax, path[i + 1][1] - az);
+          if (L < 1e-4) continue;
+          const tx = (path[i + 1][0] - ax) / L, tz = (path[i + 1][1] - az) / L;
+          const nx = -tz, nz = tx;
+          const rowYaw = -Math.atan2(tz, tx);
+          let d = STEP - acc;
+          for (; d < L; d += STEP) {
+            const sx = ax + tx * d, sz = az + tz * d;
+            station++;
+            const g = groveField(sx, sz);
+            if (g <= 0) continue;
+            if (Math.hypot(sx, sz) < 165) continue;      // the moshav itself stays a village
+            for (const sgn of [-1, 1]) {
+              for (let k = 0; k < ROWS; k++) {
+                const off = sgn * (INNER + k * ROW);
+                const x = sx + nx * off + (r() - 0.5) * 0.8;
+                const z = sz + nz * off + (r() - 0.5) * 0.8;
+                if (!world.inBounds(x, z)) continue;
+                if (blockAt(x, z) > 60) continue;
+                if (coverAt(x, z) === CLS.URBAN) continue;
+                if (world.slopeAt(x, z) > 0.46) continue;
+                // feather the ends of every grove instead of stopping on a straight line
+                const edge = g * (1 - 0.55 * (k / (ROWS - 1)));
+                if (r() > 0.34 + 0.66 * edge) continue;
+                planted.push({ sp: 'olive', x, z, yaw: r() * TAU, s: 0.86 + r() * 0.34, tint: r() });
+                stampGrove(x, z, 5.6);
+                n++; sumX += x; sumZ += z;
+                // a sabra hedge marking the terrace lip, the way every old plot here is edged
+                if (k === ROWS - 1 && r() > 0.42) {
+                  const hx = sx + nx * sgn * (INNER + (ROWS - 0.45) * ROW) + (r() - 0.5) * 1.2;
+                  const hz = sz + nz * sgn * (INNER + (ROWS - 0.45) * ROW) + (r() - 0.5) * 1.2;
+                  if (world.inBounds(hx, hz) && blockAt(hx, hz) < 60 && world.slopeAt(hx, hz) < 0.55) {
+                    planted.push({ sp: 'prickly', x: hx, z: hz, yaw: r() * TAU, s: 0.9 + r() * 0.5, tint: r() });
+                    stampGrove(hx, hz, 3.0);
+                  }
+                }
+                // a cypress windbreak standing on the outermost terrace lip
+                if (k === ROWS - 1 && station % 3 === 0 && r() > 0.45) {
+                  const wx = sx + nx * sgn * (INNER + ROWS * ROW), wz = sz + nz * sgn * (INNER + ROWS * ROW);
+                  if (world.inBounds(wx, wz) && blockAt(wx, wz) < 60 && world.slopeAt(wx, wz) < 0.5) {
+                    planted.push({ sp: 'cypress', x: wx, z: wz, yaw: r() * TAU, s: 0.85 + r() * 0.40, tint: r() });
+                    stampGrove(wx, wz, 4.0);
+                    cy++;
+                  }
+                }
+                if (planted.length > 34000) return { n, cy };
+              }
+            }
+            void rowYaw;
+          }
+          acc = L - (d - STEP);
+        }
+      }
+    }
+    if (n > 20) sites.push({ kind: 'terrace', x: +(sumX / n).toFixed(1), z: +(sumZ / n).toFixed(1), n });
+    return { n, cy };
+  }
+  {
+    const t = plantTerraces(opts.blockers);
+    plantedCount.terrace = t.n;
+    plantedCount.windbreak = (plantedCount.windbreak || 0) + t.cy;
+  }
+
   {
     const lu = world.landuse || [];
     let idx = 0;
@@ -1113,10 +1286,14 @@ function build(engine, world, opts) {
     [CLS.CROP]:   [['olive', 0.6], ['almond', 0.4]],
     [CLS.FARM]:   [['olive', 0.5], ['almond', 0.3], ['cypress', 0.2]],
     [CLS.ORCHARD]:[['olive', 0.7], ['almond', 0.3]],
+    // Moshav gardens: an olive or two behind the wall, a pair of cypresses by the gate, an
+    // almond, and one date palm per street. The village was previously bare tan dirt.
+    [CLS.URBAN]:  [['olive', 0.32], ['cypress', 0.24], ['almond', 0.18], ['oak', 0.13],
+                   ['terebinth', 0.07], ['palm', 0.06]],
   };
   const TREE_DENS = {
     [CLS.FOREST]: 0.93, [CLS.SHRUB]: 0.15, [CLS.GRASS]: 0.030, [CLS.CROP]: 0.006,
-    [CLS.BARREN]: 0.020, [CLS.FARM]: 0.006, [CLS.ORCHARD]: 0.0, [CLS.URBAN]: 0.0, [CLS.NONE]: 0.012,
+    [CLS.BARREN]: 0.020, [CLS.FARM]: 0.006, [CLS.ORCHARD]: 0.0, [CLS.URBAN]: 0.055, [CLS.NONE]: 0.012,
   };
   const BUSH_MIX = {
     [CLS.FOREST]: [['shrub', 0.52], ['oakBush', 0.22], ['broom', 0.16], ['thistle', 0.10]],
@@ -1127,10 +1304,12 @@ function build(engine, world, opts) {
     [CLS.FARM]:   [['thistle', 0.80], ['shrub', 0.20]],
     [CLS.ORCHARD]:[['thistle', 0.7], ['shrub', 0.3]],
     [CLS.NONE]:   [['thistle', 0.6], ['shrub', 0.4]],
+    // sabra (prickly pear) is the moshav's hedge plant — it marks every old plot boundary
+    [CLS.URBAN]:  [['prickly', 0.30], ['shrub', 0.30], ['oakBush', 0.18], ['broom', 0.12], ['thistle', 0.10]],
   };
   const BUSH_DENS = {
     [CLS.FOREST]: 0.30, [CLS.SHRUB]: 0.70, [CLS.GRASS]: 0.16, [CLS.CROP]: 0.030,
-    [CLS.BARREN]: 0.14, [CLS.FARM]: 0.022, [CLS.ORCHARD]: 0.05, [CLS.URBAN]: 0.0, [CLS.NONE]: 0.05,
+    [CLS.BARREN]: 0.14, [CLS.FARM]: 0.022, [CLS.ORCHARD]: 0.05, [CLS.URBAN]: 0.16, [CLS.NONE]: 0.05,
   };
   const GROUND_DENS = {
     [CLS.FOREST]: 0.34, [CLS.SHRUB]: 0.52, [CLS.GRASS]: 0.86, [CLS.CROP]: 0.92,
@@ -1219,11 +1398,26 @@ function build(engine, world, opts) {
     // --- trees -----------------------------------------------------------------
     const treeR = MID_TREE * q;
     scatterGrid(TREE_CELL, treeR, cx, cz, (i, j, x, z, d) => {
-      const cls = coverNear(x, z, i, j, 16);
-      const dens = TREE_DENS[cls] ?? 0;
+      const cls = coverNear(x, z, i, j, 30);
+      let dens = TREE_DENS[cls] ?? 0;
       if (dens <= 0) return;
+      // The Overture forest polygons are surveyor-straight, so extruding them at full density
+      // gives a hedge cut by a boolean: a vertical wall of canopy with a flat top. Measure how
+      // far inside the polygon this cell is and taper both the density and the tree height
+      // toward the boundary, which turns the wall into a real, ragged, thinning forest margin.
+      let inner = 1;
+      if (cls === CLS.FOREST) {
+        let open = 0;
+        if (coverAt(x + 26, z) !== CLS.FOREST) open++;
+        if (coverAt(x - 26, z) !== CLS.FOREST) open++;
+        if (coverAt(x, z + 26) !== CLS.FOREST) open++;
+        if (coverAt(x, z - 26) !== CLS.FOREST) open++;
+        inner = 1 - open * 0.25;
+        dens *= lerp(0.30, 1.0, inner);
+      }
       if (hash2i(i, j, 5011) > dens) return;
       if (blockAt(x, z) > 60) return;
+      if (groveAt(x, z)) return;                      // the terraces are kept clear of maquis
       const slope = world.slopeAt(x, z);
       if (slope > 0.62) return;
       const y = world.heightAt(x, z);
@@ -1231,11 +1425,19 @@ function build(engine, world, opts) {
       const mix = TREE_MIX[cls] || TREE_MIX[CLS.SHRUB];
       const sp = pickFrom(mix, hash2i(i, j, 6079));
       const S = species[sp];
-      const sc = 0.72 + hash2i(i, j, 7013) * 0.62;
-      if (!visible(x, y + S.radius, z, S.radius * sc * 1.6)) return;
+      // Independent height and spread jitter plus a slow canopy swell across the hillside.
+      // A stand where every tree is the same silhouette at the same scale is the single
+      // loudest "instanced prop" tell there is.
+      const swell = 0.80 + 0.40 * smoothHash(x, z, 58, 4177);
+      const sc = (0.62 + hash2i(i, j, 7013) * 0.78) * lerp(0.62, 1.0, inner);
+      const sy = sc * swell * (0.88 + hash2i(i, j, 9007) * 0.30);
+      const sxz = sc * (0.86 + hash2i(i, j, 9209) * 0.36);
+      const rr = Math.max(sy, sxz);
+      if (!visible(x, y + S.radius * sy, z, S.radius * rr * 1.7)) return;
+      const lx = (hash2i(i, j, 4507) - 0.5) * 0.14, lz = (hash2i(i, j, 4517) - 0.5) * 0.14;
       emit(sp, lod, x, y - 0.18, z, hash2i(i, j, 8017) * TAU,
-        sc * (0.92 + hash2i(i, j, 9007) * 0.16), sc, sc * (0.92 + hash2i(i, j, 9209) * 0.16),
-        hash2i(i, j, 6101));
+        sxz * (0.94 + hash2i(i, j, 9403) * 0.12), sy, sxz * (0.94 + hash2i(i, j, 9511) * 0.12),
+        hash2i(i, j, 6101), [lx, Math.sqrt(Math.max(0.2, 1 - lx * lx - lz * lz)), lz]);
     }, 3001);
 
     // --- bushes ----------------------------------------------------------------
@@ -1285,12 +1487,21 @@ function build(engine, world, opts) {
     const standFar = STAND_MAX * Math.min(1, 0.5 + q * 0.5);
     scatterGrid(STAND_CELL, standFar, cx, cz, (i, j, x, z, d) => {
       if (d < STAND_MIN * q) return;
-      const cls = coverNear(x, z, i, j, 24);
+      const cls = coverNear(x, z, i, j, 34);
       if (cls !== CLS.FOREST && cls !== CLS.SHRUB) return;
-      if (hash2i(i, j, 8101) > (cls === CLS.FOREST ? 1.0 : 0.42)) return;
+      // same margin treatment as the near forest, or the far ridge is a solid extruded band
+      let open = 0;
+      if (coverAt(x + 34, z) === CLS.NONE || coverAt(x + 34, z) === CLS.URBAN) open++;
+      if (coverAt(x - 34, z) === CLS.NONE || coverAt(x - 34, z) === CLS.URBAN) open++;
+      if (coverAt(x, z + 34) === CLS.NONE || coverAt(x, z + 34) === CLS.URBAN) open++;
+      if (coverAt(x, z - 34) === CLS.NONE || coverAt(x, z - 34) === CLS.URBAN) open++;
+      const inner = 1 - open * 0.25;
+      if (hash2i(i, j, 8101) > (cls === CLS.FOREST ? 1.0 : 0.42) * lerp(0.34, 1, inner)) return;
+      if (groveAt(x, z)) return;
       const y = world.heightAt(x, z);
       // uniform scale only: the billboard basis is world-aligned, so anisotropy would shear it
-      const sc = (cls === CLS.FOREST ? 0.85 : 0.62) + hash2i(i, j, 8209) * 0.42;
+      const sc = ((cls === CLS.FOREST ? 0.78 : 0.58) + hash2i(i, j, 8209) * 0.50)
+        * lerp(0.60, 1, inner) * (0.84 + 0.32 * smoothHash(x, z, 92, 4177));
       if (!visible(x, y + 14 * sc, z, 24 * sc)) return;
       emit(cls === CLS.FOREST ? 'standPine' : 'standOak', 1, x, y - 1.6, z,
         0, sc, sc, sc, hash2i(i, j, 8521));

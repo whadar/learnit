@@ -63,12 +63,13 @@ const _c1 = new THREE.Color();
 const FX_TUNE = {
   /* mini-turbo charge sparks: short, stretched, individually readable comets */
   driftSpark: {
-    size: [0.26, 0.030], life: [0.22, 0.44], alpha: 0.95, stretch: 0.60,
+    blend: 'fire',
+    size: [0.26, 0.030], life: [0.22, 0.44], alpha: 1.0, stretch: 0.60,
     speed: [4.0, 9.5], spread: 0.75, jitter: 1.3, drag: 3.6, grav: -4.5,
     turb: [0.04, 3.0], spin: 5, fadeIn: 0.03,
   },
   /* the soft bloom that sits under a spark shower — small and dim, it is not the star */
-  miniTurbo: { size: [0.22, 0.03], life: [0.13, 0.26], alpha: 0.38, speed: [0.8, 2.2] },
+  miniTurbo: { blend: 'fire', size: [0.22, 0.03], life: [0.13, 0.26], alpha: 0.55, speed: [0.8, 2.2] },
 
   /* Exhaust fire body. Alpha-over, so this orange is the orange you see, no matter how many
    * sprites overlap. The `flame` cell carries its own white-hot-base -> cool-tip ramp, and
@@ -98,8 +99,10 @@ const FX_TUNE = {
     speed: [0.9, 2.4], spread: 0.36, jitter: 0.40, drag: 3.2, grav: 1.2,
     colorA: [0.40, 0.37, 0.36], colorB: [0.17, 0.16, 0.17], fadeIn: 0.08, spin: 1.0,
   },
-  ember: { size: [0.058, 0.010], alpha: 0.9, stretch: 0.5, life: [0.35, 0.85] },
+  ember: { blend: 'fire', size: [0.058, 0.010], alpha: 1.0, stretch: 0.5, life: [0.35, 0.85] },
   impactShock: { alpha: 0.42 },
+  railSpark: { blend: 'fire', alpha: 1.0, size: [0.24, 0.03] },
+  starBurst: { blend: 'fire', alpha: 1.0 },
 
   /* Tyre smoke: a pair of compact puffs off the rear wheels. It used to run at nearly twice
    * this size and lifetime, which merged every puff into one fog bank around the kart. */
@@ -929,7 +932,7 @@ export function createVFX(engine, world, opts = {}) {
     // own bodywork, so a depth fade against the scene depth buffer erases exactly the part
     // that matters — the base of the flame — and leaves only the tip poking past the
     // silhouette. Fire is allowed to intersect the kart; smoke is not.
-    fire: new ParticleBatch(atlas, { capacity: Math.round(capAdd * 0.6), blend: 'alpha', name: 'vfx.fire', renderOrder: 11, soft: false, brightness: 1.0 }),
+    fire: new ParticleBatch(atlas, { capacity: capAdd, blend: 'alpha', name: 'vfx.fire', renderOrder: 11, soft: false, brightness: 1.0 }),
     // `screen`, not `add`: see the note in ParticleBatch. alphaPow tightens the glow skirt.
     add: new ParticleBatch(atlas, { capacity: capAdd, blend: 'screen', name: 'vfx.add', renderOrder: 12, soft: false, brightness: 1.06, alphaPow: 1.3 }),
   };
@@ -1503,15 +1506,17 @@ function createKartRig(vfx, world, target, o = {}) {
           .addScaledVector(right, (rand() * 2 - 1) * 0.9);
         // hot at birth, cooling into the saturated tier hue: a spark reads as a coloured
         // comet with a white tip rather than a white dot with a coloured halo.
+        // white at the tip, saturated tier hue in the tail: a spark has to read as a
+        // coloured comet, not a white dot with a faint halo round it
         vfx.emit('driftSpark', {
           pos: wp, dir: dirv, count: 1, raw: true,
-          colorA: T.core, colorB: T.glow, scale: T.size * (0.8 + rand() * 0.9),
+          colorA: T.core, colorB: T.flameA, scale: T.size * (0.9 + rand() * 0.9),
           speedScale: 0.85 + rand() * 0.9,
         });
         if (rand() < 0.22) {
           vfx.emit('miniTurbo', {
             pos: wp, dir: dirv, count: 1, raw: true,
-            colorA: T.glow, colorB: T.glow, scale: T.size * 1.4, opacity: 0.7,
+            colorA: T.flameA, colorB: T.flameB, scale: T.size * 1.3, opacity: 0.8,
           });
         }
       }
@@ -1519,8 +1524,8 @@ function createKartRig(vfx, world, target, o = {}) {
         events.tierUps++;
         for (const a of sparkAnchor) {
           local(a, wp);
-          vfx.emit('miniTurbo', { pos: wp, dir: up, count: 6, scale: T.size * 2.2, colorA: T.glow, colorB: T.glow, opacity: 0.8, speedScale: 1.6 });
-          vfx.emit('driftSpark', { pos: wp, dir: up, count: 16, scale: T.size * 1.3, colorA: T.core, colorB: T.glow, speedScale: 1.5 });
+          vfx.emit('miniTurbo', { pos: wp, dir: up, count: 6, scale: T.size * 2.0, colorA: T.flameA, colorB: T.flameB, opacity: 0.9, speedScale: 1.6 });
+          vfx.emit('driftSpark', { pos: wp, dir: up, count: 16, scale: T.size * 1.3, colorA: T.core, colorB: T.flameA, speedScale: 1.5 });
         }
       }
     }
@@ -1550,7 +1555,7 @@ function createKartRig(vfx, world, target, o = {}) {
         dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.4);
         vfx.emit('driftSpark', {
           pos: wp, dir: dirv, count: 10 + 4 * tier, scale: T.size * 1.25,
-          colorA: T.core, colorB: T.glow, speedScale: 1.5,
+          colorA: T.core, colorB: T.flameA, speedScale: 1.5,
         });
       }
       vfx.emit('squashPuff', { pos, dir: up, count: 8, scale: 1.2, opacity: 0.35 });
