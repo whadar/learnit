@@ -17,7 +17,7 @@ import * as THREE from 'three';
 import { Engine } from './core/engine.js';
 import { createQuality } from './core/quality.js';
 import { createInput } from './core/input.js';
-import { clamp, lerp, damp } from './core/mathx.js';
+import { clamp, lerp } from './core/mathx.js';
 
 import { WorldData } from './world/worldData.js';
 import { createSky } from './world/sky.js';
@@ -49,7 +49,9 @@ const num = (k, d) => { const v = +Q.get(k); return Number.isFinite(v) && Q.get(
 
 const app = (typeof document !== 'undefined' && document.getElementById('app')) || document.body;
 const engine = new Engine(app);
-engine.renderer.toneMappingExposure = num('exposure', 1.0);
+// The Israeli midsummer sun plus bright limestone dust puts the ground at the top of the ACES
+// curve; 0.85 keeps the dry farm tracks off pure white without crushing the village.
+engine.renderer.toneMappingExposure = num('exposure', 0.72);
 
 const S = {                                   // every subsystem, once it exists
   world: null, quality: null, input: null, menu: null, hud: null,
@@ -67,7 +69,8 @@ const game = (typeof window !== 'undefined' ? window : globalThis).__game = {
 
 /* ---------------------------------------------------------------- app fsm -- */
 
-const APP = { mode: 'boot', paused: false, review: flag('review', false), fixedStep: 0 };
+const RUSH_MAX = 0.30;   // ceiling on the screen-space speed-line overlay
+const APP = { mode: 'boot', paused: false, review: flag('review', false), fixedStep: 0, viewLock: null };
 let lastDt = 1 / 60;
 let attractT = 0;
 
@@ -114,7 +117,10 @@ async function boot() {
   await frame();
 
   /* ---- real world data ---- */
-  const world = S.world = game.world = await WorldData.load('data/');
+  // 'data/' is right for the built game at the site root; the /preview/ page (and any
+  // sub-path deploy) needs the absolute one. Try both rather than guess.
+  const world = S.world = game.world = await WorldData.load('data/')
+    .catch(() => WorldData.load('/data/'));
   mark('worldData');
   await step('draping the circuit');
 
@@ -129,7 +135,8 @@ async function boot() {
 
   /* ---- sky + lighting (createSky owns the lighting rig) ---- */
   S.sky = guard('sky', () => createSky(engine, world, {
-    hour: num('hour', 17.15),
+    hour: num('hour', 15.4),   // mid-afternoon: long enough shadows to read, white enough sun
+                               // that tarmac is grey and the groves are green
     shadows: QS().shadows,
     shadowMapSize: QS().shadowMapSize,
     cascades: QS().cascades,
@@ -245,6 +252,9 @@ async function boot() {
     APP.mode = 'menu';
     menu.show('title');
     S.camera.setMode('fixed');
+    // Attract mode: a real race runs on autopilot under the title card, so the fly-over is
+    // looking at eight karts actually racing rather than an empty circuit.
+    guard('attract', () => { S.race.reset(); S.race.start(true); });
   }
 
   game.ready = true;
@@ -319,7 +329,12 @@ function conformWorldToTrack(world, track, opts = {}) {
 
   const wt = new Float32Array(NX * NZ);
   const ty = new Float32Array(NX * NZ);
+  const bd = new Float32Array(NX * NZ).fill(Infinity);
 
+  // Nearest centreline wins, *by distance* — not by weight. The circuit doubles back on
+  // itself down The Nose and round the wadi hairpin, and those two passes are 1.5 m apart
+  // vertically: picking by weight lets whichever was stamped first own the cell and leaves
+  // the other pass buried under its neighbour's embankment.
   for (const s of samples) {
     const R = s.hw + FALL;
     const i0 = Math.max(0, Math.floor((s.x - R - minX) / CELL));
@@ -332,12 +347,12 @@ function conformWorldToTrack(world, track, opts = {}) {
         const cx = minX + i * CELL, dx = cx - s.x;
         const d = Math.hypot(dx, dz);
         if (d > R) continue;
-        // 1 across the ribbon, smoothly back to 0 at the outside of the shoulder
-        const w = 1 - smoothstepLocal(0, 1, clamp((d - s.hw - 0.4) / FALL, 0, 1));
         const k = j * NX + i;
-        if (w <= wt[k]) continue;
+        if (d >= bd[k]) continue;
+        bd[k] = d;
+        // 1 across the ribbon, smoothly back to 0 at the outside of the shoulder
+        wt[k] = 1 - smoothstepLocal(0, 1, clamp((d - s.hw - 0.4) / FALL, 0, 1));
         const lateral = dx * s.nx + dz * s.nz;         // + is left of travel
-        wt[k] = w;
         ty[k] = s.y + s.tb * clamp(lateral, -s.hw, s.hw) - SINK;
       }
     }
@@ -415,6 +430,12 @@ function attachPost() {
     width: engine.renderer.domElement.clientWidth || 1280,
     height: engine.renderer.domElement.clientHeight || 720,
     quality: QS().postTier,
+    // post.js is tuned for a landscape shot; a kart game puts additive drift smoke, sparks and
+    // boost flame two metres from the lens, which the stock bloom turns into a white hole, and
+    // the stock shutter smears the road to mush at 90 km/h. These are call-site trims only.
+    bloomStrength: 0.42, bloomThreshold: 8.2, bloomClamp: 1.5,
+    motionShutter: 0.45, motionMax: 0.0085,
+    chromatic: 0.0026,
   }));
   if (!S.post) return;
   guard('post.quality', () => S.post.setQuality(QS().postTier));
@@ -493,12 +514,15 @@ function wireRaceEvents(race) {
   const push = u => raceUnsub.push(u);
   push(race.on('phase', e => {
     const p = e.phase;
-    if (p === 'intro') S.camera?.setMode('intro', { snap: true });
-    if (p === 'countdown' || p === 'racing') {
-      S.camera?.setMode('chase', { snap: race.state.phase === 'countdown' });
-      S.hud?.show(true);
+    // A pinned review view owns the camera and the screen; phase changes must not steal them.
+    if (!APP.viewLock) {
+      if (p === 'intro') S.camera?.setMode('intro', { snap: true });
+      if (p === 'countdown' || p === 'racing') {
+        S.camera?.setMode('chase', { snap: race.state.phase === 'countdown' });
+        S.hud?.show(true);
+      }
+      if (p === 'results') showResults();
     }
-    if (p === 'results') showResults();
     const cue = p === 'racing' ? 'go' : p === 'results' ? 'finish' : null;
     if (cue) guard('audio.cue', () => S.audio?.play?.(cue));
   }));
@@ -531,6 +555,7 @@ function wireRaceEvents(race) {
 }
 
 function startRace(characterIndex = lastCharacter, opts = {}) {
+  APP.viewLock = null;
   const race = buildRace(characterIndex, opts);
   race.reset();
   race.start(!!opts.skipIntro);
@@ -546,6 +571,7 @@ function startRace(characterIndex = lastCharacter, opts = {}) {
 }
 
 function showResults() {
+  if (APP.viewLock || APP.mode === 'menu') return;
   const rows = S.race.results.map(r => ({
     place: r.place, name: r.name, time: r.time, bestLap: r.bestLap, isPlayer: r.isPlayer, dnf: r.dnf,
   }));
@@ -570,12 +596,14 @@ function resumeRace() {
   APP.mode = 'race';
 }
 function quitToTitle() {
+  APP.viewLock = null;
   APP.mode = 'menu'; APP.paused = false;
   S.hud?.show(false);
   S.menu.show('title');
   S.camera?.setMode('fixed');
 }
 function enterPhoto() {
+  APP.viewLock = null;
   APP.mode = 'photo';
   S.hud?.show(false);
   S.camera?.setMode('photo');
@@ -654,11 +682,12 @@ function tick(dt) {
   if (APP.mode === 'menu') {
     attractT += dt;
     attractCamera(attractT);
+    if (S.race?.state.over) guard('attract', () => { S.race.reset(); S.race.start(true); });
   }
 
   /* ---- the race ---- */
   const race = S.race;
-  if (race && (APP.mode === 'race' || APP.mode === 'results' || APP.mode === 'photo') && !APP.paused) {
+  if (race && (APP.mode === 'race' || APP.mode === 'results' || APP.mode === 'photo' || APP.mode === 'menu') && !APP.paused) {
     // The kart is driven by the human only when someone actually asked for it; otherwise the
     // race's own autopilot keeps the field complete (attract mode, review shots, demo).
     if (scripted) race.setInput(fillPlayerInput(null));
@@ -672,10 +701,14 @@ function tick(dt) {
 
   /* ---- camera ---- */
   if (S.camera && APP.mode !== 'menu') {
-    const ph = race ? race.state.phase : 'idle';
-    const mode = APP.mode === 'photo' ? 'photo'
-      : ph === 'intro' ? 'intro' : ph === 'results' ? 'results' : 'chase';
-    if (S.camera.mode !== mode && !(APP.mode === 'photo')) S.camera.setMode(mode, { snap: mode === 'chase' });
+    // A view pinned by setView() owns the camera until something else takes it back, so the
+    // harness's cinematic plates are not stolen by the chase rig on the very next frame.
+    if (!APP.viewLock) {
+      const ph = race ? race.state.phase : 'idle';
+      const mode = APP.mode === 'photo' ? 'photo'
+        : ph === 'intro' ? 'intro' : ph === 'results' ? 'results' : 'chase';
+      if (S.camera.mode !== mode && !(APP.mode === 'photo')) S.camera.setMode(mode, { snap: mode === 'chase' });
+    }
     S.camera.update(dt, {
       phaseTime: race ? race.state.phaseTime : 0,
       introTime: race ? 7.0 : 0,
@@ -683,6 +716,15 @@ function tick(dt) {
       lookBack: playerInput.look < -0.5,
       photoInput: APP.mode === 'photo' ? fillPhotoInput(raw) : null,
     });
+  }
+
+  // The screen-space rush lines live on the camera and only make sense behind a kart; a
+  // cinematic plate or the photo camera must not be streaked by the player's speed. At full
+  // strength the additive overlay also blows the middle of the frame to white, so it is
+  // capped here to the hint of speed it is meant to be.
+  if (S.vfx) {
+    if (S.camera && S.camera.mode !== 'chase') S.vfx.speed = 0;
+    else if (S.vfx.speed > RUSH_MAX) S.vfx.speed = RUSH_MAX;
   }
 
   updateHUD(dt);
@@ -771,16 +813,22 @@ function updateHUD(dt) {
     for (const b of S.items.boxes) mapData.items.push({ x: b.pos.x, z: b.pos.z, active: b.active });
   }
 
+  // race.js leaves `message` and `rocket` latched at their last value; the HUD wants them as
+  // events, so they are aged out here rather than shouting GO! for the whole race.
+  const sinceGo = race.state.phase === 'racing' ? race.state.phaseTime : 99;
+  const banner = race.state.phase === 'countdown' ? ''
+    : (race.state.phase === 'racing' && sinceGo > 1.3) ? '' : h.message;
   hud.update(dt, {
-    phase: h.phase, message: race.state.phase === 'countdown' ? '' : h.message,
-    countdown: h.countdown, sinceGo: race.state.phase === 'racing' ? race.state.phaseTime : 9,
+    phase: h.phase, message: banner,
+    countdown: h.countdown, sinceGo,
+    lapAge: p ? race.state.raceTime - p.lapStart : 99,
     lap: h.lap, laps: h.laps, place: h.place, field: h.field,
     time: h.time, lapTime: h.lapTime, bestLap: h.bestLap,
     lastLap: p?.lapTimes.length ? p.lapTimes[p.lapTimes.length - 1] : undefined,
     lapCount: p?.lap,
     speedKmh: h.speedKmh, topSpeedKmh: (p?.vehicle.params.topSpeed ?? 25) * 3.6 * 1.45,
     item: h.item, wrongWay: h.wrongWay,
-    rocket: p?.rocket,
+    rocket: (sinceGo < 2.8 && (p?.lap ?? 0) === 0) ? p.rocket : null,
     drift: st ? { active: st.drift.active, charge: st.drift.charge, tier: st.drift.tier } : null,
     boost: st ? st.boost : null,
     standings: race.standings.map(r => ({ place: r.place, name: r.name, player: r.isPlayer, gap: null })),
@@ -853,11 +901,11 @@ function buildViews() {
       S.camera.setMode('chase', { snap: true });
     },
     camera() {
-      // three-quarter view from in front of pole, looking back down the grid under the gantry
-      const a = S.track.sample(S.track.startS + 6);
-      const b = S.track.sample(S.track.startS - 19);
-      return { fixed: [a.pos.x + a.normal.x * 7.4, a.pos.y + 3.15, a.pos.z + a.normal.z * 7.4],
-        look: [b.pos.x, b.pos.y + 1.05, b.pos.z], fov: 52 };
+      // low and central behind the last row, looking up the grid to the start gantry
+      const a = S.track.sample(S.track.startS - 56);
+      const b = S.track.sample(S.track.startS - 14);
+      return { fixed: [a.pos.x + a.normal.x * 2.2, a.pos.y + 3.35, a.pos.z + a.normal.z * 2.2],
+        look: [b.pos.x + b.normal.x * 0.4, b.pos.y + 1.05, b.pos.z + b.normal.z * 0.4], fov: 44 };
     },
   });
 
@@ -865,8 +913,7 @@ function buildViews() {
     doc: 'the pack threading Rehov Rakefet between the houses — chase camera on the player',
     setup(r) {
       raceUpToRacing(r);
-      packAt(at(0.965), 20.5, { spread: 9 });
-      simulate(2.4);
+      packRunTo(at(0.972), 20.5, { spread: 14 });
     },
     chase: 0,
   });
@@ -875,8 +922,7 @@ function buildViews() {
     doc: 'ridge road along the plateau, olive groves either side',
     setup(r) {
       raceUpToRacing(r);
-      packAt(at(0.335), 19.0, { spread: 8 });
-      simulate(2.2);
+      packRunTo(at(0.345), 19.0, { spread: 13 });
     },
     chase: 0,
   });
@@ -885,39 +931,44 @@ function buildViews() {
     doc: 'the summit at Pisgat Amikam looking back down the Menashe climb',
     setup(r) {
       raceUpToRacing(r);
-      packAt(at(0.395), 17.5, { spread: 7 });
-      simulate(1.8);
+      packRunTo(at(0.398), 17.5, { spread: 7, lead: 62, settle: 3.2 });
     },
     camera() {
-      const a = S.track.sample(at(0.408)), b = S.track.sample(at(0.383));
-      return { fixed: [a.pos.x + a.normal.x * 27, a.pos.y + 17.5, a.pos.z + a.normal.z * 27],
-        look: [b.pos.x, b.pos.y + 1.0, b.pos.z], fov: 50 };
+      // high above the summit, looking back down The Nose to the village and the plain beyond
+      const a = S.track.sample(at(0.418)), b = S.track.sample(at(0.487));
+      const cx = a.pos.x + a.normal.x * 46, cz = a.pos.z + a.normal.z * 46;
+      // clear the pines: 30 m above whatever ground is actually under the lens
+      const cy = Math.max(a.pos.y + 40, S.world.heightAt(cx, cz) + 34);
+      return { fixed: [cx, cy, cz], look: [b.pos.x, b.pos.y + 4, b.pos.z], fov: 54 };
     },
   });
 
   scen('driftCorner', {
-    doc: 'the player mid-drift through the wadi hairpin, sparks lit',
+    doc: 'the player mid-drift through the Kalanit sweeper, mini-turbo charging',
     setup(r) {
       raceUpToRacing(r);
-      packAt(at(0.545), 19.5, { spread: 6 });
-      drive({ throttle: 1, steer: 0.85, drift: 1 }, 1.45);
+      packRunTo(at(0.845), 21.0, { spread: 12, lead: 74, settle: 3.6 });
+      drive({ throttle: 1, steer: 0.62, drift: 1 }, 1.15);
     },
     chase: 0,
   });
 
   scen('itemChaos', {
-    doc: 'mid-pack item scrap: triple oranges away, a shakshuka pan out and a khamsin blowing',
+    doc: 'item scrap through a box row: three Jaffas orbiting the player, a pan out behind, '
+      + 'a sabra homing in and a khamsin devil crossing the road',
     setup(r) {
       raceUpToRacing(r);
-      packAt(at(0.245), 20.0, { spread: 5.5 });
+      // arrive just short of the item-box row at 0.225 of a lap, pack still nose to tail
+      packRunTo(at(0.218), 20.0, { spread: 7.0, lead: 74, settle: 3.7 });
       const items = S.items;
       if (items) {
         const give = (i, id) => { try { items.setItem(r.vehicles[i], id); } catch (e) { /* ignore */ } };
-        give(1, 'jaffa3'); give(2, 'pan'); give(3, 'khamsin'); give(4, 'falafel'); give(0, 'sabra');
-        simulate(0.35);
+        give(0, 'jaffa3');            // orbits the player — reads instantly in a chase shot
+        give(1, 'pan'); give(2, 'sabra'); give(3, 'khamsin'); give(4, 'falafel');
+        simulate(0.3);
         for (const i of [1, 2, 3, 4]) { try { items.useItem(r.vehicles[i]); } catch (e) { /* ignore */ } }
       }
-      simulate(1.15);
+      simulate(0.55);
     },
     chase: 0,
   });
@@ -927,14 +978,14 @@ function buildViews() {
     setup(r) {
       raceUpToRacing(r);
       for (const rc of r.racers) { rc.lap = r.laps - 1; rc.cpIndex = r.checkpoints.length; rc.lapStart = r.state.raceTime - 148; }
-      packAt(((S.track.startS - 34) % S.track.length + S.track.length) % S.track.length, 23.5, { spread: 3.2, tight: true });
-      simulate(1.05);
+      packRunTo(S.track.startS - 3, 23.5, { spread: 3.4, tight: true, lead: 46, settle: 2.0 });
     },
     camera() {
-      const sm = S.track.sample(S.track.startS + 4);
-      const b = S.track.sample(S.track.startS - 7);
-      return { fixed: [sm.pos.x + sm.normal.x * 10.5, sm.pos.y + 2.35, sm.pos.z + sm.normal.z * 10.5],
-        look: [b.pos.x, b.pos.y + 0.8, b.pos.z], fov: 42 };
+      // on the tarmac just past the line, low, looking back at the karts coming at the lens
+      const a = S.track.sample(S.track.startS + 15);
+      const b = S.track.sample(S.track.startS - 4);
+      return { fixed: [a.pos.x + a.normal.x * 3.0, a.pos.y + 1.15, a.pos.z + a.normal.z * 3.0],
+        look: [b.pos.x + b.normal.x * 0.8, b.pos.y + 0.75, b.pos.z + b.normal.z * 0.8], fov: 40 };
     },
   });
 
@@ -1015,6 +1066,19 @@ function packAt(s, speed, { spread = 8, tight = false } = {}) {
   S.camera?.snap();
 }
 
+
+/**
+ * Put the field on the circuit a little short of `s` and let it *drive* to the mark. Teleporting
+ * straight onto the camera mark leaves a frame of spawn artefacts — suspension settling, a skid
+ * decal under every wheel — so every review plate arrives under power with the tyres rolling,
+ * the AI back on the racing line and real dust in the air.
+ */
+function packRunTo(s, speed, { lead = 88, settle = 4.6, spread = 8, tight = false } = {}) {
+  const L = S.track.length;
+  packAt(((s - lead) % L + L) % L, speed, { spread, tight });
+  simulate(settle);
+}
+
 /* ------------------------------------------------------------- setView ---- */
 
 function setView(name) {
@@ -1024,6 +1088,7 @@ function setView(name) {
   if (v.scenario) {
     const sc = SCENARIOS[v.scenario];
     APP.mode = 'race'; APP.paused = false; APP.fixedStep = 1 / 60;
+    APP.viewLock = sc.chase != null ? 'chase' : sc.intro != null ? 'intro' : 'fixed';
     S.menu?.hide();
     S.hud?.show(true);
     S.camera.setTarget(S.race.state.player?.vehicle || S.race.vehicles[0]);
@@ -1044,6 +1109,7 @@ function setView(name) {
   }
 
   // a plain cinematic plate
+  APP.viewLock = 'fixed';
   S.camera?.setFixed(v.pos, v.look, v.fov ?? 62);
   APP.mode = 'race';
   S.hud?.show(false);
@@ -1053,14 +1119,24 @@ function renderOnce() { engine.render(); }
 
 /* ============================================================ automation == */
 
+// NB: Object.assign would *evaluate* these getters and assign their (null) values, so the
+// automation surface has to be defined, not assigned.
+Object.defineProperties(game, {
+  race: { get: () => S.race, enumerable: true },
+  camera: { get: () => S.camera, enumerable: true },
+  quality: { get: () => quality, enumerable: true },
+  menu: { get: () => S.menu, enumerable: true },
+  track: { get: () => S.track, enumerable: true },
+  mode: { get: () => APP.mode, enumerable: true },
+});
 Object.assign(game, {
-  get race() { return S.race; },
-  get camera() { return S.camera; },
-  get quality() { return quality; },
-  get menu() { return S.menu; },
-  get track() { return S.track; },
-  get mode() { return APP.mode; },
+  THREE,
   setFixedStep(v) { APP.fixedStep = v || 0; },
+  /** Time of day, 0..24 or a TIME_PRESETS name. Rebuilds the sun, sky palette and env map. */
+  setTime(h) { guard('setTime', () => { S.sky?.setTimeOfDay(h); S.lighting?.refresh(true); }); },
+  setExposure(e) { engine.renderer.toneMappingExposure = e; },
+  get exposure() { return engine.renderer.toneMappingExposure; },
+  setViewLock(v) { APP.viewLock = v || null; },
   setQuality(t) { quality.set(t); },
   simulate, drive, packAt,
   startRace, pauseRace, resumeRace, quitToTitle, enterPhoto,

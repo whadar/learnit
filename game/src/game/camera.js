@@ -27,13 +27,13 @@ const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 
 export const DEFAULTS = {
   /* chase geometry, metres */
-  back: 6.30,             // distance behind the kart at rest
-  backSpeed: 1.35,        // extra distance at top speed
+  back: 4.70,             // distance behind the kart's centre of mass at rest
+  backSpeed: 1.25,        // extra distance at top speed
   backBoost: 0.55,        // … and while boosting (the kart pulls away from the lens)
-  height: 2.32,
+  height: 1.32,           // above the CoM, which is itself ~0.8 m above the road
   heightSpeed: 0.24,
-  lookAhead: 8.5,
-  lookHeight: 1.15,
+  lookAhead: 9.0,
+  lookHeight: 0.52,       // aim just over the driver's ears
   /* responsiveness */
   posFreq: 2.55,          // Hz of the position spring
   posDamping: 1.02,       // 1 = critically damped

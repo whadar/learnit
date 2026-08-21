@@ -18,6 +18,7 @@
  *   SHOOT_W/H      viewport                       (1280x720)
  *   SHOOT_WARM     frames to settle per view      (8)
  *   SHOOT_SNAP     also write <out>/views.json with a state dump per view (1)
+ *   SHOOT_UI       1 = also capture the front end (title, select, settings, pause, results)
  *
  * Views
  *   gridStart      the eight-kart grid a beat before the lights go out
@@ -92,6 +93,46 @@ for (const v of VIEWS) {
   if (SNAP) snaps[v] = await page.evaluate(() => window.__game.snapshot());
   results.push({ view: v, file, bytes: fs.statSync(file).size, ms: Date.now() - t });
 }
+/* ---------------------------------------------------------------- front end -- */
+// SHOOT_UI=1 also captures the menus, which are DOM over the same canvas: title, character
+// select, course select, the pause overlay and the results board.
+if (process.env.SHOOT_UI === '1') {
+  const ui = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
+  ui.on('pageerror', e => logs.push(`[ui pageerror] ${e.message}`));
+  const uiUrl = BASE + (BASE.includes('?') ? '&' : '?') + 'audio=0&q=' + (process.env.SHOOT_UI_Q || 'low');
+  await ui.goto(uiUrl, { waitUntil: 'load', timeout: 180000 });
+  await ui.waitForFunction(() => window.__game && (window.__game.ready || window.__game.error), null, { timeout: 600000 });
+  const uiSettle = f => ui.evaluate(n => new Promise(res => {
+    let i = 0; const step = () => (++i >= n ? res() : requestAnimationFrame(step)); requestAnimationFrame(step);
+  }), f);
+  const shot = async name => {
+    await uiSettle(4);
+    const f = path.join(OUT, `ui-${name}.png`);
+    await ui.screenshot({ path: f, timeout: 180000 });
+    results.push({ view: 'ui-' + name, file: f, bytes: fs.statSync(f).size });
+  };
+  await shot('title');
+  await ui.keyboard.press('Enter'); await shot('characters');     // Grand Prix
+  await ui.keyboard.press('ArrowRight'); await ui.keyboard.press('ArrowRight');
+  await ui.keyboard.press('Enter'); await shot('courses');
+  await ui.evaluate(() => window.__game.menu.go('settings')); await shot('settings');
+  await ui.evaluate(() => { window.__game.menu.go('courses'); });
+  await ui.keyboard.press('Enter');                                // start the race
+  await uiSettle(20); await shot('intro');
+  await ui.evaluate(() => window.__game.pauseRace()); await shot('pause');
+  await ui.evaluate(() => {
+    const g = window.__game;
+    g.resumeRace();
+    // jump to the flag so the results board has real numbers on it
+    for (const r of g.race.racers) { r.lap = g.race.laps - 1; r.cpIndex = g.race.checkpoints.length; }
+    g.simulate(1.0);
+    g.packAt(g.track.startS - 26, 22, { spread: 4, tight: true });
+    g.simulate(6.0);
+  });
+  await shot('results');
+  await ui.close();
+}
+
 if (SNAP) fs.writeFileSync(path.join(OUT, 'views.json'), JSON.stringify({ url, bootMs, warnings, snaps }, null, 1));
 
 console.log(JSON.stringify({ ok: true, url, bootMs, warnings, results, logs: logs.slice(-25) }, null, 1));
