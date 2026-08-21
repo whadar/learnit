@@ -377,18 +377,38 @@ export function createLighting(engine, world, sky, opts = {}) {
   const terrainShadows = opts.terrainShadows !== false;
   const TERRAIN_RE = /terrain|ground|hill|apron|plateau/i;
 
+  // The other half of the missing-contact-shadow bug. Whether a surface RECEIVES shadow is a
+  // lighting decision, but it is spelled per mesh in a dozen other modules, and the ones that
+  // matter most had it off: `circuit:grid` (the slabs the eight karts sit on at the start),
+  // `circuit:startline` (the black-and-white checker in photoFinish), `terrain-apron`. Karts
+  // were casting into a surface that had opted out of being lit by the result, so the whole
+  // field floated even once the casters were fixed. Anything with a lit material and a sun in
+  // the sky receives; unlit chrome — the sky dome, additive VFX, sprites — is left alone.
+  const receiveAll = opts.receiveShadows !== false;
+
   let dirty = false;
   function scan(root = scene) {
     root.traverse(o => {
-      if (terrainShadows && o.isMesh && o.receiveShadow && !o.castShadow && TERRAIN_RE.test(o.name)) {
-        o.castShadow = true; dirty = true;
+      if (o.isMesh) {
+        if (terrainShadows && o.receiveShadow && !o.castShadow && TERRAIN_RE.test(o.name)) {
+          o.castShadow = true; dirty = true;
+        }
+        if (receiveAll && shadows && !o.receiveShadow) {
+          // Every mesh drawn with a lit material opts in, transparent ones included. three
+          // uploads `receiveShadow` as a *program* uniform but only re-sends it when the
+          // material it is drawing changes, so a single non-receiving mesh sharing a program
+          // with the road leaves the flag false for everything drawn after it and the shadow
+          // term silently disappears from the whole frame. Making the flag uniformly true
+          // removes that coupling as well as the intended per-mesh omissions.
+          const ms = Array.isArray(o.material) ? o.material : [o.material];
+          if (ms.some(mm => mm && LIT(mm))) { o.receiveShadow = true; dirty = true; }
+        }
       }
       const m = o.material; if (!m) return;
       if (Array.isArray(m)) { for (const mm of m) { const b = adopted.has(mm); setupMaterial(mm); if (!b) dirty = true; } }
       else { const b = adopted.has(m); setupMaterial(m); if (!b) dirty = true; }
     });
   }
-
 
   // ---- sun / palette application --------------------------------------------------------
   function applyPalette() {

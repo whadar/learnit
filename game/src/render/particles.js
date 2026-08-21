@@ -64,12 +64,15 @@ const FX_TUNE = {
   /* mini-turbo charge sparks: short, stretched, individually readable comets */
   driftSpark: {
     blend: 'fire',
-    size: [0.26, 0.030], life: [0.22, 0.44], alpha: 1.0, stretch: 0.60,
-    speed: [4.0, 9.5], spread: 0.75, jitter: 1.3, drag: 3.6, grav: -4.5,
+    // stretch is a *multiplier on screen-space velocity*, so raising it and the base size
+    // together turned a 0.26 m spark into a 3 m streak and the shower into a firework that
+    // bloomed to white over the kart. Short and dense reads as a mini-turbo; long does not.
+    size: [0.28, 0.034], life: [0.20, 0.40], alpha: 0.85, stretch: 0.34,
+    speed: [3.4, 8.0], spread: 0.70, jitter: 1.2, drag: 4.2, grav: -4.5,
     turb: [0.04, 3.0], spin: 5, fadeIn: 0.03,
   },
   /* the soft bloom that sits under a spark shower — small and dim, it is not the star */
-  miniTurbo: { blend: 'fire', size: [0.22, 0.03], life: [0.13, 0.26], alpha: 0.55, speed: [0.8, 2.2] },
+  miniTurbo: { blend: 'fire', size: [0.24, 0.035], life: [0.14, 0.28], alpha: 0.48, speed: [0.8, 2.2] },
 
   /* Exhaust fire body. Alpha-over, so this orange is the orange you see, no matter how many
    * sprites overlap; the colour ramp does the cooling, hot yellow-orange at birth to
@@ -93,7 +96,7 @@ const FX_TUNE = {
   },
   /* Soot, not steam. Dark and short — it is the shadow the fire sits in. */
   boostSmoke: {
-    sprite: 'wisp',
+    sprite: 'wisp', lit: 1,
     size: [0.16, 0.72], life: [0.26, 0.55], alpha: 0.22,
     speed: [0.9, 2.4], spread: 0.36, jitter: 0.40, drag: 3.2, grav: 1.2,
     colorA: [0.40, 0.37, 0.36], colorB: [0.17, 0.16, 0.17], fadeIn: 0.08, spin: 1.0,
@@ -104,18 +107,25 @@ const FX_TUNE = {
   starBurst: { blend: 'fire', alpha: 1.0 },
 
   /* Tyre smoke: a pair of compact puffs off the rear wheels. It used to run at nearly twice
-   * this size and lifetime, which merged every puff into one fog bank around the kart. */
+   * this size and lifetime, which merged every puff into one fog bank around the kart.
+   * Now lit, so a column of it has a bright shoulder and a dark underside and reads as a
+   * column rather than as a wash — which is what lets it be this big without flattening. */
   driftSmoke: {
-    size: [0.28, 1.35], life: [0.45, 0.92], alpha: 0.36,
-    speed: [0.8, 2.2], spread: 0.5, jitter: 0.5, drag: 2.1, grav: 0.6,
-    turb: [0.22, 0.6], fadeIn: 0.09, spin: 1.3,
-    colorA: [0.90, 0.89, 0.88], colorB: [0.50, 0.49, 0.50],
+    lit: 1,
+    size: [0.34, 1.85], life: [0.50, 1.05], alpha: 0.42,
+    speed: [1.1, 2.9], spread: 0.5, jitter: 0.6, drag: 2.0, grav: 0.85,
+    turb: [0.26, 0.65], fadeIn: 0.07, spin: 1.3,
+    colorA: [0.93, 0.91, 0.89], colorB: [0.46, 0.44, 0.45],
   },
-  /* Surface dust: the cheapest speed cue in the game, so it is allowed to be big. */
+  /* Surface dust. Lower alpha than round 2 and lit: the plume now gets its presence from
+   * value contrast between the sunlit and shaded side of each puff, not from stacking
+   * enough flat sprites to reach opacity. That is the whole difference between dust and
+   * fog, and it is why this can be big without washing the kart in front of it. */
   dust: {
-    size: [0.40, 2.3], life: [0.75, 1.6], alpha: 0.80,
-    speed: [1.0, 3.0], spread: 0.7, jitter: 0.8, drag: 1.15, grav: 0.5,
-    turb: [0.45, 0.4], fadeIn: 0.10, spin: 0.9,
+    lit: 1,
+    size: [0.44, 2.30], life: [0.80, 1.60], alpha: 0.70,
+    speed: [1.0, 3.0], spread: 0.7, jitter: 0.85, drag: 1.35, grav: 0.26,
+    turb: [0.45, 0.42], fadeIn: 0.10, spin: 0.9,
   },
 };
 
@@ -143,15 +153,25 @@ const FX_EXTRA = {
   },
   /** Grit lifted off the road by the exhaust blast — gives the fire something to sit in. */
   boostGrit: {
-    sprite: 'dust', blend: 'alpha', count: 1, life: [0.5, 1.2], size: [0.35, 2.2],
+    sprite: 'dust', blend: 'alpha', lit: 1, count: 1, life: [0.5, 1.2], size: [0.35, 2.2],
     speed: [2.0, 5.5], spread: 0.6, jitter: 1.0, drag: 2.0, grav: 0.8, turb: [0.3, 0.9],
     alpha: 0.42, colorA: [0.82, 0.78, 0.72], colorB: [0.45, 0.42, 0.40], fadeIn: 0.10, spin: 1.1,
   },
   /** Rooster tail: the long, low plume a kart drags across loose ground at speed. */
   rooster: {
-    sprite: 'dust', blend: 'alpha', count: 1, life: [0.85, 1.8], size: [0.45, 2.8],
-    speed: [2.5, 6.5], spread: 0.35, jitter: 1.1, drag: 1.5, grav: 0.7, turb: [0.55, 0.45],
-    alpha: 0.74, colorA: [0.90, 0.84, 0.72], colorB: [0.52, 0.47, 0.42], fadeIn: 0.12, spin: 0.8,
+    sprite: 'dust', blend: 'alpha', lit: 1, count: 1, life: [0.90, 1.8], size: [0.50, 2.8],
+    speed: [2.8, 7.2], spread: 0.30, jitter: 1.1, drag: 1.7, grav: 0.30, turb: [0.55, 0.45],
+    alpha: 0.72, colorA: [0.94, 0.87, 0.73], colorB: [0.50, 0.44, 0.37], fadeIn: 0.12, spin: 0.8,
+  },
+  /**
+   * Tyre scrub: the dense, low, hard-edged kernel that sits *at the contact patch* while a
+   * kart is sliding. `driftSmoke` is the column that rises off it; this is the root of the
+   * column, and without it a slide has smoke floating over a road it never touched.
+   */
+  scrubPuff: {
+    sprite: 'smoke', blend: 'alpha', lit: 1, count: 1, life: [0.26, 0.52], size: [0.22, 0.78],
+    speed: [0.6, 1.8], spread: 0.7, jitter: 0.5, drag: 3.4, grav: 0.25, turb: [0.10, 1.1],
+    alpha: 0.62, colorA: [0.96, 0.94, 0.92], colorB: [0.58, 0.55, 0.55], fadeIn: 0.03, spin: 2.2,
   },
 };
 
@@ -179,11 +199,21 @@ varying vec2  vUv;
 varying vec3  vCol;
 varying float vAlpha;
 varying float vViewZ;
+varying vec2  vLocal;     // quad-local coords, -1..1, for the fake-sphere normal
+varying float vLit;       // 1 = shade this sprite like a lump of matter, 0 = emissive
 
 void main() {
   float age = uTime - aLife.x;
   float life = max(aLife.y, 1e-4);
   float t = age / life;
+
+  // aShape.w carries a lighting flag in its 8s place: 0..4 are the billboard modes, +8
+  // asks the fragment shader to light the sprite as a sphere. Packing it here keeps the
+  // vertex stride at 28 floats -- a smoke puff needs the sun, a spark does not.
+  float lit = step(7.5, aShape.w);
+  float mode = aShape.w - 8.0 * lit;
+  vLit = lit;
+  vLocal = position.xy * 2.0;
 
   if (age < 0.0 || t >= 1.0 || aShape.x <= 0.0) {          // dead: collapse behind the camera
     vUv = vec2(0.0); vCol = vec3(0.0); vAlpha = 0.0; vViewZ = -1.0;
@@ -218,11 +248,11 @@ void main() {
   vec2 qr = vec2(q.x * ca - q.y * sa, q.x * sa + q.y * ca);
 
   vec4 mv;
-  if (aShape.w > 0.5 && aShape.w < 1.5) {
+  if (mode > 0.5 && mode < 1.5) {
     // flat: lies in the world XZ plane (ripple rings, ground shock)
     vec3 wp = p + vec3(qr.x, 0.0, qr.y);
     mv = modelViewMatrix * vec4(wp, 1.0);
-  } else if (aShape.w > 1.5) {
+  } else if (mode > 1.5) {
     // upright: billboards around Y only (flames, tall wisps keep their vertical axis)
     vec3 right = normalize(vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]));
     vec3 wp = p + right * qr.x + vec3(0.0, qr.y, 0.0);
@@ -271,6 +301,11 @@ uniform float uBrightness;
 uniform float uAlphaPow;
 uniform vec2  uNearFar;
 uniform float uNearFade;
+uniform vec3  uSunView;       // unit vector towards the sun, in VIEW space
+uniform vec3  uUpView;        // world up, in VIEW space
+uniform vec3  uSunTint;       // multiplier on the sunlit face of a puff
+uniform vec3  uShadeTint;     // multiplier on the self-shadowed face
+uniform float uWrap;          // wrap-around term: how far light bends round the sphere
 #ifdef SOFT
 uniform sampler2D uDepth;
 uniform vec2 uResolution;
@@ -281,6 +316,8 @@ varying vec2  vUv;
 varying vec3  vCol;
 varying float vAlpha;
 varying float vViewZ;
+varying vec2  vLocal;
+varying float vLit;
 
 void main() {
   vec4 tex = texture2D(uMap, vUv);
@@ -290,6 +327,29 @@ void main() {
   // low-alpha skirt in, so a stack of glow sprites reads as a shape and not as a disc.
   a = pow(a, uAlphaPow);
   vec3 col = vCol * tex.rgb * uBrightness;
+
+  // --- lit puffs ---------------------------------------------------------------------
+  // A dust plume is matter, not light. Unlit sprites all carry exactly the same value, so
+  // a stack of them integrates to one flat plateau — a fog veil, which is precisely what
+  // the round-2 plume looked like. Giving each billboard a hemispherical normal and one
+  // wrapped sun term costs four instructions and buys the thing that actually reads:
+  // every puff gets a warm sunlit shoulder and a cool shaded underside, so the plume has
+  // internal structure, a direction of light shared with the terrain, and enough value
+  // range that it sits *behind* the kart instead of greying it out.
+  if (vLit > 0.5) {
+    float r2 = dot(vLocal, vLocal);
+    vec3 n = normalize(vec3(vLocal, sqrt(max(1.0 - min(r2, 1.0), 0.04))));
+    // Half sun, half sky. A pure sun term is unstable on a billboard: the fake normal at the
+    // centre of the sprite points at the *camera*, so with the sun behind the lens the whole
+    // puff shades to mud. Mixing in world-up guarantees what every real dust plume does —
+    // bright crown, dark belly — while the sun still decides which shoulder is hot.
+    float w = clamp((0.52 * dot(n, uSunView) + 0.48 * dot(n, uUpView) + uWrap) / (1.0 + uWrap), 0.0, 1.0);
+    w = w * w * (3.0 - 2.0 * w);
+    col *= mix(uShadeTint, uSunTint, w);
+    // the rim of a puff is thinner, so it scatters more light and holds less opacity —
+    // this is what gives a plume a soft, torn edge instead of a stencilled disc
+    a *= mix(1.0, 0.72, clamp(r2, 0.0, 1.0));
+  }
 
   float dist = -vViewZ;
 
@@ -372,6 +432,11 @@ export class ParticleBatch {
         uAlphaPow: { value: alphaPow },
         uNearFar: { value: new THREE.Vector2(0.25, 8000) },
         uNearFade: { value: nearFade },
+        uSunView: { value: new THREE.Vector3(0, 0, 1) },
+        uUpView: { value: new THREE.Vector3(0, 1, 0) },
+        uSunTint: { value: new THREE.Vector3(1.30, 1.21, 1.06) },
+        uShadeTint: { value: new THREE.Vector3(0.56, 0.58, 0.66) },
+        uWrap: { value: 0.34 },
         uDepth: { value: null },
         uResolution: { value: new THREE.Vector2(1280, 720) },
         uSoftness: { value: 0.55 },
@@ -1051,7 +1116,9 @@ export function createVFX(engine, world, opts = {}) {
     rec.alpha = (o.alpha ?? P.alpha ?? 1) * (o.opacity ?? 1);
     rec.sprite = SPRITE_INDEX[o.sprite || P.sprite] ?? 0;
     rec.stretch = o.stretch ?? P.stretch ?? 0;
-    rec.mode = o.mode ?? P.mode ?? (P.flat ? MODE.flat : MODE.billboard);
+    // `lit` rides in the 8s place of `mode` (see VERT): matter is shaded, light is not.
+    rec.mode = (o.mode ?? P.mode ?? (P.flat ? MODE.flat : MODE.billboard))
+      + ((o.lit ?? P.lit) ? 8 : 0);
     rec.fadeIn = o.fadeIn ?? P.fadeIn ?? 0.05;
     rec.seed = rand();
 
@@ -1189,9 +1256,16 @@ export function createVFX(engine, world, opts = {}) {
       if (fog.isFog) { fnear = fog.near; ffar = fog.far; }
       else if (fog.isFogExp2) { fnear = 10; ffar = Math.max(40, 3.0 / Math.max(fog.density, 1e-5)); }
     }
+    // sun direction in view space — the lit-puff term is evaluated against a view-space
+    // hemisphere normal, so this has to travel with the camera, not the world
+    _v1.copy(sunDir).transformDirection(cam.matrixWorldInverse).normalize();
+    _v2.set(0, 1, 0).transformDirection(cam.matrixWorldInverse).normalize();
+
     for (const k of ['alpha', 'fire', 'add']) {
       const b = batches[k], u = b.uniforms;
       u.uNearFar.value.set(cam.near, cam.far);
+      u.uSunView.value.copy(_v1);
+      u.uUpView.value.copy(_v2);
       if (fcol) { u.uFogColor.value.copy(fcol); u.uFogRange.value.set(fnear, ffar); }
       else u.uFogRange.value.set(0, -1);
       b.flush(time);
@@ -1248,8 +1322,20 @@ export function createVFX(engine, world, opts = {}) {
     return q.value;
   }
 
+  /**
+   * setSunDirection(x, y, z) | setSunDirection(vec3|[x,y,z])
+   * Callers hand this either three numbers or the sky's own direction vector; taking only
+   * the first form quietly wrote NaN into every ambience layer's sun uniform.
+   */
   function setSunDirection(x, y, z) {
-    sunDir.set(x, y, z).normalize();
+    if (y === undefined && x && typeof x === 'object') {
+      const v = x;
+      sunDir.set(v.x ?? v[0] ?? 0, v.y ?? v[1] ?? 1, v.z ?? v[2] ?? 0);
+    } else sunDir.set(x, y, z);
+    if (!Number.isFinite(sunDir.x + sunDir.y + sunDir.z) || sunDir.lengthSq() < 1e-8) {
+      sunDir.set(-0.45, 0.62, 0.64);
+    }
+    sunDir.normalize();
     for (const l of amb.layers) l.uniforms.uSunDir.value.copy(sunDir);
   }
 
@@ -1293,6 +1379,7 @@ export function createVFX(engine, world, opts = {}) {
  * surface dust, water splash, mud spatter, skid decals and the boost trail ribbon.
  */
 function createKartRig(vfx, world, target, o = {}) {
+  /* eslint-disable-next-line no-param-reassign */
   const seed = o.seed ?? 5;
   const rand = rng(seed);
   const wheels = o.wheels || [[-0.58, -0.24, -0.72], [0.58, -0.24, -0.72]];
@@ -1308,7 +1395,7 @@ function createKartRig(vfx, world, target, o = {}) {
   const trail = new TrailRibbon({ segments: 40, width: 0.36, fade: 0.5 });
   vfx.group.add(trail.mesh);
 
-  const acc = { smoke: 0, smoke2: 0, dust: 0, rooster: 0, grit: 0, spark: 0, core: 0, flame: 0, chip: 0, splash: 0, ember: 0, mud: 0, ripple: 0 };
+  const acc = { smoke: 0, smoke2: 0, dust: 0, rooster: 0, scrub: 0, grit: 0, spark: 0, core: 0, flame: 0, chip: 0, splash: 0, ember: 0, mud: 0, ripple: 0 };
   let lastTier = 0, wasTier = 0, wasDrifting = false, wasBoosting = false, wasGrounded = true;
   // which charge tier bought the boost currently burning — MK8 tints the flame by it
   let boostTier = tierColor(1), boostTierT = 0;
@@ -1324,7 +1411,47 @@ function createKartRig(vfx, world, target, o = {}) {
   const st = {
     speed: 0, slip: 0, drifting: false, tier: 0, charge: 0, boosting: false,
     grounded: true, surface: 'tarmac', steer: 0,
+    slide: 0,          // 0..1 "this kart is sideways", measured, not declared
+    slideT: 0,         // seconds of continuous slide — the charge clock
+    airT: 0,           // seconds since the last real ground contact
+    contact: 1,        // 0..1 how much ground effect this kart still earns
   };
+
+  /**
+   * Mini-turbo charge, derived from motion.
+   *
+   * Round 2 gated every drift effect on `target.drifting` / `target.driftTier`. In the
+   * canonical drift plate the physics reports *false* and *0* while the kart is crossed up
+   * at 22 m/s with 46% of its velocity pointing sideways — the hop-and-hold drift state had
+   * already lapsed — so the sparks, the tier colour and the release burst were all dead and
+   * the most expensive moment in the game rendered as a clean straight-line frame.
+   *
+   * A VFX rig must not depend on another module's bookkeeping to know what it can measure
+   * itself: a kart with that much slip angle *is* drifting, whatever the flag says. So the
+   * charge clock runs off `slide` (slip fraction, gated on speed and ground contact), and
+   * the physics flags are folded in as a floor rather than a gate. The declared tier still
+   * wins when it is higher, so a real hold-drift steps blue -> orange -> purple exactly as
+   * the vehicle intends; a scripted or lapsed slide now gets the same treatment.
+   */
+  const SLIDE_ON = 0.30;         // slip fraction where a corner becomes a slide
+  const SLIDE_FULL = 0.52;       // slip fraction that charges at full rate
+  const TIER_T = [0.16, 0.44, 0.92];   // seconds of full slide per charge tier
+
+  /**
+   * Ground contact, with coyote time.
+   *
+   * A kart on a real heightfield is airborne far more often than it looks: the wadi hairpin
+   * launches the hero for a quarter of a second on every lap, and the canonical drift plate
+   * catches it exactly there. Gating tyre smoke, dust and skid marks on the raw `grounded`
+   * boolean meant the whole plate emitted nothing at all — the frame was clean because the
+   * physics said "in the air", not because the art said "no drift".
+   *
+   * Real ground FX do not switch, they decay: rubber keeps smoking, the dust the wheels
+   * already threw is still in the air, and the mark is already on the road. So contact fades
+   * out over a third of a second and only a genuine jump silences it. Sparks ignore this
+   * entirely — a mini-turbo charge survives a hop in MK8, which is exactly how you start one.
+   */
+  const COYOTE_ON = 0.09, COYOTE_OFF = 0.42;
 
   function readState(dt, override) {
     const t = target || {};
@@ -1361,6 +1488,23 @@ function createKartRig(vfx, world, target, o = {}) {
     st.slip = st.speed > 1 ? clamp(lat / Math.max(st.speed, 1e-3), 0, 1) : 0;
     if (st.drifting) st.slip = Math.max(st.slip, 0.34 + 0.18 * Math.min(st.tier, 3));
     if (o.slip !== undefined) st.slip = o.slip;
+
+    // --- ground contact, smoothed ---------------------------------------------------
+    st.airT = st.grounded ? 0 : st.airT + dt;
+    st.contact = 1 - smoothstep(COYOTE_ON, COYOTE_OFF, st.airT);
+
+    // --- measured slide -> charge clock -> tier ------------------------------------
+    const fastEnough = smoothstep(7, 13, st.speed);
+    st.slide = smoothstep(SLIDE_ON, SLIDE_FULL, st.slip) * fastEnough;
+    if (st.drifting && st.speed > 7) st.slide = Math.max(st.slide, 0.75);
+    if (st.slide > 0.05) st.slideT += dt * (0.35 + 0.65 * st.slide);
+    else st.slideT = Math.max(0, st.slideT - dt * 3.2);   // a brief straighten does not reset
+    let syn = 0;
+    for (let i = 0; i < 3; i++) if (st.slideT >= TIER_T[i]) syn = i + 1;
+    st.tier = Math.max(st.tier, syn);
+    st.charge = Math.max(st.charge, clamp(st.slideT / TIER_T[2], 0, 1));
+    // downstream code asks "is this kart drifting"; answer it from the motion
+    st.drifting = st.drifting || st.slide > 0.25;
   }
 
   function local(offset, out) {
@@ -1386,56 +1530,92 @@ function createKartRig(vfx, world, target, o = {}) {
     const onWater = fx.wet > 0;
 
     /* --- tyre smoke / surface dust ------------------------------------------------ */
-    if (grounded && spd > 1.2) {
+    if (st.contact > 0.02 && spd > 1.2) {
       const heat = clamp(slip * 2.1, 0, 1.25) * (0.35 + 0.85 * fast);
       const loose = fx.rate * (0.30 + 0.85 * fast) * (0.45 + 0.85 * slip);
+      const hard = fx.decal === 'tyre';
       // Halved against the old rates. driftSmoke lives ~0.65 s, so 46/s on tarmac put ~30
       // metre-wide puffs around the kart at once and they merged into one fog bank that hid
       // the wheels. A pair of readable plumes needs ~8 concurrent, not 30.
-      const smokeRate = onWater ? 22 * fast
-        : (fx.decal === 'tyre' ? fx.rate * heat * 0.72 : loose * 0.85 + fx.rate * heat * 0.35);
+      const smokeRate = (onWater ? 22 * fast
+        : (hard ? fx.rate * heat * 1.15 : loose * 1.00 + fx.rate * heat * 0.35)) * st.contact;
       const n = rate('smoke', smokeRate * (o.rate ?? 1) * vfx.emitScale, dt);
       for (let i = 0; i < n; i++) {
         const w = wheels[i % wheels.length];
         local(w, wp);
-        wp.y += 0.06;
+        // Lift the spawn clear of the road. Soft particles fade against scene depth, so a
+        // puff born flush with the tarmac is erased by the very surface it came off — which
+        // is why the round-2 drift frame carried tyre smoke in the particle stats and none
+        // on screen. Half a puff-radius up is enough to survive and still hug the ground.
+        wp.y += hard ? 0.20 + rand() * 0.16 : 0.08;
         wp.addScaledVector(fwd, -0.7 - rand() * 0.7);
         // push the spawn point outboard of the bodywork so the plume frames the kart
-        if (fx.decal !== 'tyre') wp.addScaledVector(right, (w[0] < 0 ? -1 : 1) * (0.15 + rand() * 0.3));
+        wp.addScaledVector(right, (w[0] < 0 ? -1 : 1) * (0.15 + rand() * 0.3));
         dirv.set(0, fx.rise * 1.5, 0).addScaledVector(fwd, -0.5 - rand() * 0.5)
           .addScaledVector(right, (rand() < 0.5 ? -1 : 1) * (0.40 + rand() * 0.5));
-        // Surface dust used to be emitted dead in world space, so at 80 km/h it swept past
-        // the chase lens inside 0.3 s and only ~10 puffs were ever in frame. Carrying a
-        // third of the kart's velocity keeps the plume behind the kart where it reads.
-        const inh = onWater ? 0 : 0.46;
-        vfx.emit(onWater ? 'splashMist' : (fx.decal === 'tyre' ? 'driftSmoke' : 'dust'), {
+        // Velocity inheritance. Carrying too much of the kart's velocity kept the plume
+        // pinned around the kart instead of behind it, and a veil that sits *between* the
+        // lens and the hero is what desaturated the kart in the round-2 grove shot. A third
+        // keeps the column trailing without letting it sweep out of frame in one beat.
+        const inh = onWater ? 0 : (hard ? 0.40 : 0.30);
+        vfx.emit(onWater ? 'splashMist' : (hard ? 'driftSmoke' : 'dust'), {
           pos: wp, dir: dirv, count: 1, raw: true,
           vx: vel.x * inh, vy: vel.y * inh, vz: vel.z * inh,
           colorA: fx.a, colorB: fx.b,
-          scale: lerp(0.7, 1.25, rand()) * (fx.decal === 'tyre' ? lerp(0.8, 1.4, heat) : 1),
-          opacity: fx.decal === 'tyre' ? clamp(0.35 + heat * 0.8, 0, 1.1) : clamp(0.5 + 0.5 * fast, 0, 1),
+          scale: lerp(0.7, 1.25, rand()) * (hard ? lerp(0.85, 1.5, heat) : 1),
+          // per-puff opacity spread: identical alphas integrate to a flat plateau, a spread
+          // of them keeps individual puffs readable inside the plume
+          opacity: (hard ? clamp(0.42 + heat * 0.85, 0, 1.15) : clamp(0.52 + 0.48 * fast, 0, 1.05))
+            * lerp(0.7, 1.18, rand()),
           speedScale: 0.7 + fast * 0.9,
           drag: fx.drag,
         });
+      }
+
+      // Scrub kernel: the bright, dense root of a slide, pinned to the contact patch and
+      // thrown outboard the way the tyre is actually being dragged. The rising column above
+      // has to grow out of something that touches the road, or the whole plume floats.
+      if (!onWater && st.slide > 0.12) {
+        const sgn = vel.dot(right) < 0 ? -1 : 1;
+        const scrubRate = (hard ? 34 : 16) * st.slide * (0.45 + 0.75 * fast) * st.contact;
+        const sn = rate('scrub', scrubRate * (o.rate ?? 1) * vfx.emitScale, dt);
+        for (let i = 0; i < sn; i++) {
+          const w = wheels[i % wheels.length];
+          local(w, wp);
+          wp.y += 0.10 + rand() * 0.10;
+          wp.addScaledVector(fwd, -0.30 - rand() * 0.45)
+            .addScaledVector(right, sgn * (0.10 + rand() * 0.42));
+          dirv.copy(right).multiplyScalar(sgn * (0.75 + rand() * 0.6))
+            .addScaledVector(up, 0.55 + rand() * 0.5)
+            .addScaledVector(fwd, -0.35);
+          vfx.emit('scrubPuff', {
+            pos: wp, dir: dirv, count: 1, raw: true,
+            vx: vel.x * 0.34, vy: vel.y * 0.34, vz: vel.z * 0.34,
+            colorA: hard ? undefined : fx.a, colorB: hard ? undefined : fx.b,
+            scale: (hard ? 1.0 : 1.25) * lerp(0.75, 1.35, rand()),
+            opacity: clamp(0.5 + 0.55 * st.slide, 0, 1.1) * lerp(0.75, 1.15, rand()),
+            speedScale: 0.75 + fast * 0.7,
+          });
+        }
       }
 
       // Rooster tail. `dust` above is the fine haze that hangs; this is the long low plume
       // the rear wheels drag across loose ground, and it is the single strongest speed cue
       // available on a pale sand surface where nothing else has any value contrast.
       if (!onWater && fx.chips !== undefined && fx.decal !== 'tyre' && fast > 0.25) {
-        const rn = rate('rooster', fx.rate * 0.50 * fast * (0.55 + 0.7 * slip) * (o.rate ?? 1) * vfx.emitScale, dt);
+        const rn = rate('rooster', fx.rate * 0.60 * fast * (0.55 + 0.7 * slip) * st.contact * (o.rate ?? 1) * vfx.emitScale, dt);
         for (let i = 0; i < rn; i++) {
           const w = wheels[i % wheels.length];
           local(w, wp);
-          wp.y += 0.02; wp.addScaledVector(fwd, -0.85 - rand() * 0.55);
+          wp.y += 0.06; wp.addScaledVector(fwd, -0.85 - rand() * 0.55);
           dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.42 + rand() * 0.35)
             .addScaledVector(right, (rand() * 2 - 1) * 0.45);
           vfx.emit('rooster', {
             pos: wp, dir: dirv, count: 1, raw: true,
-            vx: vel.x * 0.62, vy: vel.y * 0.62, vz: vel.z * 0.62,
+            vx: vel.x * 0.42, vy: vel.y * 0.42, vz: vel.z * 0.42,
             colorA: fx.a, colorB: fx.b,
             scale: 0.85 + rand() * 0.6, speedScale: 0.55 + fast * 0.85,
-            opacity: clamp(0.55 + 0.5 * fast, 0, 1.1),
+            opacity: clamp(0.50 + 0.45 * fast, 0, 1.05) * lerp(0.72, 1.16, rand()),
           });
         }
       }
@@ -1483,45 +1663,57 @@ function createKartRig(vfx, world, target, o = {}) {
     }
 
     /* --- skid decals -------------------------------------------------------------- */
-    if (vfx.decals && grounded && spd > 3) {
-      const heat = clamp(slip * 2.0, 0, 1);
-      const strength = (fx.decalAlpha || 0) * heat * (st.boosting ? 1.15 : 1);
+    // A slide has to leave the road marked, or the smoke above it has no cause. The mark is
+    // laid under all four wheels while sliding (a crossed-up kart scrubs its fronts too) and
+    // widened, because a 0.34 m strip seen from a chase lens 7 m back is two pixels of value
+    // against tarmac and simply is not there.
+    if (vfx.decals && st.contact > 0.35 && spd > 3) {
+      const heat = clamp(Math.max(slip * 2.0, st.slide * 1.15), 0, 1) * st.contact;
+      const strength = (fx.decalAlpha || 0) * heat * (1 + 0.45 * st.slide) * (st.boosting ? 1.15 : 1);
+      const marks = st.slide > 0.25 ? wheels.concat(front) : wheels;
       if (fx.decal && strength > 0.04) {
-        for (let i = 0; i < wheels.length; i++) {
-          local(wheels[i], wp); wp.y -= 0.16;
+        for (let i = 0; i < marks.length; i++) {
+          local(marks[i], wp); wp.y -= 0.16;
           vfx.decals.trail(skidId + i, wp, fwd, {
-            kind: fx.decal, width: o.markWidth ?? 0.34, alpha: clamp(strength, 0, 1),
+            kind: fx.decal,
+            width: (o.markWidth ?? 0.34) * (1.0 + 0.75 * st.slide),
+            alpha: clamp(strength, 0, 1),
             life: fx.decal === 'tyre' ? 14 : 7,
           });
         }
+        for (let i = marks.length; i < 4; i++) vfx.decals.breakTrail(skidId + i);
       } else {
-        vfx.decals.breakTrail(skidId); vfx.decals.breakTrail(skidId + 1);
+        for (let i = 0; i < 4; i++) vfx.decals.breakTrail(skidId + i);
       }
-    } else if (vfx.decals) { vfx.decals.breakTrail(skidId); vfx.decals.breakTrail(skidId + 1); }
+    } else if (vfx.decals) { for (let i = 0; i < 4; i++) vfx.decals.breakTrail(skidId + i); }
 
     /* --- mini-turbo charge sparks ------------------------------------------------- */
     if (st.drifting && st.tier > 0) {
       const T = tierColor(st.tier);
       heldTier = st.tier;
-      const n = rate('spark', T.rate * (0.6 + 0.5 * fast) * vfx.emitScale, dt);
+      // sparks come off the loaded, outboard rear wheel — the one being dragged sideways
+      const sgn = vel.dot(right) < 0 ? -1 : 1;
+      const n = rate('spark', T.rate * 1.7 * (0.55 + 0.55 * fast) * (0.35 + 0.75 * st.slide) * vfx.emitScale, dt);
       for (let i = 0; i < n; i++) {
         const a = sparkAnchor[i % sparkAnchor.length];
         local(a, wp);
+        wp.addScaledVector(right, sgn * 0.10 * (a[0] * sgn > 0 ? 1.6 : 0.4));
         dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.55)
-          .addScaledVector(right, (rand() * 2 - 1) * 0.9);
+          .addScaledVector(right, sgn * (0.25 + rand() * 0.85));
         // hot at birth, cooling into the saturated tier hue: a spark reads as a coloured
         // comet with a white tip rather than a white dot with a coloured halo.
         // white at the tip, saturated tier hue in the tail: a spark has to read as a
         // coloured comet, not a white dot with a faint halo round it
         vfx.emit('driftSpark', {
           pos: wp, dir: dirv, count: 1, raw: true,
-          colorA: T.core, colorB: T.flameA, scale: T.size * (0.9 + rand() * 0.9),
-          speedScale: 0.85 + rand() * 0.9,
+          colorA: rand() < 0.35 ? T.core : T.glow, colorB: T.flameA,
+          scale: T.size * (0.85 + rand() * 0.75),
+          speedScale: 0.8 + rand() * 0.8,
         });
-        if (rand() < 0.22) {
+        if (rand() < 0.30) {
           vfx.emit('miniTurbo', {
             pos: wp, dir: dirv, count: 1, raw: true,
-            colorA: T.flameA, colorB: T.flameB, scale: T.size * 1.3, opacity: 0.8,
+            colorA: T.flameA, colorB: T.flameB, scale: T.size * 1.2, opacity: 0.7,
           });
         }
       }
@@ -1707,6 +1899,12 @@ function createKartRig(vfx, world, target, o = {}) {
     state: st,
     trail,
     events,
+    // main.js re-points a rig at its vehicle every frame (`rig.target = vehicle`). Without
+    // these accessors that assignment landed on a dead property and the rig kept reading
+    // whatever handle it was built with — fine while the race object is stable, silently
+    // wrong the moment the field is rebuilt.
+    get target() { return target; },
+    set target(v) { if (v) target = v; },
     get mudLevel() { return mudLevel; },
     /** Manual one-shots so the game can report hits without knowing preset names. */
     hit(kind = 'impact', params = {}) {
