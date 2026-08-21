@@ -569,13 +569,37 @@ export function createCollisionWorld(world, track, opts = {}) {
     return best;
   }
 
-  /** Elastic-ish kart-vs-kart bump. a/b are { pos, vel, mass, radius }. Returns impact speed. */
+  /**
+   * The radius of a kart's footprint in the direction `(dx, dz)`.
+   *
+   * A kart is half again as long as it is wide, so a single circle has to choose: size it to
+   * the width and two karts nose to tail drive through each other's bodywork; size it to the
+   * length and they cannot run side by side down a lane. Karts that carry a `yaw` are
+   * therefore separated as *oriented ellipses* — the exact radius of an ellipse along a
+   * direction — which keeps a queue nose to tail bumper-to-bumper and still lets a pack run
+   * three abreast. Anything without a yaw keeps the old circle.
+   */
+  function kartRadius(k, dx, dz) {
+    const hl = k.halfLen, hw = k.halfWid;
+    if (k.yaw === undefined || !(hl > 0) || !(hw > 0)) return k.radius ?? 0.85;
+    const fx = Math.sin(k.yaw), fz = Math.cos(k.yaw);
+    const along = dx * fx + dz * fz;             // components of the unit direction in kart space
+    const side = dx * fz - dz * fx;
+    const t = (along / hl) ** 2 + (side / hw) ** 2;
+    return t > 1e-9 ? 1 / Math.sqrt(t) : (k.radius ?? 0.85);
+  }
+
+  /**
+   * Elastic-ish kart-vs-kart bump. a/b are { pos, vel, mass, radius } and may also carry
+   * { yaw, halfLen, halfWid } for an oriented footprint. Returns the impact speed.
+   */
   function bumpKarts(a, b, restitution = 0.55, pushOut = true) {
     let dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
     const dy = (b.pos.y - a.pos.y);
     if (Math.abs(dy) > 1.6) return 0;
     let d = Math.hypot(dx, dz);
-    const rr = (a.radius ?? 0.85) + (b.radius ?? 0.85);
+    const ux = d > 1e-4 ? dx / d : 1, uz = d > 1e-4 ? dz / d : 0;
+    const rr = kartRadius(a, ux, uz) + kartRadius(b, -ux, -uz);
     if (d >= rr) return 0;
     if (d < 1e-4) { dx = 1; dz = 0; d = 1e-4; }
     dx /= d; dz /= d;
@@ -597,7 +621,7 @@ export function createCollisionWorld(world, track, opts = {}) {
     world, track, opts: o,
     SURFACES, surfaceInfo,
     probe, groundHeight, groundNormal, surfaceAt, surfaceData, lateralAxis,
-    resolveChassis, bumpKarts, nearbySegs, segs,
+    resolveChassis, bumpKarts, kartRadius, nearbySegs, segs,
     rasterSurface,
     get blockerCount() { return segs.length; },
     surfaceGridSize: gN,

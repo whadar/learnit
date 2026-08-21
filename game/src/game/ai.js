@@ -25,8 +25,11 @@
  *
  *  3. Personality — four difficulty tiers times per-racer traits (pace, aggression,
  *     consistency, mistake rate, preferred line offset) so a twelve-kart field argues with
- *     itself instead of running as a train. Catch-up assist is mild, capped and honest: it
- *     nudges the target speed of the trailing pack and never touches the player.
+ *     itself instead of running as a train. Over the top of that sits pack cohesion: the field
+ *     is banded towards its own centre — a dropped kart gets target speed back, a kart running
+ *     away with it gives some up — so eight karts are still racing each other on lap three
+ *     instead of touring the circuit alone. It is capped at the corner's grip limit
+ *     (`paceCap`) and it never touches a kart a human is driving.
  *
  *   const ai = createAI(world, track, (i, o) => createVehicle(world, track, o), { count: 11 });
  *   ai.update(dt);                       // steers and steps every AI vehicle
@@ -76,7 +79,9 @@ export function buildRacingLine(track, opts = {}) {
     apexLook: 80,
     smooth: 2,
     // vehicle envelope (defaults track src/physics/vehicle.js)
-    latGrip: 1.22,         // measured: the kart holds ~1.2 g on clean tarmac (tools/sim skidpad)
+    latGrip: 1.06,         // the kart measures ~1.2 g on clean tarmac (tools/sim skidpad); the line is
+                           // built at ~87 % of that, because a profile with no margin left is a
+                           // profile every kerb, crest and dusty apex throws into the olives.
     bankAssist: 0.55,      // how much of the banking angle is worth extra lateral grip
     accelLimit: 8.5,       // m/s^2 available for acceleration at low speed
     brakeLimit: 10.5,      // m/s^2 available for braking
@@ -330,6 +335,8 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
     vehicleOpts: {},
     // steering gains (tuned in tools/sim/race.mjs)
     aimBase: 4.6, aimGain: 0.56, aimMin: 6.0, aimMax: 21.0,
+    aimCurve: 26.0,        // how hard the look-ahead shortens in a corner (see below)
+    brakeAccel: 8.0,       // m/s^2 the AI plans its braking distances with (the tyres have ~10.5)
     stanley: 0.42, crossGain: 0.85, yawDamp: 0.055,
     padDetour: 3.4,        // metres off the racing line the AI will go for a boost pad
     boxDetour: 3.0,        // … or for an item box
@@ -339,10 +346,30 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
     driftMinSpeed: 8.0,    // m/s below which a hop is pointless
     driftEntry: 0.86,      // target-speed trim while sliding
     driftCornerV: 11.0,    // only true hairpins: above this the slide costs more than the boost pays
+    /* ---- pack cohesion ----
+       A kart field is only worth looking at while it is still a field. The band is measured
+       against the *centre of the pack*, not the leader (every kart but one is behind the
+       leader, so a leader-relative band could never slow a runaway down), and it is spent on
+       target speed rather than on grip: `paceCap` below keeps the fastest catching kart at the
+       corner's own limit, so nobody ever asks the tyres for more than the circuit has. */
     rubberBand: true,
-    catchMax: 0.060,           // +6.0 % target speed when far behind …
-    leadDrag: 0.028,           // … and -2.8 % when running away with it
-    catchBoost: true,          // rare, small, capped catch-up boost
+    packDead: 4.0,             // metres either side of the pack centre that count as "with the pack"
+    packSpan: 28.0,            // … and the distance at which the band saturates
+    catchMax: 0.170,           // +17 % target speed for the tail of the field …
+    leadDrag: 0.130,           // … and -13 % for a kart running away with it
+    packSolo: 0.60,            // how much of the band a kart keeps while wheel to wheel with a rival
+    /* An autopilot hero kart — attract mode, the demo, every review plate — is not trying to
+       win a race, it is the thing the camera is pointed at, and a camera subject alone on an
+       empty road is a wasted shot. So when nobody is driving it, it is banded towards the
+       middle of its own field this much harder than the rest of the grid, and the pack it was
+       seeded in front of gets to race it. A human's kart is never touched by any of this. */
+    heroBand: 2.0,
+    heroDragMax: 0.200,
+    paceCap: 1.02,             // hard ceiling on tier x personality x catch-up: the grip limit
+    tailGap: 6.0,              // metres: inside this, square behind a rival, match its speed
+    catchBoost: true,          // top-speed tow for a kart that is already flat out and dropping
+    catchBoostGap: 32,         // … only this far off the pack, where a target-speed band is spent
+    catchBoostPower: 0.20,
     step: true,                // call vehicle.update() ourselves
   }, opts);
 
@@ -414,10 +441,30 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
   /* ---- shared race context (race.js keeps this fresh; we can also derive it) ---- */
   let field = racers;               // every racer on track, player included
   let leaderProgress = 0;
-  let gate = { racing: true, tMinus: 0, go: true };
+  let packProgress = 0;             // the centre of the field, in race metres
+  let gate = { racing: true, tMinus: 0, go: true, playerAuto: false };
 
-  function setField(list) { field = (list && list.length) ? list : racers; }
-  function setGate(g) { gate = Object.assign({ racing: true, tMinus: 0, go: true }, g || {}); }
+  // NB: race.js drives the field through control() and never calls update(), so the pack
+  // centre has to be refreshed from the setters it *does* call every frame — otherwise it
+  // stays at 0 and every kart on the far side of the start line reads as a lap adrift.
+  function setField(list) { field = (list && list.length) ? list : racers; updatePackCentre(); }
+  function setGate(g) { gate = Object.assign({ racing: true, tMinus: 0, go: true, playerAuto: false }, g || {}); }
+
+  /**
+   * Where the middle of the field is. A plain mean lets one spun-out straggler drag the whole
+   * pack's reference backwards, so the tail is trimmed: the centre is the mean of everyone
+   * within `packSpan * 2` of the leader, which is the group a viewer would call "the race".
+   */
+  function updatePackCentre() {
+    let sum = 0, n = 0;
+    const cut = leaderProgress - O.packSpan * 2;
+    for (const o of field) {
+      if (!o || !o.vehicle) continue;
+      if ((o.progress ?? 0) < cut) continue;
+      sum += o.progress ?? 0; n++;
+    }
+    packProgress = n ? sum / n : leaderProgress;
+  }
 
   /* -------------------------------------------------------------- steering -- */
 
@@ -637,27 +684,52 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
       r.stats.mistakes++;
     }
 
-    /* -- catch-up assist (AI only, capped) -- */
+    /* -- who is around us -- */
+    const near = rivalPressure(r);
+
+    /* -- pack cohesion: catch-up behind the pack, drag out in front of it -- */
+    // A human's kart is never touched. An *autopilot* player's kart is a computer driver like
+    // any other (attract mode, the demo, every review plate) and joins the band, or the field
+    // it was seeded in front of could never race it.
     let catchup = 1;
-    if (O.rubberBand && !r.isPlayer) {
-      // progress is monotonic metres of race distance, so this is a plain difference
-      const gap = leaderProgress - r.progress;      // positive: we are behind the leader
-      const behindBy = Math.max(0, gap);
+    if (O.rubberBand && (!r.isPlayer || gate.playerAuto)) {
+      // progress is monotonic metres of race distance, so these are plain differences
+      const behindBy = Math.max(0, leaderProgress - r.progress);
       if (behindBy > r.stats.maxBehind) r.stats.maxBehind = behindBy;
-      const aheadBy = Math.max(0, -gap);
-      catchup = 1 + clamp((behindBy - 20) / 150, 0, 1) * O.catchMax * r.tier.catch
-        - clamp((aheadBy - 45) / 160, 0, 1) * O.leadDrag;
+      const off = packProgress - r.progress;        // + behind the pack, - out in front of it
+      const band = clamp((Math.abs(off) - O.packDead) / O.packSpan, 0, 1) * Math.sign(off);
+      // …but only while the kart is actually on its own. A leader with a rival on its bumper
+      // must not be dragged back into it — that is not a battle, it is a rear-end shunt, and
+      // it was pitching the review's lead kart off the road at the first squeeze. Equally, a
+      // chaser inside striking distance stops being towed and has to make the pass itself.
+      const hero = r.isPlayer ? O.heroBand : 1;
+      const solo = r.isPlayer ? 1 : O.packSolo + (1 - O.packSolo) * (band > 0
+        ? clamp(((near.ahead ? near.ahead.d : 1e9) - 4) / 18, 0, 1)
+        : clamp(((near.behind ? near.behind.d : 1e9) - 5) / 20, 0, 1));
+      const rate = band > 0 ? O.catchMax * r.tier.catch * hero
+        : Math.min(O.leadDrag * hero, r.isPlayer ? O.heroDragMax : O.leadDrag);
+      catchup = 1 + band * solo * rate;
+      // A tow, not a rocket: once a dropped kart is already flat out, target speed has nothing
+      // left to give, so the only honest currency is top speed. Reserved for the far tail so
+      // the karts in shot are racing on the throttle, not on a permanent boost flame.
       r.boostCool -= dt;
-      if (O.catchBoost && behindBy > 140 && r.boostCool <= 0 && st.onTrack && st.grounded && st.boost.time <= 0) {
-        try { v.addBoost(0.65, 0.10, 'catchup'); r.stats.catchBoosts++; } catch (e) { /* ignore */ }
-        r.boostCool = 7.0;
+      if (O.catchBoost && off > O.catchBoostGap && r.boostCool <= 0 && st.onTrack && st.grounded
+        && st.boost.time <= 0 && spd > (st.surfaceTop ?? 1) * P.topSpeed * 0.93) {
+        try { v.addBoost(0.85, O.catchBoostPower, 'catchup'); r.stats.catchBoosts++; } catch (e) { /* ignore */ }
+        r.boostCool = 3.2;
       }
     }
     r.catchup = catchup;
 
     /* -- aim point -- */
-    const look = clamp((O.aimBase + spd * O.aimGain) * r.tier.look, O.aimMin, O.aimMax);
-    const near = rivalPressure(r);
+    // Pure pursuit cuts whatever it aims at: a look-ahead sized for a straight, carried into a
+    // hairpin, aims *across* the corner and the kart drives straight on into the scenery — which
+    // is precisely what put the review's lead kart into the grass on Rehov Rakefet, because the
+    // slower tiers use the longest look-ahead of all. So the rig looks as far as the corner
+    // allows and no further.
+    const bend = Math.abs(line.curvatureAt(r.s + 8));
+    const look = clamp((O.aimBase + spd * O.aimGain) * r.tier.look / (1 + bend * O.aimCurve),
+      O.aimMin, O.aimMax);
     const avoid = chooseAvoid(r, near, dt);
     const attract = chooseAttract(r, dt);
     const dodge = hazardDodge(r);
@@ -710,11 +782,39 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
 
     /* -- speed -- */
     const preview = clamp(spd * 0.28, 3, 12);
-    let vTarget = line.speedAt(r.s + preview) * r.tier.speed * r.personality.pace * catchup * m.pace;
+    // The speed profile IS the grip limit, so pace is a fraction of it: a Sunday driver runs at
+    // 0.855 of the corner, an Ace at 1.000. Catch-up spends the difference and no more —
+    // `paceCap` is what stops a rubber-banded kart asking the tyres for grip the corner has not
+    // got and understeering into the olives on every catch-up lap.
+    const pace = Math.min(r.tier.speed * r.personality.pace * catchup, O.paceCap);
+    let vTarget = line.speedAt(r.s + preview) * pace * m.pace;
+    // Brake at the right *distance*, not the right moment. The profile's own backward pass is
+    // a ramp you have to already be on; a controller that only samples one preview ahead sits
+    // a metre or two above it all the way down and arrives at the apex carrying speed it
+    // cannot turn — which is how a kart ends up understeering straight on into the grass with
+    // the throttle still open. So scan forward over the kart's own braking distance and take
+    // the hardest demand: for every corner within reach, the fastest speed from which this
+    // kart could still make it.
+    const brakeA = O.brakeAccel * r.tier.brake;
+    const horizon = clamp(spd * spd / (2 * brakeA) + 10, 12, 110);
+    for (let d = Math.max(preview, 6); d <= horizon; d += 5) {
+      const vd = line.speedAt(r.s + d) * pace * m.pace;
+      const allowed = Math.sqrt(vd * vd + 2 * brakeA * d);
+      if (allowed < vTarget) vTarget = allowed;
+    }
     const surf = surfaceInfo(st.surface || 'tarmac');
     if (surf && surf.top < 1) vTarget = Math.min(vTarget, P.topSpeed * surf.top * 0.98);
     if (recovering > 0) vTarget = Math.min(vTarget, lerp(vTarget, 9.5, recovering));
     if (r.drift.on) vTarget *= O.driftEntry;   // a slide needs a slower entry than a grip lap
+    // Don't drive into the back of the kart in front. Once we are inside two kart lengths and
+    // still square behind it, match its speed instead of climbing over it — the pass has to be
+    // made with the line (chooseAvoid has already picked a side), not with the bumper. Without
+    // this the field piles into one interpenetrating clump every time the leader lifts.
+    if (O.tailGap > 0 && near.ahead && near.ahead.d < O.tailGap && Math.abs(near.ahead.lat) < 1.7) {
+      const his = near.ahead.r.vehicle?.state.forwardSpeed ?? vTarget;
+      const squeeze = clamp((O.tailGap - near.ahead.d) / (O.tailGap * 0.57), 0, 1);
+      vTarget = Math.min(vTarget, lerp(vTarget, his + 1.2, squeeze));
+    }
     r.targetSpeed = vTarget;
     const err = vTarget - spd;
     if (err > 0.2) { inp.throttle = 1; inp.brake = 0; }
@@ -790,6 +890,7 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
       leaderProgress = order[0]?.progress ?? 0;
       field = racers;
     }
+    updatePackCentre();
     for (const r of racers) drive(r, dt);
     return api;
   }
@@ -798,7 +899,8 @@ export function createAI(world, track, vehicleFactory, opts = {}) {
     racers, line, track: trk, tiers: TIERS, pads, boxSlots,
     update, setField, setGate,
     get leaderProgress() { return leaderProgress; },
-    setLeaderProgress(p) { leaderProgress = p; },
+    get packProgress() { return packProgress; },
+    setLeaderProgress(p) { leaderProgress = p; updatePackCentre(); },
     /** Drive one racer without stepping its vehicle (race.js owns the integration order). */
     control(r, dt) { const keep = O.step; O.step = false; drive(r, dt); O.step = keep; return r.input; },
     setDifficulty(d) {

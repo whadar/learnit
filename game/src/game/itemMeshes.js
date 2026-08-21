@@ -394,9 +394,9 @@ export function makeJaffa(scale = 1) {
     envMapIntensity: 1.6,
   })));
   const rim = mesh(new THREE.SphereGeometry(0.28, 20, 14), mat('jaffa-rim', () => new THREE.MeshBasicMaterial({
-    color: 0xff9f2e, transparent: true, opacity: 0.42, side: THREE.BackSide,
+    color: 0xff9f2e, transparent: true, opacity: 0.26, side: THREE.BackSide,
     blending: THREE.AdditiveBlending, depthWrite: false,
-  })), { scale: 1.13, shadow: false });
+  })), { scale: 1.10, shadow: false });
   rim.renderOrder = 2;
   g.add(rim);
   g.add(mesh(new THREE.CylinderGeometry(0.022, 0.03, 0.07, 8),
@@ -970,7 +970,7 @@ export function createItemBoxMesh(opts = {}) {
   g.add(shell);
 
   const innerMat = mat('box-inner', () => new THREE.MeshBasicMaterial({
-    color: 0xffd48a, transparent: true, opacity: 0.30, blending: THREE.AdditiveBlending, depthWrite: false,
+    color: 0xffd48a, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false,
   }));
   g.add(mesh(mat('box-inner-geo', () => roundedBoxGeometry(size * 0.80, 0.24, 3)), innerMat, { shadow: false }));
 
@@ -1015,7 +1015,7 @@ export function createItemBoxMesh(opts = {}) {
   // glowing seed in the middle
   const core = mesh(mat('box-core-geo', () => new THREE.OctahedronGeometry(size * 0.13, 0)),
     mat('box-core', () => new THREE.MeshBasicMaterial({
-      color: 0xffd684, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
+      color: 0xffd684, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false,
     })), { shadow: false });
   g.add(core);
 

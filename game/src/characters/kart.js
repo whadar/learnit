@@ -504,7 +504,7 @@ export function createKart(id, opts = {}) {
     paint: new THREE.MeshPhysicalMaterial({
       color: paintCol, roughness: 0.22, metalness: 0.06,
       clearcoat: 1.0, clearcoatRoughness: 0.035, envMap: env, envMapIntensity: 1.9,
-      emissive: paintCol.clone().multiplyScalar(0.16), emissiveIntensity: 1.0,
+      emissive: paintCol.clone().multiplyScalar(0.22), emissiveIntensity: 1.0,
       specularIntensity: 1.0, specularColor: new THREE.Color(0xffffff),
     }),
     trim: new THREE.MeshPhysicalMaterial({

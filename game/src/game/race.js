@@ -47,6 +47,7 @@ export function createRace(world, track, opts = {}) {
     vehicleOpts: {},
     collision: null,
     line: null, lineOpts: null,
+    aiOpts: null,               // extra createAI() options (the sim benches tune through this)
     introTime: 6.0,
     countdownTime: 3.6,
     rocket: { open: 0.75, perfect: 0.34, close: 0.05, burnout: 1.30, power: 0.34, dur: 1.35 },
@@ -172,7 +173,7 @@ export function createRace(world, track, opts = {}) {
 
   /* -------------------------------------------------------------- the AI --- */
   const tierPlan = DIFFICULTY[O.difficulty] || DIFFICULTY[150];
-  const ai = createAI(world, trk, null, {
+  const ai = createAI(world, trk, null, Object.assign({
     seed: O.seed ^ 0x51ed,
     count: O.field,
     vehicles,
@@ -184,7 +185,7 @@ export function createRace(world, track, opts = {}) {
     names: racers.map(r => r.name),
     stats: racers.map(r => r.entry?.stats || null),
     step: false,                        // race.js owns the integration order
-  });
+  }, O.aiOpts || {}));                  // tuning hook for tools/sim/*.mjs
   ai.racers.forEach((a, i) => { a.isPlayer = racers[i].isPlayer; racers[i].ai = a; });
 
   /* --------------------------------------------------------------- state --- */
@@ -328,6 +329,30 @@ export function createRace(world, track, opts = {}) {
     r.u = u;
   }
 
+  /**
+   * The two clocks on the timing panel, kept consistent with each other.
+   *
+   * TOTAL is the race clock and LAP is the split since the last crossing, so TOTAL can never
+   * be the smaller of the two. It could be, once: a scenario (the review harness's photo
+   * finish, a rewind, a restart into a part-run race) back-dates `lapStart` to fake a race in
+   * progress, and the panel then read a two-second total under a two-minute lap. The split is
+   * therefore always measured against the race clock, and the total is the honest sum of the
+   * laps actually on the board plus the lap in progress — with any lap that was never timed
+   * valued at the current split, which is the only estimate available.
+   */
+  function lapSplit(r) {
+    if (!r) return 0;
+    return Math.max(0, state.raceTime - Math.min(r.lapStart, state.raceTime));
+  }
+  function elapsedFor(r) {
+    if (!r) return state.raceTime;
+    const split = lapSplit(r);
+    let done = 0;
+    for (const t of r.lapTimes) done += t;
+    const untimed = Math.max(0, r.lap - r.lapTimes.length);   // laps the clock never saw
+    return Math.max(state.raceTime, done + untimed * split + split);
+  }
+
   function completeLap(r) {
     const t = state.raceTime;
     const lapTime = t - r.lapStart;
@@ -426,6 +451,56 @@ export function createRace(world, track, opts = {}) {
     }
   }
 
+  /* ------------------------------------------------------------ contact --- */
+  /**
+   * Kart-vs-kart contact for the whole field.
+   *
+   * `vehicle.bump()` separates two karts as circles, which is right for a side-by-side lean
+   * but lets a queue overlap by half a bonnet nose to tail — a bunched pack renders as one
+   * interpenetrating mass. So the race resolves its own field with the collision world's
+   * oriented footprint (kart-shaped, yaw-aware) and a couple of relaxation passes, because
+   * separating a chain of eight karts one pair at a time simply pushes the overlap along it.
+   */
+  const KART_HALF_LEN = 0.92, KART_HALF_WID = 0.92;
+  const _bumpA = { pos: null, vel: null, mass: 200, radius: 0.92, yaw: 0, halfLen: KART_HALF_LEN, halfWid: KART_HALF_WID };
+  const _bumpB = { pos: null, vel: null, mass: 200, radius: 0.92, yaw: 0, halfLen: KART_HALF_LEN, halfWid: KART_HALF_WID };
+  function fillBump(o, v) {
+    const st = v.state;
+    o.pos = st.pos; o.vel = st.vel; o.yaw = st.yaw;
+    o.mass = v.params?.mass ?? 200;
+    o.radius = v.params?.chassisRadius ?? 0.92;
+    return o;
+  }
+  function bumpField() {
+    const near = [];
+    for (let i = 0; i < racers.length; i++) {
+      for (let j = i + 1; j < racers.length; j++) {
+        const a = racers[i].vehicle.state.pos, b = racers[j].vehicle.state.pos;
+        const dx = a.x - b.x, dz = a.z - b.z;
+        if (dx * dx + dz * dz < 20) near.push(i, j);
+      }
+    }
+    if (!near.length) return;
+    if (!collision || typeof collision.bumpKarts !== 'function') {
+      for (let k = 0; k < near.length; k += 2) {
+        try { racers[near[k]].vehicle.bump(racers[near[k + 1]].vehicle); } catch (e) { /* ignore */ }
+      }
+      return;
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      const rest = pass === 0 ? 0.55 : 0;          // the second pass only un-overlaps
+      for (let k = 0; k < near.length; k += 2) {
+        const va = racers[near[k]].vehicle, vb = racers[near[k + 1]].vehicle;
+        let imp = 0;
+        try { imp = collision.bumpKarts(fillBump(_bumpA, va), fillBump(_bumpB, vb), rest); } catch (e) { imp = 0; }
+        if (imp > 0.3) {
+          va.state.bumpImpact = Math.max(va.state.bumpImpact, imp);
+          vb.state.bumpImpact = Math.max(vb.state.bumpImpact, imp);
+        }
+      }
+    }
+  }
+
   /* --------------------------------------------------------------- update -- */
   const zeroInput = { throttle: 0, brake: 0, steer: 0, drift: 0, item: 0, look: 0 };
   const holdInput = { throttle: 0, brake: 0.35, steer: 0, drift: 0, item: 0, look: 0 };
@@ -465,7 +540,12 @@ export function createRace(world, track, opts = {}) {
     }
     ai.setField(ai.racers);
     ai.setLeaderProgress(state.leader ? state.leader.progress : 0);
-    ai.setGate({ racing: nowRacing, tMinus: state.countdown, go: state.go });
+    // `playerAuto` tells the AI that kart 0 is one of its own: nobody is driving it, so the
+    // pack may race it. The moment a human takes the wheel it drops back out of the band.
+    ai.setGate({
+      racing: nowRacing, tMinus: state.countdown, go: state.go,
+      playerAuto: !(humanSeen || typeof O.input === 'function'),
+    });
 
     for (const r of racers) {
       let inp;
@@ -498,15 +578,7 @@ export function createRace(world, track, opts = {}) {
       r.vehicle.update(dt, inp);
     }
 
-    if (O.bump) {
-      for (let i = 0; i < racers.length; i++) {
-        for (let j = i + 1; j < racers.length; j++) {
-          const a = racers[i].vehicle.state.pos, b = racers[j].vehicle.state.pos;
-          const dx = a.x - b.x, dz = a.z - b.z;
-          if (dx * dx + dz * dz < 9) { try { racers[i].vehicle.bump(racers[j].vehicle); } catch (e) { /* ignore */ } }
-        }
-      }
-    }
+    if (O.bump) bumpField();
 
     if (O.items) {
       try { O.items.update(dt, vehicles); } catch (e) { /* the race outlives a bad item frame */ }
@@ -630,7 +702,7 @@ export function createRace(world, track, opts = {}) {
         phase: state.phase, message: state.message, countdown: state.countdown,
         lap: p ? Math.min(p.lap + 1, laps) : 1, laps,
         place: p ? p.place : 1, field: racers.length,
-        time: state.raceTime, lapTime: p ? state.raceTime - p.lapStart : 0,
+        time: elapsedFor(p), lapTime: lapSplit(p),
         bestLap: p && Number.isFinite(p.bestLap) ? p.bestLap : null,
         speedKmh: p ? p.vehicle.state.speed * 3.6 : 0,
         wrongWay: !!p?.wrongWay, item: O.items && p ? O.items.hud(p.vehicle) : null,

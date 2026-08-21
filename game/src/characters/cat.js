@@ -519,9 +519,19 @@ export function createCat(id, opts = {}) {
   M.ear = furMaterial(spec, 'ear', 96, { nrep: [2, 3], side: THREE.DoubleSide });
   M.limb = furMaterial(spec, 'arm', 96, { nrep: [2, 5] });
   M.tail = furMaterial(spec, 'tail', 96, { nrep: [2, 8] });
-  M.suit = new THREE.MeshPhysicalMaterial({ color: spec.suit[0], roughness: 0.72, metalness: 0.0, clearcoat: 0.10, clearcoatRoughness: 0.6 });
+  M.suit = new THREE.MeshPhysicalMaterial({
+    color: spec.suit[0], roughness: 0.58, metalness: 0.0, clearcoat: 0.25, clearcoatRoughness: 0.5,
+    emissive: new THREE.Color(spec.suit[0]).multiplyScalar(0.14), emissiveIntensity: 1.0,
+    envMapIntensity: 1.2,
+  });
   M.trim = new THREE.MeshPhysicalMaterial({ color: spec.suit[1], roughness: 0.66, metalness: 0.0, clearcoat: 0.08 });
-  M.gear = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(spec.suit[0]).multiplyScalar(0.78), roughness: 0.34, metalness: 0.02, clearcoat: 0.5, clearcoatRoughness: 0.12 });
+  // The helmet is the driver's identity badge at 40 m — lacquered, at full chroma, with a
+  // touch of self-colour emissive so it still reads on the shaded side of the seat.
+  M.gear = new THREE.MeshPhysicalMaterial({
+    color: spec.suit[0], roughness: 0.16, metalness: 0.05,
+    clearcoat: 1.0, clearcoatRoughness: 0.04, envMapIntensity: 1.8,
+    emissive: new THREE.Color(spec.suit[0]).multiplyScalar(0.20), emissiveIntensity: 1.0,
+  });
   M.chrome = new THREE.MeshStandardMaterial({ color: 0xd8dde2, roughness: 0.18, metalness: 1.0 });
   M.glass = new THREE.MeshPhysicalMaterial({ color: 0x2a3d52, roughness: 0.05, metalness: 0.0, clearcoat: 1, transparent: true, opacity: 0.55 });
   M.pink = new THREE.MeshPhysicalMaterial({ color: spec.nose, roughness: 0.45, clearcoat: 0.4, clearcoatRoughness: 0.25 });

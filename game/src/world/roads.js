@@ -91,27 +91,57 @@ export function buildRoadTextures(p) {
   const half = p.total * 0.5, roadHalf = p.road * 0.5;
   const mx = p.total / W, my = p.vMetres / H;   // metres per texel
 
-  // palette
-  // 'gravel' is a *racing* gravel surface: dirt-like grain, but no weed strip and its
-  // own palette, so the circuit never has to share a look with a village farm track.
-  const dirtKind = p.kind === 'dirt' || p.kind === 'path' || p.kind === 'gravel';
+  // 'gravel' is the *circuit's* unsealed sector: a graded, oil-darkened limestone road, not
+  // the pale village farm track ('dirt'). It keeps its own palette so the racing surface is
+  // always a clear value step below the Amikam hillside.
+  const dirtKind = p.kind === 'dirt' || p.kind === 'path';
+  const sealed = p.kind === 'asphalt' || p.kind === 'gravel';
+  const chip = p.kind === 'gravel';             // tar-and-chip, coarse pale aggregate
+
+  // Palettes are LINEAR albedo. The scene runs a hot sun through ACES plus a warm grade, so
+  // every value here comes back a long way lifted: the pale hillside (linear ~0.30) renders
+  // near byte 190, which is why the road has to be authored down at 0.06-0.11 to read as a
+  // road at all. These numbers were chosen from rendered frames, not from a swatch.
   const base = p.base || (p.kind === 'path' ? [0.40, 0.335, 0.245]
     : dirtKind ? [0.575, 0.515, 0.405]
-      : [0.108, 0.106, 0.104]);
-  const shoulderCol = p.shoulder || (dirtKind ? [0.50, 0.455, 0.335] : [0.415, 0.375, 0.285]);
+      : chip ? [0.078, 0.0735, 0.067]
+        : [0.053, 0.0525, 0.056]);
+  const shoulderCol = p.shoulder || (dirtKind ? [0.50, 0.455, 0.335]
+    : chip ? [0.235, 0.215, 0.163] : [0.225, 0.203, 0.152]);
 
-  // a few random asphalt repairs, and the odd oil stain
-  const polish = p.polish || (dirtKind
-    ? [{ at: p.road * 0.27, w: 0.34 }]
-    : [{ at: p.road * 0.265, w: 0.46 }]);
+  // Wheel paths. On a sun-baked road the tyre tracks are POLISHED — they come back lighter
+  // and smoother than the coarse surface either side, which is what draws the racing line.
+  const polish = p.polish || (sealed
+    ? [{ at: p.road * 0.265, w: 0.46 }]
+    : [{ at: p.road * 0.27, w: 0.34 }]);
   const R = rng(seed * 7919 + 13);
   const patches = [];
-  if (!dirtKind) for (let i = 0; i < 4; i++) {
-    patches.push({ v: R() * p.vMetres, len: 1.4 + R() * 3.4, u: (R() - 0.5) * p.road * 0.75,
-      wid: 1.0 + R() * 2.6, tone: 0.72 + R() * 0.5, seed: (R() * 1e6) | 0 });
+  if (p.kind === 'asphalt') for (let i = 0; i < 5; i++) {
+    patches.push({ v: R() * p.vMetres, len: 0.9 + R() * 2.1, u: (R() - 0.5) * p.road * 0.78,
+      wid: 0.8 + R() * 1.7, tone: R() < 0.55 ? 0.66 + R() * 0.22 : 1.22 + R() * 0.42, seed: (R() * 1e6) | 0 });
   }
   const stains = [];
-  if (!dirtKind) for (let i = 0; i < 6; i++) stains.push({ v: R() * p.vMetres, u: (R() - 0.5) * p.road * 0.4, r: 0.25 + R() * 0.6 });
+  if (sealed) for (let i = 0; i < 5; i++) stains.push({ v: R() * p.vMetres, u: (R() - 0.5) * p.road * 0.4, r: 0.25 + R() * 0.6 });
+  // transverse construction joints — one of the cheapest, strongest "this is a road" cues
+  const joints = [];
+  if (sealed) { const n = Math.max(1, Math.round(p.vMetres / 7.5)); for (let i = 0; i < n; i++) joints.push(i * p.vMetres / n + R() * 0.6); }
+
+  // Edge line geometry, in metres from the centreline.
+  const edgeInset = p.edgeInset ?? 0.52;                    // centre of the line, in from the edge
+  const edgeHalf = p.edgeHalf ?? 0.115;                     // half-width: a fat 23 cm line so it
+  const edgeAtU = roadHalf - edgeInset;                     // survives mip-mapping at distance
+  const dustW = p.dustWidth ?? 0.62;                        // wind-drifted dust outboard of the line
+
+  /* Noise helpers in metres: frequency `f` is cycles per metre in BOTH axes, and the lattice
+   * period is derived from it so the pattern still tiles every `vMetres`. The old code passed
+   * fixed lattice counts that did not match the frequency, which is what stretched the grain
+   * into the vertical smears the critics saw. */
+  const NF = (U, V, f, sd, oct = 3, gain = 0.5) =>
+    fbm(U * f, V * f, Math.max(1, Math.round(f * p.total)), Math.max(1, Math.round(f * p.vMetres)), sd, oct, gain);
+  const VN = (U, V, f, sd) =>
+    vnoise(U * f, V * f, Math.max(1, Math.round(f * p.total)), Math.max(1, Math.round(f * p.vMetres)), sd);
+  const RG = (U, V, f, sd, oct = 3) =>
+    ridged(U * f, V * f, Math.max(1, Math.round(f * p.total)), Math.max(1, Math.round(f * p.vMetres)), sd, oct);
 
   for (let j = 0; j < H; j++) {
     const V = j * my;                            // metres along
@@ -121,83 +151,113 @@ export function buildRoadTextures(p) {
       const au = Math.abs(U);
 
       // --- ragged hard-surface edge ---------------------------------------
-      const wobble = (fbm(au * 0.9, V * 0.55, 8, 24, seed + 41, 3) - 0.5) * 0.55
-        + (fbm(au * 4.0, V * 3.1, 16, 64, seed + 87, 2) - 0.5) * 0.18;
+      const wobble = (NF(au, V, 0.55, seed + 41, 3) - 0.5) * 0.5
+        + (NF(au, V, 2.6, seed + 87, 2) - 0.5) * 0.16;
       const edgeAt = roadHalf + wobble;
-      const onRoad = clamp((edgeAt - au) / 0.28 + 0.5, 0, 1);
+      const onRoad = clamp((edgeAt - au) / 0.26 + 0.5, 0, 1);
 
       // --- base surface ----------------------------------------------------
-      let r = base[0], g = base[1], b = base[2], rough = dirtKind ? 0.92 : 0.74, h = 0;
+      let r = base[0], g = base[1], b = base[2], rough = sealed ? 0.74 : 0.92, h = 0;
 
-      if (dirtKind) {
-        const dust = fbm(U * 0.85, V * 0.85, 12, 24, seed + 3, 5);
-        const grit = fbm(U * 9.0, V * 9.0, 48, 128, seed + 19, 3);
+      if (!sealed) {
+        // village farm track / footpath: pale limestone, ruts, a weed strip
+        const dust = NF(U, V, 0.85, seed + 3, 4);
+        const grit = NF(U, V, 5.0, seed + 19, 3);
         const tone = 0.90 + dust * 0.20 + (grit - 0.5) * 0.22;
         r *= tone; g *= tone * 0.99; b *= tone * 0.95;
         h = dust * 0.5 + grit * 0.35;
-        // two compacted wheel ruts
         let rut = 0;
         for (const bd of polish) rut = Math.max(rut, Math.exp(-((au - bd.at) ** 2) / (2 * bd.w * bd.w)) * (bd.k ?? 1));
         r = lerp(r, r * 0.80, rut); g = lerp(g, g * 0.79, rut); b = lerp(b, b * 0.80, rut);
         rough -= rut * 0.16; h -= rut * 0.75;
-        // grass / weed strip down the middle of a farm track
         if (p.kind === 'dirt') {
           const cen = Math.exp(-(U * U) / (2 * 0.52 * 0.52));
-          const tuft = fbm(U * 7.0, V * 7.0, 40, 96, seed + 61, 3);
+          const tuft = NF(U, V, 3.5, seed + 61, 3);
           const gr = clamp(cen * (tuft * 1.7 - 0.32), 0, 1);
           r = lerp(r, 0.255 + tuft * 0.10, gr); g = lerp(g, 0.275 + tuft * 0.13, gr); b = lerp(b, 0.118 + tuft * 0.05, gr);
           rough = lerp(rough, 0.97, gr); h += gr * 1.5;
         }
-        // loose stones
-        const st = vnoise(U * 6.2, V * 6.2, 34, 96, seed + 909);
+        const st = VN(U, V, 3.4, seed + 909);
         if (st > 0.90) { const q = (st - 0.90) * 10; r += q * 0.20; g += q * 0.19; b += q * 0.17; h += q * 1.3; }
       } else {
-        // asphalt: fine aggregate + a coarse macro variation
-        const agg = fbm(U * 26, V * 26, 96, 256, seed + 5, 3, 0.62);
-        const macro = fbm(U * 0.6, V * 0.6, 6, 16, seed + 71, 4);
-        const tone = 0.90 + macro * 0.22 + (agg - 0.5) * 0.46;
-        r *= tone; g *= tone; b *= tone * 1.02;
-        h = agg * 1.5 + macro * 0.5;
-        rough = 0.66 + (agg - 0.5) * 0.22 + macro * 0.10;
+        /* ---- sealed racing surface: chip-seal tarmac ------------------------------
+         * Binder is near-black; the read comes from the limestone chippings bedded in it,
+         * from the macro sun-bleaching, and from the polished wheel paths. Frequencies are
+         * kept under the U-axis Nyquist (W / total texels per metre) so nothing aliases into
+         * the low-frequency smudge the previous surface had. */
+        const macro = NF(U, V, 0.32, seed + 71, 4);            // sun-bleach / age drift
+        const grain = NF(U, V, 3.2, seed + 5, 2, 0.6);         // binder grain
+        const tone = 0.88 + macro * 0.22 + (grain - 0.5) * 0.24;
+        r *= tone; g *= tone; b *= tone * 1.03;
+        h = grain * 1.1 + macro * 0.4;
+        rough = 0.68 + (grain - 0.5) * 0.20 + macro * 0.10;
 
-        // tyre-polished wheel paths — the darkest, smoothest part of any road
+        // pale limestone chippings sitting proud of the binder
+        const cf = chip ? 6.4 : 5.4;
+        const c1 = VN(U, V, cf, seed + 401), c2 = VN(U, V, cf * 1.7, seed + 733);
+        const chipT = clamp((Math.max(c1, c2 * 0.94) - (chip ? 0.72 : 0.79)) * (chip ? 2.9 : 3.8), 0, 1);
+        const chipCol = chip ? [0.126, 0.118, 0.100] : [0.092, 0.089, 0.083];
+        r = lerp(r, chipCol[0], chipT * 0.72); g = lerp(g, chipCol[1], chipT * 0.72); b = lerp(b, chipCol[2], chipT * 0.72);
+        h += chipT * 0.42; rough = lerp(rough, 0.90, chipT * 0.6);
+
+        // tyre-polished wheel paths: lighter, smoother, and the surface's racing line
         let pol = 0;
         for (const bd of polish) pol = Math.max(pol, Math.exp(-((au - bd.at) ** 2) / (2 * bd.w * bd.w)) * (bd.k ?? 1));
-        r = lerp(r, r * 0.80, pol); g = lerp(g, g * 0.80, pol); b = lerp(b, b * 0.82, pol);
-        rough -= pol * 0.26; h -= pol * 0.35;
+        pol *= 0.72 + NF(U, V, 0.22, seed + 617, 3) * 0.55;
+        const wear = clamp(pol, 0, 1);
+        r = lerp(r, r * 1.44 + 0.017, wear); g = lerp(g, g * 1.43 + 0.0165, wear); b = lerp(b, b * 1.40 + 0.0155, wear);
+        rough -= wear * 0.20; h -= wear * 0.30;
 
-        // repair patches with a seam around them
+        // repair patches: half are fresh dark seal, half are old bleached ones
         for (const pa of patches) {
           let dv = Math.abs(V - pa.v); dv = Math.min(dv, p.vMetres - dv);
-          const inV = clamp((pa.len - dv) / 0.22, 0, 1);
-          const inU = clamp((pa.wid - Math.abs(U - pa.u)) / 0.22, 0, 1);
+          // a hand-cut patch is never a clean rectangle: wobble both edges
+          const wb = (NF(U, V, 1.1, pa.seed + 7, 2) - 0.5) * 0.45;
+          const inV = clamp((pa.len + wb - dv) / 0.22, 0, 1);
+          const inU = clamp((pa.wid + wb - Math.abs(U - pa.u)) / 0.22, 0, 1);
           const m = inU * inV;
           if (m <= 0) continue;
-          const pt = pa.tone * (0.9 + fbm(U * 3, V * 3, 12, 32, pa.seed, 3) * 0.25);
-          r = lerp(r, base[0] * pt, m); g = lerp(g, base[1] * pt, m); b = lerp(b, base[2] * pt, m);
+          const pt = pa.tone * (0.92 + NF(U, V, 1.4, pa.seed, 3) * 0.20);
+          r = lerp(r, base[0] * pt, m * 0.9); g = lerp(g, base[1] * pt, m * 0.9); b = lerp(b, base[2] * pt, m * 0.9);
           rough = lerp(rough, 0.80, m);
           const seam = m * (1 - m) * 4;
-          r -= seam * 0.03; g -= seam * 0.03; b -= seam * 0.03; h -= seam * 0.9;
+          r -= seam * 0.022; g -= seam * 0.022; b -= seam * 0.022; h -= seam * 0.9;
+        }
+        // transverse construction joints across the full width
+        for (const jv of joints) {
+          let dv = Math.abs(V - jv); dv = Math.min(dv, p.vMetres - dv);
+          const wob = (NF(U, V, 0.9, seed + 313, 2) - 0.5) * 0.10;
+          const m = clamp(1 - Math.abs(dv + wob) / 0.075, 0, 1);
+          if (m <= 0) continue;
+          r = lerp(r, r * 0.72, m); g = lerp(g, g * 0.72, m); b = lerp(b, b * 0.74, m);
+          h -= m * 1.4; rough = lerp(rough, 0.86, m);
         }
         // crack network
-        const cx = ridged(U * 1.5, V * 1.5, 10, 26, seed + 211, 3);
-        const crack = clamp((cx - 0.80) * 7, 0, 1) * clamp(0.35 + macro, 0, 1);
-        r = lerp(r, 0.052, crack); g = lerp(g, 0.050, crack); b = lerp(b, 0.050, crack);
-        h -= crack * 2.2; rough = lerp(rough, 0.86, crack);
-        // oil marks
+        const cx = RG(U, V, 0.85, seed + 211, 3);
+        const crack = clamp((cx - 0.855) * 8, 0, 1) * clamp(0.25 + macro * 0.9, 0, 1);
+        r = lerp(r, base[0] * 0.45, crack); g = lerp(g, base[1] * 0.45, crack); b = lerp(b, base[2] * 0.45, crack);
+        h -= crack * 2.0; rough = lerp(rough, 0.88, crack);
+        // oil marks down the middle
         for (const s of stains) {
           let dv = Math.abs(V - s.v); dv = Math.min(dv, p.vMetres - dv);
           const d = Math.hypot((U - s.u) * 1.6, dv);
-          const m = clamp(1 - d / s.r, 0, 1) ** 1.6 * 0.55;
-          r = lerp(r, r * 0.55, m); g = lerp(g, g * 0.55, m); b = lerp(b, b * 0.58, m);
-          rough = lerp(rough, 0.30, m);
+          const m = clamp(1 - d / s.r, 0, 1) ** 1.6 * 0.5;
+          r = lerp(r, r * 0.62, m); g = lerp(g, g * 0.62, m); b = lerp(b, b * 0.66, m);
+          rough = lerp(rough, 0.34, m);
         }
+        // wind-drifted dust banked against the edges — warm, pale, and always OUTBOARD of
+        // the painted edge line, so it never eats the contrast that makes the edge readable.
+        const dz = clamp((au - (edgeAtU + edgeHalf)) / dustW, 0, 1);
+        const drift = clamp(dz * dz * (0.42 + NF(U, V, 0.75, seed + 881, 3) * 0.80), 0, 0.72);
+        const dcol = [0.148, 0.126, 0.086];
+        r = lerp(r, dcol[0], drift); g = lerp(g, dcol[1], drift); b = lerp(b, dcol[2], drift);
+        rough = lerp(rough, 0.95, drift);
       }
 
       // --- shoulder / verge -------------------------------------------------
       if (onRoad < 1) {
-        const gv = fbm(U * 1.7, V * 1.7, 14, 34, seed + 303, 4);
-        const st = vnoise(U * 8, V * 8, 44, 110, seed + 707);
+        const gv = NF(U, V, 1.0, seed + 303, 4);
+        const st = VN(U, V, 3.0, seed + 707);
         let sr = shoulderCol[0] * (0.78 + gv * 0.5), sg = shoulderCol[1] * (0.78 + gv * 0.5), sb = shoulderCol[2] * (0.76 + gv * 0.5);
         // dry grass creeping in from the verge
         const dry = clamp((au - roadHalf - 0.35) / Math.max(0.35, half - roadHalf), 0, 1) * (0.35 + gv * 0.8);
@@ -211,34 +271,35 @@ export function buildRoadTextures(p) {
 
       // --- paint -------------------------------------------------------------
       if (p.centre || p.edge) {
-        const wear = fbm(U * 2.2, V * 1.1, 12, 20, seed + 555, 4);
+        const worn = NF(U, V, 0.55, seed + 555, 4);
         const paint = (dist, wide, dash) => {
-          let a = clamp((wide - dist) / 0.05 + 0.5, 0, 1);
+          let a = clamp((wide - dist) / 0.045 + 0.5, 0, 1);
           if (a <= 0) return 0;
           if (dash) {
             const ph = (V % dash.period) / dash.period;
             if (ph > dash.duty) return 0;
             a *= clamp(Math.min(ph, dash.duty - ph) / 0.04, 0, 1);
           }
-          return a * clamp(1.35 - wear * 1.25, 0, 1);
+          // scuffed, but never below half strength: a line that fades out is a line the
+          // player cannot use to find the edge of the road.
+          return a * clamp(1.45 - worn * 0.95, 0.45, 1);
         };
         let pa = 0;
-        if (p.centre === 'solid') pa = Math.max(pa, paint(au, 0.055, null));
-        else if (p.centre === 'dash') pa = Math.max(pa, paint(au, 0.055, { period: 9, duty: 3 }));
-        else if (p.centre === 'double') pa = Math.max(pa, paint(Math.abs(au - 0.12), 0.055, null));
-        if (p.edge) pa = Math.max(pa, paint(Math.abs(au - (roadHalf - 0.32)), 0.05, null) * onRoad);
+        if (p.centre === 'solid') pa = Math.max(pa, paint(au, 0.085, null));
+        else if (p.centre === 'dash') pa = Math.max(pa, paint(au, 0.085, { period: p.vMetres / Math.max(1, Math.round(p.vMetres / 8)), duty: 0.42 }));
+        else if (p.centre === 'double') pa = Math.max(pa, paint(Math.abs(au - 0.16), 0.075, null));
+        if (p.edge) pa = Math.max(pa, paint(Math.abs(au - edgeAtU), edgeHalf, null) * onRoad);
         if (pa > 0) {
           pa *= onRoad;
-          const pc = p.paintCol || [0.86, 0.845, 0.80];
+          const pc = p.paintCol || [0.60, 0.585, 0.545];
           r = lerp(r, pc[0], pa); g = lerp(g, pc[1], pa); b = lerp(b, pc[2], pa);
-          rough = lerp(rough, 0.52, pa); h += pa * 0.5;
+          rough = lerp(rough, 0.50, pa); h += pa * 0.55;
         }
       }
 
       cr[k] = r; cg[k] = g; cb[k] = b; rn[k] = clamp(rough, 0.06, 1); hgt[k] = h;
     }
   }
-
   // --- pack ---------------------------------------------------------------
   const enc = v => Math.round(clamp(Math.pow(clamp(v, 0, 1), 1 / 2.2), 0, 1) * 255);
   for (let k = 0; k < W * H; k++) {
@@ -567,7 +628,7 @@ export function createRoads(engine, world, opts = {}) {
     const tex = buildRoadTextures({
       total: spec.w + spec.sh * 2, road: spec.w, vMetres: cfg.vMetres, kind: cfg.kind,
       centre: cfg.centre, edge: cfg.edge, seed: cfg.seed, normalStrength: cfg.normalStrength,
-      W: key === 'path' ? 96 : 160, H: key === 'path' ? 512 : 1024,
+      W: key === 'path' ? 96 : 208, H: key === 'path' ? 512 : 1024,
     });
     const mat = mats[key] = createRoadMaterial(tex, { normalScale: key === 'track' ? 1.2 : 0.95 });
     const g = mergeGeoms(buckets[key]);

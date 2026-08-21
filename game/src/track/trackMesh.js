@@ -317,27 +317,35 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   // so the painted edge lines land at an exact metric offset whatever the local width is.
   const MARGIN = 0.32;
   const NOMW = 13.0;
+  // Moshav asphalt: near-black chip-seal binder, pale limestone chippings, a dashed centre
+  // line, fat white edge lines and dust banked outboard of them. The circuit HAS to be a
+  // clear value step below the Amikam hillside (which renders around 190/255) or the ribbon
+  // dissolves into the terrain — that is what the critics saw. Authored linear albedo lands
+  // this surface near 90-135/255 in sun.
   const tarmacTex = buildRoadTextures({
-    total: NOMW + MARGIN * 2, road: NOMW, vMetres: 22, kind: 'asphalt', centre: null, edge: true,
-    seed: 771, normalStrength: 1.05, W: 224, H: 1024,
-    polish: [{ at: 0, w: 2.1, k: 0.8 }, { at: 3.3, w: 0.9 }],
+    total: NOMW + MARGIN * 2, road: NOMW, vMetres: 22, kind: 'asphalt',
+    centre: 'dash', edge: true,
+    seed: 771, normalStrength: 0.85, W: 320, H: 1024,
+    edgeInset: 0.62, edgeHalf: 0.125, dustWidth: 0.48,
+    shoulder: [0.152, 0.138, 0.106],
+    polish: [{ at: 0, w: 3.05, k: 0.92 }, { at: 4.95, w: 0.95, k: 0.42 }],
   });
-  // The gravel sectors used to be authored at almost exactly the albedo of the surrounding
-  // Amikam hillside, which is why the circuit dissolved into the terrain in oliveGrove and
-  // itemChaos. They are now compacted, oil-darkened limestone with a painted edge line — a
-  // clear value step below the sand either side.
+  // The unsealed sectors are the same road, older: a graded, oil-darkened limestone surface
+  // dressed with coarse chippings. No centre line, a scuffed edge line, and a wider worn
+  // racing line — characterful, but never the colour of the hillside beside it.
   const gravelTex = buildRoadTextures({
     total: NOMW + MARGIN * 2, road: NOMW, vMetres: 19, kind: 'gravel', centre: null, edge: true,
-    seed: 883, normalStrength: 1.35, W: 224, H: 1024,
-    base: [0.288, 0.272, 0.246], shoulder: [0.232, 0.214, 0.178],
-    paintCol: [0.90, 0.885, 0.845],
-    polish: [{ at: 0, w: 2.5, k: 0.85 }, { at: 3.5, w: 1.05 }],
+    seed: 883, normalStrength: 0.80, W: 320, H: 1024,
+    edgeInset: 0.60, edgeHalf: 0.115, dustWidth: 0.55,
+    shoulder: [0.162, 0.146, 0.112],
+    paintCol: [0.58, 0.565, 0.522],
+    polish: [{ at: 0, w: 3.35, k: 0.95 }, { at: 5.1, w: 1.05, k: 0.45 }],
   });
   // Tarmac and gravel strips overlap by a few stations where a sector changes surface. They
   // used to carry the SAME polygon offset, so the pair z-fought over an 11 m band and the same
   // stretch of road came back a different colour from shot to shot. Tarmac now always wins.
-  const matTarmac = createRoadMaterial(tarmacTex, { normalScale: 0.95, offsetFactor: -5, offsetUnits: -14 });
-  const matGravel = createRoadMaterial(gravelTex, { normalScale: 1.35, offsetFactor: -4, offsetUnits: -10 });
+  const matTarmac = createRoadMaterial(tarmacTex, { normalScale: 0.72, offsetFactor: -5, offsetUnits: -14 });
+  const matGravel = createRoadMaterial(gravelTex, { normalScale: 0.70, offsetFactor: -4, offsetUnits: -10 });
   const vergeTex = vergeTextures();
   const matVerge = createRoadMaterial(vergeTex, { normalScale: 1.15, offsetFactor: -1, offsetUnits: -2 });
   matVerge.vertexColors = true;

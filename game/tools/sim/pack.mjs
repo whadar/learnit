@@ -28,12 +28,19 @@ const buf = fs.readFileSync(path.join(base, 'amikam-height.bin'));
 const heights = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 const world = new WorldData(json, heights);
 const track = buildTrack(world, { laps: 3 });
+conformWorldToTrack(world, track);      // main.js does this before anything samples the world
 const roster = createRoster();
 const L = track.length;
+
+// AI_<opt>=value overrides any createAI option, for tuning runs:  AI_leadDrag=0 node tools/sim/pack.mjs
+const aiOpts = {};
+for (const [k, v] of Object.entries(process.env)) if (k.startsWith("AI_") && Number.isFinite(+v)) aiOpts[k.slice(3)] = +v;
+if (Object.keys(aiOpts).length) console.log('ai overrides:', aiOpts);
 
 const race = createRace(world, track, {
   field: 8, laps: 3, roster: roster.slice(0, 8), difficulty: 150,
   playerIndex: 0, autopilot: true, introTime: 0.01, countdownTime: 3.6, seed: 5150,
+  aiOpts,
 });
 
 const simulate = (sec, dt = DT) => { const n = Math.max(1, Math.round(sec / dt)); for (let i = 0; i < n; i++) race.update(dt); };
@@ -77,6 +84,70 @@ const VIEWS = {
   },
   hilltopVista: () => { raceUpToRacing(); packRunTo(at(0.398), 17.5, { spread: 7, lead: 62, settle: 3.2 }); },
 };
+
+
+/**
+ * A copy of main.js's terrain conform, so the bench drives the same ground the game does:
+ * inside the ribbon the heightfield *is* the smoothed racing surface, fading back to raw SRTM
+ * over a 14 m shoulder. Without it the karts drive on 3 m DEM stair-steps and every gap
+ * measured here is fiction.
+ */
+function conformWorldToTrack(world, track, opts = {}) {
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const smooth = (x) => { const t = clamp(x, 0, 1); return t * t * (3 - 2 * t); };
+  const CELL = opts.cell ?? 1.5, FALL = opts.falloff ?? 14.0, SINK = opts.sink ?? 0.20;
+  const pts = track.points;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity, maxW = 12;
+  const N = pts.length;
+  const samples = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const p = pts[i];
+    const sm = track.sample((i / N) * track.length);
+    const w = sm.width || 12;
+    maxW = Math.max(maxW, w);
+    samples[i] = { x: p.x, y: p.y, z: p.z, hw: w * 0.5, nx: sm.normal.x, nz: sm.normal.z, tb: Math.tan(sm.banking || 0) };
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+  }
+  const pad = maxW * 0.5 + FALL + CELL * 2;
+  minX -= pad; maxX += pad; minZ -= pad; maxZ += pad;
+  const NX = Math.ceil((maxX - minX) / CELL) + 1, NZ = Math.ceil((maxZ - minZ) / CELL) + 1;
+  const wt = new Float32Array(NX * NZ), ty = new Float32Array(NX * NZ);
+  const bd = new Float32Array(NX * NZ).fill(Infinity);
+  for (const s of samples) {
+    const R = s.hw + FALL;
+    const i0 = Math.max(0, Math.floor((s.x - R - minX) / CELL)), i1 = Math.min(NX - 1, Math.ceil((s.x + R - minX) / CELL));
+    const j0 = Math.max(0, Math.floor((s.z - R - minZ) / CELL)), j1 = Math.min(NZ - 1, Math.ceil((s.z + R - minZ) / CELL));
+    for (let j = j0; j <= j1; j++) {
+      const cz = minZ + j * CELL, dz = cz - s.z;
+      for (let i = i0; i <= i1; i++) {
+        const cx = minX + i * CELL, dx = cx - s.x;
+        const d = Math.hypot(dx, dz);
+        if (d > R) continue;
+        const k = j * NX + i;
+        if (d >= bd[k]) continue;
+        bd[k] = d;
+        wt[k] = 1 - smooth(clamp((d - s.hw - 0.4) / FALL, 0, 1));
+        const lateral = dx * s.nx + dz * s.nz;
+        ty[k] = s.y + s.tb * clamp(lateral, -s.hw, s.hw) - SINK;
+      }
+    }
+  }
+  const raw = world.heightAt.bind(world);
+  world.rawHeightAt = raw;
+  world.heightAt = function conformedHeightAt(x, z) {
+    const h = raw(x, z);
+    const fx = (x - minX) / CELL, fz = (z - minZ) / CELL;
+    const i = fx | 0, j = fz | 0;
+    if (i < 0 || j < 0 || i >= NX - 1 || j >= NZ - 1) return h;
+    const sx = fx - i, sz = fz - j;
+    const k00 = j * NX + i, k10 = k00 + 1, k01 = k00 + NX, k11 = k01 + 1;
+    const w = (wt[k00] * (1 - sx) + wt[k10] * sx) * (1 - sz) + (wt[k01] * (1 - sx) + wt[k11] * sx) * sz;
+    if (w <= 0.0015) return h;
+    const t = (ty[k00] * (1 - sx) + ty[k10] * sx) * (1 - sz) + (ty[k01] * (1 - sx) + ty[k11] * sx) * sz;
+    return h + (t - h) * w;
+  };
+}
 
 const dS = (a, b) => { let d = a - b; while (d > L * 0.5) d -= L; while (d < -L * 0.5) d += L; return d; };
 

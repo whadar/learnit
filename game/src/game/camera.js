@@ -26,15 +26,22 @@ import { clamp, lerp, damp, smoothstep, wrapPi } from '../core/mathx.js';
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 
 export const DEFAULTS = {
-  /* chase geometry, metres.  The rig sits at kart-shoulder height, close enough that the
-     player's kart fills the bottom third of frame and you can read the cat's whiskers. */
-  back: 3.35,             // distance behind the kart's centre of mass at rest
+  /* Chase geometry, metres.
+     The whole point of a character kart racer is the character: the driver's head, shoulders,
+     paws on the wheel and lean into a corner have to be legible in every gameplay frame, or
+     the game may as well ship empty karts. The old rig sat 1.00 m over the centre of mass —
+     about 1.56 m over the road, which is the height of the seat back — so the seat ate the
+     cat and all that cleared it was a helmet band and two ear tips. The lens now sits
+     ~2.2 m up and looks *down* the road rather than along it, which is where MK8 puts it:
+     the kart fills the bottom third, the driver reads against the tarmac, and you can still
+     see far enough ahead to place the kart for the next corner. */
+  back: 3.85,             // distance behind the kart's centre of mass at rest
   backSpeed: 0.60,        // extra distance at top speed
   backBoost: 0.45,        // … and while boosting (the kart pulls away from the lens)
-  height: 1.00,           // above the CoM, which is itself ~0.52 m above the road
-  heightSpeed: 0.14,
-  lookAhead: 6.6,
-  lookHeight: 0.62,       // aim over the driver's ears, along the road, not down at it
+  height: 1.62,           // above the CoM, which is itself ~0.56 m above the road
+  heightSpeed: 0.20,
+  lookAhead: 6.2,
+  lookHeight: 0.26,       // aim past the driver's ears at the road, not over the scenery
   /* responsiveness */
   posFreq: 2.90,          // Hz of the position spring
   posDamping: 1.02,       // 1 = critically damped
@@ -57,6 +64,9 @@ export const DEFAULTS = {
   airBack: 0.80,
   landKick: 0.34,
   hopLambda: 12.0,
+  /* rivals in the lens */
+  kartClear: 2.9,         // a rival this close to the eye lifts the rig over it …
+  kartLift: 0.95,         // … by up to this much, instead of being sliced open by the frame
   /* misc */
   lookBackTime: 0.16,     // seconds to swing round when look-back is held
   speedRef: 25.0,         // m/s that counts as "top speed" for the curves
@@ -105,7 +115,7 @@ export function createCamera(engine, world, opts = {}) {
   const st = {
     yaw: 0, fov: O.fov, roll: 0, drift: 0, driftDir: 0, air: 0, hop: 0,
     speed: 0, boost: 0, lookBack: 0, shake: 0, shakeT: 0, first: true,
-    height: 0, side: 0,
+    height: 0, side: 0, kartLift: 0,
   };
   let elapsed = 0;
 
@@ -137,6 +147,34 @@ export function createCamera(engine, world, opts = {}) {
       }
     }
     if (Number.isFinite(gy) && p.y < gy + O.groundClear) p.y = gy + O.groundClear;
+  }
+
+  /**
+   * Ride over a rival that has climbed into the lens.
+   *
+   * The rig sits a bare 3.9 m behind the kart, so a rival drafting the player passes within
+   * arm's length of the eye and the frame cuts it open — bodywork and half a cat pasted over
+   * the HUD, which is what the review caught in villageStreet. Rather than shove the rig
+   * (which fights the spring and swings the whole shot), the eye lifts over the intruder and
+   * settles straight back down: a pass close enough to touch reads as a pass, not a glitch.
+   */
+  function rivalLift(v, dt) {
+    let want = 0;
+    const rivals = v && v.rivals;
+    if (rivals && rivals.length) {
+      for (const o of rivals) {
+        const s = o && (o.state || (o.vehicle && o.vehicle.state));
+        if (!s || !s.pos) continue;
+        if (Math.abs(s.pos.y - pos.y) > 3.5) continue;
+        const dx = s.pos.x - pos.x, dz = s.pos.z - pos.z;
+        const d = Math.hypot(dx, dz);
+        if (d >= O.kartClear) continue;
+        const w = 1 - d / O.kartClear;
+        if (w > want) want = w;
+      }
+    }
+    st.kartLift = damp(st.kartLift, want * O.kartLift, want * O.kartLift > st.kartLift ? 13 : 4.5, dt);
+    return st.kartLift;
   }
 
   function applyLook(p, at, fov, roll = 0) {
@@ -230,6 +268,7 @@ export function createCamera(engine, world, opts = {}) {
       look.lerp(aim, clamp(1 - Math.exp(-O.lookLambda * dt), 0, 1));
     }
     clearGround(pos, look);
+    pos.y += rivalLift(v, dt);
 
     /* --- fov + roll + shake --- */
     const wantFov = O.fov + O.fovSpeed * st.speed * st.speed + O.fovBoost * st.boost + O.fovAir * st.air;
@@ -289,10 +328,10 @@ export function createCamera(engine, world, opts = {}) {
       const u = smoothstep(0, 1, (k - 0.72) / 0.28);
       const a = sample(startS - lerp(38, 18.4, u));
       const b = sample(startS + lerp(26, -11.6, u));
-      // 1.55 m over the tarmac and a 51.5-degree lens is exactly where the chase rig rests
-      // (CoM 0.52 m up + O.height 1.00), so the hand-off is a dissolve, not a jump.
-      p = V(a.pos.x + a.normal.x * lerp(9, 0.25, u), a.pos.y + lerp(12.0, 1.55, u), a.pos.z + a.normal.z * lerp(9, 0.25, u));
-      at = V(b.pos.x, b.pos.y + lerp(1.6, 1.14, u), b.pos.z);
+      // 2.18 m over the tarmac and a 51.5-degree lens is exactly where the chase rig rests
+      // (CoM 0.56 m up + O.height 1.62), so the hand-off is a dissolve, not a jump.
+      p = V(a.pos.x + a.normal.x * lerp(9, 0.25, u), a.pos.y + lerp(12.0, 2.18, u), a.pos.z + a.normal.z * lerp(9, 0.25, u));
+      at = V(b.pos.x, b.pos.y + lerp(1.6, 0.84, u), b.pos.z);
       fov = lerp(50, 51.5, u);
     }
     clearGround(p, at);
@@ -355,6 +394,58 @@ export function createCamera(engine, world, opts = {}) {
   }
 
   /* ------------------------------------------------------------- fixed ---- */
+
+  /**
+   * Camera collision for a cinematic plate.
+   *
+   * A hand-placed plate knows the tarmac but not the ironmongery standing on it: aim a lens
+   * down the start straight and it can end up inside a gantry leg, a pit-wall hoarding or a
+   * tyre stack, which is exactly what the review caught under the start/finish gate. So
+   * before a fixed plate is committed, the sight line is swept back from the *subject* to the
+   * eye: whatever solid trackside furniture it meets first, the lens is planted just in front
+   * of it. Resolved once per `setFixed()` — the pose does not move afterwards — so the ray
+   * never costs a frame.
+   */
+  const _ray = new THREE.Raycaster();
+  let blockers = null;
+  function cameraBlockers() {
+    if (blockers && blockers.length) return blockers;
+    blockers = [];
+    const scene = engine && engine.scene;
+    if (!scene || !scene.traverse) return blockers;
+    scene.traverse(o => {
+      // trackside furniture and the pit-wall boards; never the road surface, the kerbs, the
+      // paint or the karts, which a camera is entitled to look straight through.
+      if (o.isMesh && typeof o.name === 'string' && o.name.startsWith('furniture:')
+        && !/bunting|flags|foliage|cats/.test(o.name)) blockers.push(o);
+    });
+    return blockers;
+  }
+
+  const CLEAR = 0.55;               // metres of air kept between the lens and a solid
+  function resolveFixed(p, at) {
+    clearGround(p, at);
+    // a crane shot is above everything trackside; don't pay for a ray it cannot hit
+    const gy = groundY(p.x, p.z);
+    if (Number.isFinite(gy) && p.y > gy + 11) return p;
+    const list = cameraBlockers();
+    if (!list.length) return p;
+    tmp.subVectors(p, at);
+    const dist = tmp.length();
+    if (dist < 0.4) return p;
+    tmp.multiplyScalar(1 / dist);
+    _ray.set(at, tmp);                       // from the subject out towards the lens
+    _ray.near = 0.05; _ray.far = dist;
+    let hits = null;
+    try { hits = _ray.intersectObjects(list, false); } catch (e) { hits = null; }
+    if (hits && hits.length) {
+      const t = hits[0].distance;
+      if (t < dist - 0.02) p.copy(at).addScaledVector(tmp, Math.max(t - CLEAR, Math.min(dist, 1.2)));
+    }
+    clearGround(p, at);
+    return p;
+  }
+
   function fixedUpdate() {
     tmp.set(fixed.pos[0], fixed.pos[1], fixed.pos[2]);
     tmp2.set(fixed.look[0], fixed.look[1], fixed.look[2]);
@@ -396,7 +487,13 @@ export function createCamera(engine, world, opts = {}) {
     setTarget(v) { if (v !== target) { target = v; st.first = true; } return api; },
     get target() { return target; },
     setTrack(t) { track = t; return api; },
-    setFixed(p, l, f) { fixed.pos = p; fixed.look = l; fixed.fov = f ?? fixed.fov; mode = 'fixed'; fixedUpdate(); return api; },
+    setFixed(p, l, f) {
+      tmp2.set(l[0], l[1], l[2]);
+      const eye = resolveFixed(V(p[0], p[1], p[2]), tmp2);
+      fixed.pos = [eye.x, eye.y, eye.z];
+      fixed.look = l; fixed.fov = f ?? fixed.fov;
+      mode = 'fixed'; fixedUpdate(); return api;
+    },
     /** Jump the rig to where it wants to be, killing the spring (used after a teleport). */
     snap() { st.first = true; return api; },
     addShake(a) { st.shake = clamp(Math.max(st.shake, a), 0, 1); return api; },
