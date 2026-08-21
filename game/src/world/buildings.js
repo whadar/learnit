@@ -1147,12 +1147,55 @@ function addFurniture(d, world, out, place, wallTopY, trimCol, tint) {
       [f.ox, 0, f.oz], [0, -1, 0]);
   }
 
+  // ---- first-floor balcony over the front door -------------------------------------------
+  if (isHouse && d.storeys > 1 && r() < 0.62) addBalcony(d, out, trimCol);
   // ---- pergola + veranda along the street front ----------------------------------------
   if (isHouse && r() < 0.5) addPergola(d, world, out, trimCol, tint);
   // ---- low garden wall with piers and a gate --------------------------------------------
   if (isHouse && r() < 0.5) addGardenWall(d, world, out, tint);
   // ---- exterior stair to the roof / upper flat -------------------------------------------
   if (d.storeys > 1 && r() < 0.3) addStair(d, world, out, trimCol);
+}
+
+/**
+ * Cantilevered first-floor balcony with a steel railing, on the street facade. Every moshav
+ * house of two storeys has one and they are most of what breaks the wall plane in silhouette
+ * (review R1 — "no doors, no balconies, no railings"). Slab + railing live in the shell tier
+ * so they survive to the same range as the roof.
+ */
+function addBalcony(d, out, trimCol) {
+  const a = d.ring[d.entrance], b = d.ring[(d.entrance + 1) % d.ring.length];
+  const f = edgeFrame(a, b);
+  if (!f || f.L < 3.4) return;
+  const W = Math.min(f.L - 1.2, 3.2 + d.rand() * 1.6), DP = 1.15 + d.rand() * 0.35;
+  const s = f.L * 0.5;
+  const y = d.floorY + d.storeyH + 0.06;
+  const P = (ss, off) => [a[0] + f.tx * ss + f.ox * off, a[1] + f.tz * ss + f.oz * off];
+  const slabCol = [trimCol[0] * 0.92, trimCol[1] * 0.91, trimCol[2] * 0.88];
+  const cm = P(s, DP * 0.5);
+  // slab, 16 cm thick, with a shadow-catching nose
+  addBox(out.trim, cm[0], y - 0.08, cm[1], f.tx, f.tz, W * 0.5, 0.08, DP * 0.5, slabCol, 4);
+  addBox(out.trim, cm[0], y - 0.20, cm[1], f.tx, f.tz, W * 0.5 - 0.06, 0.05, DP * 0.5 - 0.05,
+    [slabCol[0] * 0.62, slabCol[1] * 0.61, slabCol[2] * 0.60], 4);
+  // railing: two uprights per end, a top rail, a mid rail and a run of balusters
+  const RH = 1.02, rail = [0.30, 0.32, 0.34];
+  for (const sx of [-1, 1]) {
+    const c = P(s + sx * W * 0.5, DP - 0.05);
+    addBox(out.metal, c[0], y + RH * 0.5, c[1], f.tx, f.tz, 0.035, RH * 0.5, 0.035, rail, 1);
+  }
+  const rc = P(s, DP - 0.05);
+  addBox(out.metal, rc[0], y + RH, rc[1], f.tx, f.tz, W * 0.5, 0.032, 0.045, rail, 1);
+  addBox(out.metal, rc[0], y + RH * 0.55, rc[1], f.tx, f.tz, W * 0.5, 0.020, 0.030, rail, 1);
+  const n = Math.max(4, Math.round(W / 0.34));
+  for (let i = 1; i < n; i++) {
+    const c = P(s - W * 0.5 + (W * i) / n, DP - 0.05);
+    addBox(out.metal, c[0], y + RH * 0.5, c[1], f.tx, f.tz, 0.014, RH * 0.5, 0.014, rail, 1);
+  }
+  // side railings back to the wall
+  for (const sx of [-1, 1]) {
+    const c0 = P(s + sx * W * 0.5, DP * 0.5 - 0.02);
+    addBox(out.metal, c0[0], y + RH, c0[1], f.ox, f.oz, DP * 0.5, 0.030, 0.040, rail, 1);
+  }
 }
 
 function addPergola(d, world, out, trimCol, tint) {
