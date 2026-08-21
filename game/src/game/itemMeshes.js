@@ -66,6 +66,49 @@ function rimify(m, power = 2.4, gain = 1.7) {
   return m;
 }
 
+/**
+ * Near-volume fade, done in the shader instead of on the CPU.
+ *
+ * An item box is 1.3 m across and floats at windscreen height, so a chase rig driving a box
+ * row ends up with boxes a metre and a half off the lens: they fill half the frame and bury
+ * the kart (review R2, itemChaos). MK8 never lets a near prop do that — anything that enters
+ * the near volume dissolves before it can occlude the subject.
+ *
+ * The fade is driven by view depth (`-mvPosition.z`), which every material already has, so it
+ * needs no camera reference, no per-box material clone and no CPU work: one shared material
+ * fades whichever of the 45 boxes happen to be under the lens this frame, and only those.
+ * Composes with any existing onBeforeCompile (the fresnel rim shells use one too).
+ */
+function nearFade(m, hide = 1.6, full = 4.2) {
+  const prev = m.onBeforeCompile;
+  m.onBeforeCompile = (sh, renderer) => {
+    if (prev) prev(sh, renderer);
+    let v = sh.vertexShader;
+    if (v.includes('#include <project_vertex>')) {
+      v = v.replace('#include <project_vertex>', '#include <project_vertex>\nvNFD = -mvPosition.z;');
+    } else if (v.includes('gl_Position = projectionMatrix * mvPosition;')) {
+      // sprites build mvPosition by hand and never include <project_vertex>
+      v = v.replace('gl_Position = projectionMatrix * mvPosition;',
+        'vNFD = -mvPosition.z;\ngl_Position = projectionMatrix * mvPosition;');
+    } else return;
+    if (!sh.fragmentShader.includes('#include <opaque_fragment>')) return;
+    sh.vertexShader = v.replace('#include <common>', '#include <common>\nvarying float vNFD;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vNFD;')
+      .replace('#include <opaque_fragment>',
+        `float nfd = smoothstep(${hide.toFixed(2)}, ${full.toFixed(2)}, vNFD);\n`
+        + 'diffuseColor.a *= nfd;\nif (diffuseColor.a < 0.004) discard;\n#include <opaque_fragment>');
+  };
+  const prevKey = m.customProgramCacheKey;
+  // `.call(this)`, not `prevKey()`: the default Material.customProgramCacheKey reads
+  // `this.onBeforeCompile`, so calling it unbound throws inside the renderer's program lookup.
+  m.customProgramCacheKey = function () {
+    return (prevKey ? prevKey.call(this) : '') + '|nf' + hide + '_' + full;
+  };
+  m.transparent = true;
+  return m;
+}
+
 function mesh(geo, material, { pos, rot, scale, shadow = true } = {}) {
   const m = new THREE.Mesh(geo, material);
   if (pos) m.position.set(pos[0], pos[1], pos[2]);
@@ -254,57 +297,113 @@ const stripeFeather = () => tex('feather-stripe', 128, (c, S) => {
 });
 
 /**
- * The item-box face glyph. Painted as a SOLID crimson pomegranate with a gold rim, not a
- * hairline gold outline: the box floats against a blown-out sky as often as against dark
- * tarmac, and an additive pale-gold line disappears completely against the sky (review R1 —
- * "translucent grey-blue glass boxes, no interior glyph"). A filled, high-chroma glyph
- * silhouettes against both.
+ * The item-box face glyph.
+ *
+ * R2 read the old glyph as "a domino or a serving tray": a flat crimson ellipse carrying seven
+ * evenly spaced round pips is a domino, whatever it was meant to be. Three things fix that.
+ * The pips become an irregular cluster of teardrop arils at three sizes, which no domino has.
+ * The fruit gets a crown, a lit shoulder and a dark contact edge, so it reads as a solid with
+ * a top and a bottom instead of a decal. And the glyph sits inside a gold ring with a pair of
+ * chasing arrow arcs — the box spins, and in a still frame the arcs are the only thing that
+ * says so.
  */
 const boxMotif = () => tex('box-motif', 256, (c, S) => {
   c.clearRect(0, 0, S, S);
-  const cx = S / 2, cy = S * 0.56, R = S * 0.30;
-  const crimson = '#c8143c', deep = '#7d0a24', gold = '#ffe08a';
+  const cx = S / 2, cy = S * 0.53, R = S * 0.215;
+  const deep = '#5c0819', gold = '#ffd977';
   c.lineJoin = 'round'; c.lineCap = 'round';
 
-  // crown, behind the body
+  // radiating burst behind everything: it is what makes the glyph glow rather than sit flat
+  const burst = c.createRadialGradient(cx, cy, R * 0.4, cx, cy, S * 0.42);
+  burst.addColorStop(0, 'rgba(255,226,150,.60)');
+  burst.addColorStop(0.42, 'rgba(255,190,90,.26)');
+  burst.addColorStop(0.80, 'rgba(255,176,70,.06)');
+  burst.addColorStop(1, 'rgba(255,170,60,0)');
+  c.fillStyle = burst;
+  c.beginPath(); c.arc(cx, cy, S * 0.42, 0, TAU); c.fill();
+  c.save();
+  c.translate(cx, cy);
+  for (let i = 0; i < 16; i++) {
+    c.rotate(TAU / 16);
+    c.fillStyle = i % 2 ? 'rgba(255,236,180,.16)' : 'rgba(255,206,110,.10)';
+    c.beginPath();
+    c.moveTo(0, -R * 0.9);
+    c.lineTo(S * 0.048, -S * 0.40);
+    c.lineTo(-S * 0.048, -S * 0.40);
+    c.closePath(); c.fill();
+  }
+  c.restore();
+
+  // chasing arrow arcs: the rotation cue
+  c.strokeStyle = 'rgba(255,222,140,.72)';
+  c.lineWidth = S * 0.026;
+  for (const a0 of [-0.35, Math.PI - 0.35]) {
+    c.beginPath(); c.arc(cx, cy, S * 0.345, a0, a0 + 1.05); c.stroke();
+    const a1 = a0 + 1.05;
+    const hx = cx + Math.cos(a1) * S * 0.345, hy = cy + Math.sin(a1) * S * 0.345;
+    c.save(); c.translate(hx, hy); c.rotate(a1 + Math.PI / 2);
+    c.fillStyle = 'rgba(255,230,160,.85)';
+    c.beginPath(); c.moveTo(0, -S * 0.038); c.lineTo(S * 0.030, S * 0.024); c.lineTo(-S * 0.030, S * 0.024);
+    c.closePath(); c.fill(); c.restore();
+  }
+
+  // crown, behind the body — five uneven sepals, not a comb
   c.fillStyle = deep;
   c.beginPath();
-  const cw = R * 0.46, cyt = cy - R * 0.86;
-  c.moveTo(cx - cw, cyt);
+  const cw = R * 0.40, cyt = cy - R * 0.92;
+  c.moveTo(cx - cw, cyt + R * 0.22);
+  const sep = [0.74, 0.44, 0.96, 0.40, 0.68];
   for (let i = 0; i < 5; i++) {
     const x0 = cx - cw + (i / 5) * cw * 2, x1 = cx - cw + ((i + 1) / 5) * cw * 2;
-    c.lineTo((x0 + x1) / 2, cyt - R * (i % 2 ? 0.34 : 0.60));
-    c.lineTo(x1, cyt - R * 0.02);
+    c.lineTo((x0 + x1) / 2 + (i - 2) * R * 0.05, cyt - R * sep[i]);
+    c.lineTo(x1, cyt - R * 0.04);
   }
-  c.lineTo(cx + cw, cyt + R * 0.30); c.lineTo(cx - cw, cyt + R * 0.30);
+  c.lineTo(cx + cw, cyt + R * 0.34); c.lineTo(cx - cw, cyt + R * 0.34);
   c.closePath(); c.fill();
-  c.lineWidth = 9; c.strokeStyle = gold; c.stroke();
+  c.lineWidth = S * 0.026; c.strokeStyle = gold; c.stroke();
 
-  // body: a filled fruit with a lit shoulder so it reads as volume, not a sticker
-  const g = c.createRadialGradient(cx - R * 0.32, cy - R * 0.36, R * 0.10, cx, cy, R * 1.05);
-  g.addColorStop(0, '#ff5d70'); g.addColorStop(0.45, crimson); g.addColorStop(1, deep);
-  c.fillStyle = g;
-  c.beginPath(); c.ellipse(cx, cy, R, R * 1.02, 0, 0, TAU); c.fill();
-  c.lineWidth = 13; c.strokeStyle = gold; c.stroke();
+  // body: lit shoulder top-left, dark contact edge bottom-right
+  const bg = c.createRadialGradient(cx - R * 0.42, cy - R * 0.48, R * 0.06, cx + R * 0.18, cy + R * 0.30, R * 1.35);
+  bg.addColorStop(0, '#a8102f'); bg.addColorStop(0.32, '#8d0d27'); bg.addColorStop(1, deep);
+  c.fillStyle = bg;
+  c.beginPath(); c.ellipse(cx, cy, R * 1.02, R * 1.06, 0, 0, TAU); c.fill();
+  c.lineWidth = S * 0.034; c.strokeStyle = gold; c.stroke();
+  c.lineWidth = S * 0.012; c.strokeStyle = 'rgba(90,4,20,.75)';
+  c.beginPath(); c.ellipse(cx, cy, R * 0.90, R * 0.94, 0, 0, TAU); c.stroke();
 
-  // seeds
-  c.fillStyle = gold;
-  for (let i = 0; i < 7; i++) {
-    const a = i / 7 * TAU + 0.3, rr = R * 0.52;
-    c.beginPath(); c.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.9, R * 0.115, 0, TAU); c.fill();
+  // arils: an irregular cluster of teardrops at three sizes. Deliberately NOT a ring of dots.
+  const arils = [
+    [-0.44, 0.10, 0.30], [-0.14, -0.24, 0.24], [0.20, -0.06, 0.33], [0.46, 0.26, 0.22],
+    [-0.32, 0.50, 0.26], [0.02, 0.36, 0.30], [0.34, 0.58, 0.19], [-0.56, -0.28, 0.18],
+    [0.10, -0.50, 0.21], [-0.06, 0.72, 0.16], [0.52, -0.32, 0.17],
+  ];
+  // Garnet, not gold. Cream-gold pips on crimson read as popcorn or eggs; a pomegranate's
+  // arils are translucent ruby with one bright specular each, and that specular is what makes
+  // eleven small shapes read as a cluster of jewels rather than a pattern of dots.
+  for (const [ax, ay, ar] of arils) {
+    const x = cx + ax * R, y = cy + ay * R, rr = ar * R;
+    const gg = c.createRadialGradient(x - rr * 0.38, y - rr * 0.45, rr * 0.04, x, y, rr * 1.15);
+    gg.addColorStop(0, '#ffd9dd'); gg.addColorStop(0.28, '#ff5f74');
+    gg.addColorStop(0.7, '#e01138'); gg.addColorStop(1, '#8c0a22');
+    c.fillStyle = gg;
+    c.beginPath();
+    c.moveTo(x, y - rr * 1.35);                     // teardrop, point up
+    c.bezierCurveTo(x + rr, y - rr * 0.5, x + rr * 0.95, y + rr, x, y + rr * 1.05);
+    c.bezierCurveTo(x - rr * 0.95, y + rr, x - rr, y - rr * 0.5, x, y - rr * 1.35);
+    c.fill();
+    c.strokeStyle = 'rgba(255,225,150,.75)'; c.lineWidth = S * 0.008; c.stroke();
   }
-  c.beginPath(); c.arc(cx, cy, R * 0.13, 0, TAU); c.fill();
 
-  // olive sprig either side, in gold so it holds against the crimson
-  c.lineWidth = 8; c.strokeStyle = gold;
-  for (const s of [-1, 1]) {
-    c.beginPath(); c.moveTo(cx + s * R * 1.34, cy + R * 0.58);
-    c.quadraticCurveTo(cx + s * R * 1.72, cy - R * 0.15, cx + s * R * 1.34, cy - R * 0.88); c.stroke();
-    for (let i = 0; i < 3; i++) {
-      const t = 0.2 + i * 0.3, y = cy + R * 0.58 - t * R * 1.46;
-      c.beginPath(); c.ellipse(cx + s * (R * 1.62), y, R * 0.17, R * 0.095, s * 0.7, 0, TAU); c.fill();
-    }
-  }
+  // specular sweep across the top-left shoulder
+  c.save();
+  c.beginPath(); c.ellipse(cx, cy, R * 1.02, R * 1.06, 0, 0, TAU); c.clip();
+  const sw = c.createLinearGradient(cx - R, cy - R, cx + R * 0.3, cy + R * 0.4);
+  sw.addColorStop(0, 'rgba(255,255,255,.60)');
+  sw.addColorStop(0.42, 'rgba(255,255,255,.10)');
+  sw.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = sw;
+  c.beginPath(); c.ellipse(cx - R * 0.34, cy - R * 0.46, R * 0.62, R * 0.40, -0.6, 0, TAU); c.fill();
+  c.restore();
 });
 
 const iridescentSheen = () => tex('iridescent', 128, (c, S) => {
@@ -337,6 +436,19 @@ const ringSprite = () => tex('ring', 128, (c, S) => {
   g.addColorStop(1, 'rgba(255,170,60,0)');
   c.fillStyle = g; c.fillRect(0, 0, S, S);
 });
+
+// Ground blob for anything airborne. MK8 gives every in-flight item a shadow, because the
+// shadow is the only cue that tells you where the thing will land; the cascade shadow map
+// smears a 0.4 m orange into nothing, so items carry their own (review R2).
+const blobSprite = () => tex('blob-shadow', 128, (c, S) => {
+  const g = c.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0, 'rgba(0,0,0,.98)');
+  g.addColorStop(0.34, 'rgba(0,0,0,.86)');
+  g.addColorStop(0.62, 'rgba(0,0,0,.40)');
+  g.addColorStop(0.84, 'rgba(0,0,0,.10)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = g; c.fillRect(0, 0, S, S);
+}, { srgb: false, wrap: THREE.ClampToEdgeWrapping });
 
 const shardSprite = () => tex('shard', 64, (c, S) => {
   const g = c.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
@@ -438,26 +550,50 @@ export function makeSabra() {
 }
 
 /**
- * Jaffa orange — waxed, dimpled peel with a clearcoat highlight and a warm rim shell.
- * The rim is a back-faced additive sphere a hair larger than the fruit: it fringes the
- * silhouette in orange light, which is the only thing that separates an orange projectile
- * from sunlit sand at 30 m (review R1 — "three matte spheres, no rim light").
+ * Jaffa orange — waxed, dimpled peel with a clearcoat highlight and a warm rim glow.
+ *
+ * R2 called these "flat circles with a hard two-band orange gradient and a thin gold outline",
+ * and both bands were self-inflicted. A 0.42 emissive floor on a 0.28 m sphere swamps the
+ * whole terminator, so the lit and shadowed halves collapse into two flat values; and a
+ * back-faced rim shell at 1.16x with gain 1.8 saturates to full alpha across the entire
+ * grazing band, which is a drawn outline, not a rim light. The emissive is now a hint, the rim
+ * shell hugs the fruit at 1.055x and falls off before it reaches full alpha, and a soft
+ * additive bloom sits behind the fruit so the silhouette still separates from sunlit sand.
+ * The navel dimple gives the sphere one asymmetry to shade against.
  */
 export function makeJaffa(scale = 1) {
   const g = new THREE.Group(); g.name = 'item:jaffa';
-  g.add(mesh(new THREE.SphereGeometry(0.28, 22, 18), phys('jaffa-skin', {
-    color: 0xff8a10, roughness: 0.38, metalness: 0.0,
-    clearcoat: 0.85, clearcoatRoughness: 0.22,
-    bumpMap: citrusPeel(), bumpScale: 0.34,
-    emissive: 0xc24a05, emissiveIntensity: 0.42,
-    envMapIntensity: 1.6,
+  g.add(mesh(new THREE.SphereGeometry(0.28, 24, 18), phys('jaffa-skin', {
+    color: 0xf87c0c, roughness: 0.46, metalness: 0.0,
+    // clearcoat 0.55, not 1.0: a full coat under this sun lays a hard-edged specular band
+    // across the equator, and that band is half of what R2 read as "a two-tone disc". The
+    // envMap fill and a whisper of emissive lift the shadow side so the terminator rolls
+    // instead of cutting.
+    clearcoat: 0.55, clearcoatRoughness: 0.26,
+    bumpMap: citrusPeel(), bumpScale: 0.20,
+    emissive: 0xb04808, emissiveIntensity: 0.17,
+    envMapIntensity: 2.6, sheen: 0.6, sheenRoughness: 0.5,
+    sheenColor: new THREE.Color(0xffc070),
   })));
+  // navel: a shallow dark pit with a lit shoulder, at the base
+  g.add(mesh(new THREE.SphereGeometry(0.052, 10, 8), std('jaffa-navel', {
+    color: 0x9a5410, roughness: 0.85,
+  }), { pos: [0.03, -0.262, 0.05], scale: [1, 0.55, 1], shadow: false }));
   const rim = mesh(new THREE.SphereGeometry(0.28, 20, 14), mat('jaffa-rim', () => rimify(new THREE.MeshBasicMaterial({
-    color: 0xffb43c, transparent: true, opacity: 0.9, side: THREE.BackSide,
+    color: 0xffa32c, transparent: true, opacity: 0.72, side: THREE.BackSide,
     blending: THREE.AdditiveBlending, depthWrite: false,
-  }), 2.6, 1.8)), { scale: 1.16, shadow: false });
+  }), 1.7, 0.70)), { scale: 1.055, shadow: false });
   rim.renderOrder = 2;
   g.add(rim);
+  // soft bloom behind the fruit — the "glow" R2 wanted, and what carries the orange over a
+  // busy tarmac at 30 m without turning the fruit itself into a lamp
+  const bloom = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowSprite(), color: 0xffa93a, transparent: true, opacity: 0.42,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  }));
+  bloom.scale.setScalar(1.30);
+  bloom.renderOrder = 1;
+  g.add(bloom);
   g.add(mesh(new THREE.CylinderGeometry(0.022, 0.03, 0.07, 8),
     std('jaffa-stem', { color: 0x7d6135, roughness: 0.8 }), { pos: [0, 0.29, 0] }));
   const lf = leaf(0.22, 0.12, 0x58a63f);
@@ -467,7 +603,7 @@ export function makeJaffa(scale = 1) {
   lf2.position.set(-0.03, 0.29, -0.02); lf2.rotation.set(-1.3, 2.4, -0.3);
   g.add(lf2);
   g.scale.setScalar(scale);
-  g.userData = { id: 'jaffa', radius: 0.30 * scale, spin: [0.5, 1.8, 0.3] };
+  g.userData = { id: 'jaffa', radius: 0.30 * scale, spin: [0.5, 1.8, 0.3], bloom };
   return g;
 }
 
@@ -1005,40 +1141,109 @@ export const ITEM_MESH_IDS = Object.keys(FACTORY);
 
 /* ------------------------------------------------------------- the item box */
 
+// Brushed-gold frame map. A metalness-0.95 material has no diffuse term at all, so with a
+// flat emissive floor at intensity 1.0 every bar of the frame resolved to one unbroken yellow
+// with a single blown specular dot (review R2). Dropping the emissive and giving the metal a
+// tint map lets the environment do the work: the bars now differ face to face, which is what
+// makes the frame read as bevelled gold instead of as a painted plastic outline.
+const goldBrush = () => tex('gold-brush', 128, (c, S) => {
+  const g = c.createLinearGradient(0, 0, S, S);
+  g.addColorStop(0, '#fff0b4'); g.addColorStop(0.28, '#ffce54');
+  g.addColorStop(0.52, '#c98d1e'); g.addColorStop(0.74, '#ffdc86');
+  g.addColorStop(1, '#e8a92c');
+  c.fillStyle = g; c.fillRect(0, 0, S, S);
+  const r = rng(404);
+  for (let i = 0; i < 150; i++) {
+    c.strokeStyle = `rgba(255,255,255,${0.03 + r() * 0.13})`;
+    c.lineWidth = 0.5 + r() * 1.8;
+    const y = r() * S;
+    c.beginPath(); c.moveTo(0, y); c.lineTo(S, y + (r() - 0.5) * 6); c.stroke();
+  }
+  for (let i = 0; i < 60; i++) {
+    c.strokeStyle = `rgba(120,72,10,${0.05 + r() * 0.14})`;
+    c.lineWidth = 0.5 + r() * 1.4;
+    const y = r() * S;
+    c.beginPath(); c.moveTo(0, y); c.lineTo(S, y + (r() - 0.5) * 5); c.stroke();
+  }
+});
+
+/* ------------------------------------------------------------- the item box */
+
 /**
- * Floating iridescent cube with a gold frame, a pomegranate motif on every face and a
- * glowing seed in the middle. No question marks anywhere.
+ * Floating glass cube in a bevelled gold cage, a pomegranate glyph on every face and a
+ * glowing seed at the centre. No question marks anywhere.
+ *
+ * Everything about the draw order here is deliberate. R2 found "a garbled grey-striped
+ * fragment and a stray yellow chevron" showing through the near face: the shell was one
+ * DoubleSide mesh with depthWrite off, so its own far triangles painted over its near ones in
+ * raw index order — the classic single-mesh transparency sort failure. A convex transparent
+ * hull has exactly one correct order, back faces then contents then front faces, and the only
+ * way to get it is to split the hull in two and state the order:
+ *
+ *   0 rim halo (additive, behind everything)   3 core + halo (additive contents)
+ *   1 shell BACK faces                          4 shell FRONT faces
+ *   2 gold cage (writes depth)                  5 face glyphs, just proud of the front faces
+ *
+ * Every material also carries the shared near-volume fade, so a box the camera is about to
+ * drive through dissolves instead of filling the frame.
  */
 export function createItemBoxMesh(opts = {}) {
-  const size = opts.size ?? 1.5;
+  const size = opts.size ?? 1.32;
   const g = new THREE.Group();
   g.name = 'itembox';
 
-  // One material set for every box on the course: 12 boxes cost 12 x 6 draws, not 12 x 22.
-  // items.js drives `emissiveIntensity` every frame (0.30 +/- 0.10), so the glow has to live
-  // in the emissive COLOUR, not the intensity: a hot cyan-white emissive at that intensity is
-  // what turns the box from a pale glass cube into a lantern against the sky (review R1).
-  const shellMat = mat('box-shell', () => new THREE.MeshPhysicalMaterial({
-    color: 0x7fd8f5, map: iridescentSheen(), roughness: 0.04, metalness: 0.0,
-    transparent: true, opacity: 0.60, side: THREE.DoubleSide,
+  const HIDE = 2.0, FULL = 5.4;
+  const nf = m => nearFade(m, HIDE, FULL);
+
+  // One material set for every box on the course: 45 boxes cost 45 x 6 draws, not 45 x 22.
+  // items.js drives `emissiveIntensity` every frame, so the glow lives in the emissive
+  // COLOUR: a hot cyan emissive is what turns the cube into a lantern against the sky (R1).
+  const shellGeo = mat('box-shell-geo', () => roundedBoxGeometry(1, 0.20, 4));
+
+  const backMat = mat('box-shell-back', () => nf(new THREE.MeshPhysicalMaterial({
+    color: 0x1c88b4, map: iridescentSheen(), roughness: 0.16, metalness: 0.0,
+    transparent: true, opacity: 0.13, side: THREE.BackSide, depthWrite: false,
+    emissive: 0x1d6f92, emissiveIntensity: 0.45, envMapIntensity: 1.0,
+  })));
+  const back = mesh(shellGeo, backMat, { scale: size, shadow: false });
+  back.renderOrder = 1;
+  g.add(back);
+
+  const shellMat = mat('box-shell', () => nf(new THREE.MeshPhysicalMaterial({
+    color: 0x63d5f6, map: iridescentSheen(), roughness: 0.05, metalness: 0.0,
+    transparent: true, opacity: 0.19, side: THREE.FrontSide, depthWrite: false,
     iridescence: 1.0, iridescenceIOR: 2.2, iridescenceThicknessRange: [140, 640],
-    clearcoat: 1.0, clearcoatRoughness: 0.03, envMapIntensity: 2.4,
-    emissive: 0x63d8ff, emissiveIntensity: 0.30, depthWrite: false,
-  }));
-  const shell = mesh(mat('box-shell-geo', () => roundedBoxGeometry(size, 0.20, 4)), shellMat, { shadow: false });
+    clearcoat: 1.0, clearcoatRoughness: 0.03, envMapIntensity: 2.6,
+    emissive: 0x63d8ff, emissiveIntensity: 0.30,
+  })));
+  const shell = mesh(shellGeo, shellMat, { scale: size, shadow: false });
+  shell.renderOrder = 4;
   g.add(shell);
 
-  const innerMat = mat('box-inner', () => new THREE.MeshBasicMaterial({
-    color: 0xffd48a, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false,
-  }));
-  g.add(mesh(mat('box-inner-geo', () => roundedBoxGeometry(size * 0.80, 0.24, 3)), innerMat, { shadow: false }));
+  // fresnel rim shell: a back-faced copy a hair larger, alpha peaking at the silhouette.
+  // This is the rim light R2 asked for, and it is also what keeps a mid-distance box legible
+  // against both blown sky and dark tarmac without resorting to a flat outline.
+  const rim = mesh(shellGeo, mat('box-rim', () => nf(rimify(new THREE.MeshBasicMaterial({
+    color: 0x9fe8ff, transparent: true, opacity: 0.85, side: THREE.BackSide,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  }), 2.0, 1.15))), { scale: size * 1.055, shadow: false });
+  rim.renderOrder = 0;
+  g.add(rim);
 
-  // gold edge frame + corner studs, merged into a single draw
-  const gold = std('box-gold', { color: 0xffd97a, roughness: 0.16, metalness: 0.95, emissive: 0xa07a10, emissiveIntensity: 1.0, envMapIntensity: 2.0 });
+  // gold edge cage + corner studs, merged into a single draw. Writes depth so the contents
+  // behind it are rejected properly instead of being sorted by object centre.
+  const gold = mat('box-gold', () => nf(new THREE.MeshStandardMaterial({
+    color: 0xffffff, map: goldBrush(), roughness: 0.20, metalness: 0.94,
+    emissive: 0x6a4c07, emissiveIntensity: 0.30, envMapIntensity: 2.6, depthWrite: true,
+  })));
   const frameGeo = mat('box-frame-geo', () => {
-    const t = size * 0.105, h = size * 0.5 - t * 0.5;
-    const bar = new THREE.BoxGeometry(size - t * 1.5, t, t);
-    const stud = new THREE.SphereGeometry(t * 0.92, 8, 6);
+    const t = 0.076, h = 0.5 - t * 0.5;
+    // Square section, not a cylinder. A round bar shades as one continuous gradient and reads
+    // as bamboo; a square one gives each side of the cage its own flat value, and the step
+    // between them IS the bevel highlight that says "machined metal" at a glance.
+    const bar = roundedBoxGeometry(1, 0.30, 2);
+    bar.scale(1 - t * 1.2, t, t);
+    const stud = new THREE.SphereGeometry(t * 1.14, 10, 8);
     const parts = [], m4 = new THREE.Matrix4(), e = new THREE.Euler();
     for (const axis of [0, 1, 2]) for (const a of [-1, 1]) for (const b of [-1, 1]) {
       if (axis === 0) m4.compose(new THREE.Vector3(0, a * h, b * h), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1));
@@ -1051,21 +1256,22 @@ export function createItemBoxMesh(opts = {}) {
     }
     return mergeGeometries(parts);
   });
-  g.add(mesh(frameGeo, gold, { shadow: false }));
+  const cage = mesh(frameGeo, gold, { scale: size, shadow: false });
+  cage.renderOrder = 2;
+  g.add(cage);
 
-  // etched pomegranate motif on all six faces, one draw
-  // Normal-blended, not additive: additive over a blown-out sky is a no-op, which is exactly
-  // why the mid-distance boxes read as empty white frames in oliveGrove (review R1).
-  const motifMat = mat('box-motif-mat', () => new THREE.MeshBasicMaterial({
+  // etched pomegranate glyph on all six faces, one draw. FrontSide, so the three faces
+  // pointing away from the lens cull rather than printing their glyph through the near ones.
+  const motifMat = mat('box-motif-mat', () => nf(new THREE.MeshBasicMaterial({
     map: boxMotif(), transparent: true, opacity: 1.0, depthWrite: false,
-    // FrontSide, not DoubleSide: the six face planes all point outward, so culling the back
-    // ones stops the far side's glyph painting over the near side's now that this blends
-    // normally instead of additively.
-    color: 0xffffff, side: THREE.FrontSide, alphaTest: 0.04,
-  }));
+    // 0.10, not 0.03: the glyph's halo runs out to very low alpha, and a near-zero alphaTest
+    // cut it off at the plane border instead of at the halo's own edge, leaving a pale grey
+    // rectangle floating inside the cube.
+    color: 0xffffff, side: THREE.FrontSide, alphaTest: 0.10,
+  })));
   const motifGeo = mat('box-motif-geo', () => {
-    const plane = new THREE.PlaneGeometry(size * 0.62, size * 0.62);
-    const d = size * 0.504, e = new THREE.Euler(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
+    const plane = new THREE.PlaneGeometry(0.70, 0.70);
+    const d = 0.508, e = new THREE.Euler(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
     const faces = [
       [[0, 0, d], [0, 0, 0]], [[0, 0, -d], [0, Math.PI, 0]],
       [[d, 0, 0], [0, Math.PI / 2, 0]], [[-d, 0, 0], [0, -Math.PI / 2, 0]],
@@ -1074,24 +1280,62 @@ export function createItemBoxMesh(opts = {}) {
     return mergeGeometries(faces.map(([p, r]) => [plane,
       new THREE.Matrix4().compose(new THREE.Vector3(...p), q.setFromEuler(e.set(...r)), one)]));
   });
-  g.add(mesh(motifGeo, motifMat, { shadow: false }));
+  const motif = mesh(motifGeo, motifMat, { scale: size, shadow: false });
+  motif.renderOrder = 5;
+  g.add(motif);
 
   // glowing seed in the middle
-  const core = mesh(mat('box-core-geo', () => new THREE.OctahedronGeometry(size * 0.13, 0)),
-    mat('box-core', () => new THREE.MeshBasicMaterial({
-      color: 0xffd684, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false,
-    })), { shadow: false });
+  const core = mesh(mat('box-core-geo', () => new THREE.OctahedronGeometry(0.13, 0)),
+    mat('box-core', () => nf(new THREE.MeshBasicMaterial({
+      color: 0xffd684, transparent: true, opacity: 0.70, blending: THREE.AdditiveBlending, depthWrite: false,
+    }))), { scale: size, shadow: false });
+  core.renderOrder = 3;
   g.add(core);
 
-  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+  const halo = new THREE.Sprite(mat('box-halo', () => nf(new THREE.SpriteMaterial({
     map: glowSprite(), color: 0xffd08a, transparent: true, opacity: 0.24,
     blending: THREE.AdditiveBlending, depthWrite: false,
-  }));
-  halo.scale.setScalar(size * 2.7);
+  }))));
+  halo.scale.setScalar(size * 2.4);
+  halo.renderOrder = 3;
   g.add(halo);
 
-  g.userData = { shell, shellMat, core, halo, innerMat, motifMat, size };
+  g.userData = { shell, shellMat, back, backMat, rim, core, halo, motifMat, size };
   return g;
+}
+
+/**
+ * Ground blob shadow for an airborne item.
+ *   const s = makeBlobShadow(); scene.add(s.object3D); s.place(pos, groundY, normal);
+ * Own material per instance (there are never more than a dozen alive) because the opacity and
+ * the radius both track how high the item is off the deck.
+ */
+export function makeBlobShadow(radius = 0.5) {
+  const m = new THREE.Mesh(
+    mat('blob-geo', () => new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2)),
+    new THREE.MeshBasicMaterial({
+      map: blobSprite(), color: 0x1d160e, transparent: true, opacity: 0.55,
+      depthWrite: false, side: THREE.DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+    }));
+  m.renderOrder = -1;
+  m.frustumCulled = false;
+  const UP = new THREE.Vector3(0, 1, 0), n = new THREE.Vector3();
+  return {
+    object3D: m, material: m.material, radius,
+    /** `h` is metres above the surface; the blob grows and thins with it, MK8 style. */
+    place(x, z, groundY, h, nx, ny, nz) {
+      const k = clamp(h / 2.6, 0, 1);
+      m.position.set(x, groundY + 0.05, z);
+      m.scale.setScalar(radius * (2.0 + k * 2.4));
+      m.material.opacity = 0.62 * (1 - k * 0.72);
+      if (nx !== undefined) {
+        n.set(nx, ny, nz);
+        if (n.lengthSq() > 1e-6) m.quaternion.setFromUnitVectors(UP, n.normalize());
+      }
+    },
+    dispose() { m.material.dispose(); },
+  };
 }
 
 /**
@@ -1208,6 +1452,6 @@ export function makeTrail(color = 0xffc46b, opts = {}) {
 }
 
 export default {
-  createItemMesh, createItemBoxMesh, createPickupBurst, makeTrail, makeHummusSlick,
+  createItemMesh, createItemBoxMesh, createPickupBurst, makeTrail, makeHummusSlick, makeBlobShadow,
   makeKhamsin, ITEM_VISUALS, ITEM_MESH_IDS, roundedBoxGeometry,
 };

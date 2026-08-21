@@ -258,6 +258,46 @@ export function createItemSystem(world, track, opts = {}) {
   const nearest = p => { try { return trk.nearest(p); } catch (e) { return { s: 0, lateral: 0, onTrack: true, surface: 'tarmac' }; } };
   const dS = (a, b) => { let d = a - b; while (d > len * 0.5) d -= len; while (d < -len * 0.5) d += len; return d; };
 
+  /* ------------------------------------------------------- ground shadows */
+  /**
+   * Every airborne item carries its own ground blob.
+   *
+   * The cascade shadow map cannot resolve a 0.4 m orange — R2 saw three fruit "hanging in
+   * space with no relationship to the surface", which is exactly what a missing contact cue
+   * looks like. MK8 solves it the same way: an explicit blob under each item, growing and
+   * thinning with height, so you can read a projectile's trajectory and its landing point
+   * from the shadow alone. `gy` is the road surface the projectile was placed against (the
+   * track spline, not raw terrain, because the road is graded), and `normalAt` tilts the blob
+   * onto the camber so it does not slice into the tarmac on a banked corner.
+   */
+  const UPN = { x: 0, y: 1, z: 0 };
+  function surfaceNormal(x, z, out) {
+    if (world && typeof world.normalAt === 'function') {
+      try { const n = world.normalAt(x, z, out); if (n) return n; } catch (e) { /* fall through */ }
+    }
+    return UPN;
+  }
+  const _sn = V();
+  function attachShadow(p, radius) {
+    if (!visuals || !MESHES.makeBlobShadow) return;
+    try {
+      p.shadowFx = MESHES.makeBlobShadow(radius ?? 0.34);
+      fxRoot.add(p.shadowFx.object3D);
+    } catch (e) { p.shadowFx = null; }
+  }
+  function placeShadow(p) {
+    if (!p.shadowFx) return;
+    const gy = p.gy ?? (p.pos.y - (p.hover ?? 0.5));
+    const n = surfaceNormal(p.pos.x, p.pos.z, _sn);
+    p.shadowFx.place(p.pos.x, p.pos.z, gy, Math.max(p.pos.y - gy, 0), n.x, n.y, n.z);
+  }
+  function dropShadow(p) {
+    if (!p || !p.shadowFx) return;
+    p.shadowFx.object3D.parent?.remove(p.shadowFx.object3D);
+    p.shadowFx.dispose?.();
+    p.shadowFx = null;
+  }
+
   /* ---------------------------------------------------------- burst pool */
   const bursts = [];
   function burst(pos, color) {
@@ -287,7 +327,9 @@ export function createItemSystem(world, track, opts = {}) {
       };
       if (visuals) {
         try {
-          box.mesh = MESHES.createItemBoxMesh({ size: 1.5 });
+          // 1.32 m, not 1.5: an item box should read as roughly one kart wide, and R2 found
+          // the old cube outsized the kart it was meant to sit beside.
+          box.mesh = MESHES.createItemBoxMesh({ size: 1.32 });
           box.mesh.position.set(box.pos.x, box.pos.y, box.pos.z);
           boxRoot.add(box.mesh);
         } catch (e) { box.mesh = null; }
@@ -325,10 +367,13 @@ export function createItemSystem(world, track, opts = {}) {
     if (p.mesh) p.mesh.position.set(p.pos.x, p.pos.y, p.pos.z);
     if (visuals && p.trail !== false && MESHES.makeTrail) {
       try {
-        p.trailFx = MESHES.makeTrail(ITEMS[p.item]?.color ?? 0xffc46b, { width: p.trailWidth ?? 0.45 });
+        p.trailFx = MESHES.makeTrail(ITEMS[p.item]?.color ?? 0xffc46b,
+          { width: p.trailWidth ?? 0.45, points: p.trailPoints ?? 22 });
+        if (p.trailAlpha !== undefined) p.trailFx.material.opacity = p.trailAlpha;
         fxRoot.add(p.trailFx.object3D);
       } catch (e) { p.trailFx = null; }
     }
+    if (p.shadow !== false) attachShadow(p, p.shadowRadius);
     projectiles.push(p);
     return p;
   }
@@ -337,6 +382,7 @@ export function createItemSystem(world, track, opts = {}) {
     p.dead = true;
     if (showBurst) burst(p.pos, ITEMS[p.item]?.color ?? 0xffd27a);
     dropMesh(p.mesh); p.mesh = null;
+    dropShadow(p);
     if (p.trailFx) { p.trailFx.object3D.parent?.remove(p.trailFx.object3D); p.trailFx.dispose?.(); p.trailFx = null; }
     const i = projectiles.indexOf(p);
     if (i >= 0) projectiles.splice(i, 1);
@@ -725,6 +771,7 @@ export function createItemSystem(world, track, opts = {}) {
       p.pos.x = rec.pos.x + Math.sin(rec.yaw + a) * r;
       p.pos.z = rec.pos.z + Math.cos(rec.yaw + a) * r;
       p.pos.y = rec.pos.y + 0.55 + Math.sin(p.age * 3 + (p.slot ?? 0)) * 0.06;
+      p.gy = sample(rec.s).pos.y;
       return;
     }
 
@@ -736,6 +783,7 @@ export function createItemSystem(world, track, opts = {}) {
       p.pos.x = damp(p.pos.x, tx, 12, dt);
       p.pos.z = damp(p.pos.z, tz, 12, dt);
       p.pos.y = damp(p.pos.y, rec.pos.y + 0.45, 10, dt);
+      p.gy = sample(rec.s).pos.y;
       p.yaw = rec.yaw;
       return;
     }
@@ -749,6 +797,7 @@ export function createItemSystem(world, track, opts = {}) {
       p.pos.x = sm.pos.x + sm.normal.x * p.lateral;
       p.pos.z = sm.pos.z + sm.normal.z * p.lateral;
       p.pos.y = sm.pos.y + p.hover + Math.sin(p.age * 7) * 0.12;
+      p.gy = sm.pos.y;
       p.yaw = Math.atan2(sm.tangent.x * p.dir, sm.tangent.z * p.dir);
       if (tgt) {
         const gap = dS(tgt.s, p.s) * p.dir;
@@ -769,6 +818,7 @@ export function createItemSystem(world, track, opts = {}) {
         p.pos.x = sm.pos.x + sm.normal.x * p.lateral;
         p.pos.z = sm.pos.z + sm.normal.z * p.lateral;
         p.pos.y = sm.pos.y + p.hover;
+        p.gy = sm.pos.y;
         const d = Math.hypot(p.pos.x - leader.pos.x, p.pos.z - leader.pos.z);
         if (d < 11 || (gap < 3 && gap > -30)) { p.phase = 'strike'; p.strikeT = 0; }
       } else {
@@ -776,6 +826,7 @@ export function createItemSystem(world, track, opts = {}) {
         p.pos.x = damp(p.pos.x, leader.pos.x, 6, dt);
         p.pos.z = damp(p.pos.z, leader.pos.z, 6, dt);
         p.pos.y = damp(p.pos.y, leader.pos.y + 1.2, 3.2, dt);
+        p.gy = sample(leader.s).pos.y;
         if (p.strikeT > 1.3) {
           applyHit(leader, 'stall', p.owner, 'catnap', p.pos);
           for (const o of list) {
@@ -797,6 +848,7 @@ export function createItemSystem(world, track, opts = {}) {
       p.pos.x = sm.pos.x + sm.normal.x * p.lateral;
       p.pos.z = sm.pos.z + sm.normal.z * p.lateral;
       p.pos.y = sm.pos.y;
+      p.gy = sm.pos.y;
       return;
     }
 
@@ -810,6 +862,7 @@ export function createItemSystem(world, track, opts = {}) {
     p.pos.x = sm.pos.x + sm.normal.x * p.lateral;
     p.pos.z = sm.pos.z + sm.normal.z * p.lateral;
     p.pos.y = sm.pos.y + p.hover;
+    p.gy = sm.pos.y;
     p.yaw = Math.atan2(sm.tangent.x * p.dir, sm.tangent.z * p.dir);
     if ((p.bounces ?? 0) > 4) killProjectile(p);
   }
@@ -951,7 +1004,11 @@ export function createItemSystem(world, track, opts = {}) {
         item: def.fires || def.id, from: def.id, kind: 'orbit', owner: rec, slot: i, slots: def.orbit,
         pos: V(rec.pos.x, rec.pos.y + 0.55, rec.pos.z), s: rec.s, lateral: rec.lateral,
         radius: def.radius ?? 1.2, hit: def.hit || 'spin', life: 999, hover: 0.55,
-        trail: false, scale: 0.7, orbitA: i * 0.1, grace: 999,
+        // No ribbon on an orbiter. A trail is built for a projectile travelling in a straight
+        // line; on a fruit swinging round the kart it degenerates into a tapering cone hanging
+        // off the fruit toward the stale tail of the buffer, which is exactly what it drew when
+        // this was tried. The orbit reads from the ground blob and the bloom instead.
+        trail: false, shadowRadius: 0.30, scale: 0.7, orbitA: i * 0.1, grace: 999,
       });
       rec.orbiters.push(p);
     }
@@ -982,6 +1039,7 @@ export function createItemSystem(world, track, opts = {}) {
     p.mesh.position.set(p.pos.x, p.pos.y, p.pos.z);
     const u = p.mesh.userData || {};
     if (p.kind === 'devil') {
+      placeShadow(p);
       if (u.shells) for (const s of u.shells) s.rotation.y += (s.userData.spin || 2) * dt;
       if (u.grit && u.gritData) {
         const m4 = new THREE.Matrix4();
@@ -1007,6 +1065,7 @@ export function createItemSystem(world, track, opts = {}) {
       p.mesh.rotation.set(p.age * 6.5, (p.yaw ?? 0), p.age * 3.1);
     }
     if (p.trailFx) { p.trailFx.push(p.pos); p.trailFx.update(dt); }
+    placeShadow(p);
   }
 
   function hazardVisual(h, dt) {
