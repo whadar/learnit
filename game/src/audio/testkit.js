@@ -343,7 +343,7 @@ export async function renderEngineSweep({ seconds = 5, character = 'mitzi' } = {
   return { buffer: buf, analysis: analyse(buf) };
 }
 
-export async function renderSurface(surface, { seconds = 2, speed = 20, slip = 0, seconds_ = 0 } = {}) {
+export async function renderSurface(surface, { seconds = 2, speed = 20, slip = 0, brake = 0, charge = 0, tier = 0, draft = 0 } = {}) {
   const ctx = makeCtx(seconds);
   const audio = createAudio({ context: ctx, offline: true, crowd: false, engine: 0, music: 0, autoMusic: false });
   audio.init([0, 0, 0]);
@@ -351,7 +351,8 @@ export async function renderSurface(surface, { seconds = 2, speed = 20, slip = 0
   const step = 1 / 120;
   for (let t = 0; t < seconds; t += step) {
     audio.update(step, {
-      vehicle: { rpm: 0.5, speed, throttle: 1, surface, grounded: true, skid: slip, drift: { active: slip > 0.4 }, boost: { time: 0 } },
+      vehicle: { rpm: 0.5, speed, throttle: 1, brake, draft, surface, grounded: true, skid: slip,
+        drift: { active: slip > 0.4 || charge > 0, charge: charge * 2.65, tier }, boost: { time: 0 } },
     });
   }
   const buf = await ctx.startRendering();
@@ -415,6 +416,19 @@ export async function renderRivals({ seconds = 2 } = {}) {
   return { buffer: buf, analysis: analyse(buf), channels: channelRms(buf), voices: audio.state.voices };
 }
 
+/** Trackside emitters heard from a passing kart. */
+export async function renderEmitters({ seconds = 2.5, kind = 'cicadas', dist = 12 } = {}) {
+  const ctx = makeCtx(seconds);
+  const audio = createAudio({ context: ctx, offline: true, crowd: false, engine: 0, surface: 0, music: 0, autoMusic: false });
+  audio.init({ pos: [0, 0, 0], forward: [0, 0, -1], up: [0, 1, 0] });
+  audio.stopMusic(0);
+  audio.setEmitters([{ id: 'a', kind, pos: [dist, 0, 0] }]);
+  const step = 1 / 120;
+  for (let t = 0; t < seconds; t += step) audio.update(step, { listener: { pos: [0, 0, 0], forward: [0, 0, -1], up: [0, 1, 0] } });
+  const buf = await ctx.startRendering();
+  return { kind, dist, buffer: buf, analysis: analyse(buf), channels: channelRms(buf) };
+}
+
 /** A whole scripted race moment: countdown, launch, drift, boost, lap, finish. */
 export async function renderRaceScene({ seconds = 16 } = {}) {
   const ctx = makeCtx(seconds);
@@ -442,6 +456,10 @@ export async function renderRaceScene({ seconds = 16 } = {}) {
       race.lapProgress = u;
       // gravel section, then a drift with a tier-3 charge, then the boost
       veh.surface = (t > 6 && t < 8) ? 'gravel' : (t > 8.5 && t < 9.2) ? 'kerb' : 'tarmac';
+      veh.draft = (t > 5 && t < 6.5) ? 1 : 0;
+      veh.brake = (t > 9.15 && t < 9.4) ? 1 : 0;
+      if (t > 5.15 && t < 5.17) audio.play('item_get');
+      if (t > 5.75 && t < 5.77) audio.play('shell_fire', { pos: [2, 0, 6] });
       if (t > 9.4 && t < 12.2) {
         veh.drift.active = true; veh.skid = 0.85;
         veh.drift.tier = t > 11.6 ? 3 : t > 10.8 ? 2 : t > 10.0 ? 1 : 0;
@@ -539,6 +557,14 @@ export async function runAudioTests({ quick = false } = {}) {
   }
   const scrub = (await renderSurface('tarmac', { seconds: 1.2, speed: 22, slip: 1 })).analysis;
   check('drift scrub is louder than rolling', scrub.rms > surf.tarmac.rms * 1.3, `scrub=${scrub.rms} roll=${surf.tarmac.rms}`);
+  const slow = (await renderSurface('tarmac', { seconds: 1.0, speed: 8 })).analysis;
+  const fast = (await renderSurface('tarmac', { seconds: 1.0, speed: 30 })).analysis;
+  check('wind noise rises with speed', fast.rms > slow.rms * 2, `8 m/s ${slow.rms} -> 30 m/s ${fast.rms}`);
+  const charged = (await renderSurface('tarmac', { seconds: 1.0, speed: 20, slip: 0.9, charge: 1, tier: 3 })).analysis;
+  check('mini-turbo charge adds a spark whine', charged.rms > scrub.rms * 1.05 && charged.centroid > scrub.centroid,
+    `charge rms=${charged.rms} c=${charged.centroid} vs scrub rms=${scrub.rms} c=${scrub.centroid}`);
+  const braking = (await renderSurface('tarmac', { seconds: 1.0, speed: 18, brake: 1 })).analysis;
+  check('braking squeals', braking.rms > surf.tarmac.rms, `brake=${braking.rms} roll=${surf.tarmac.rms}`);
   const still = (await renderSurface('gravel', { seconds: 0.8, speed: 0 })).analysis;
   check('stationary kart makes no tyre noise', still.rms < 0.004, `rms=${still.rms}`);
 
@@ -594,6 +620,20 @@ export async function runAudioTests({ quick = false } = {}) {
     `rms=${riv.analysis.rms} L=${riv.channels[0].toFixed(5)} R=${riv.channels[1].toFixed(5)} voices=${riv.voices}`);
   check('rival voice count is capped', riv.voices <= 4, `voices=${riv.voices}`);
 
+  /* -- trackside ambience -- */
+  const amb = {};
+  for (const k of ['crowd', 'cicadas', 'trees', 'pump', 'goats']) {
+    amb[k] = (await renderEmitters({ kind: k, seconds: quick ? 1.5 : 2.5 })).analysis;
+    check(`emitter ${k} is audible & clean`, amb[k].rms > 0.0008 && amb[k].peak < 0.995, `rms=${amb[k].rms} peak=${amb[k].peak}`);
+  }
+  check('cicadas are the high, buzzy one', amb.cicadas.centroid > amb.crowd.centroid && amb.cicadas.centroid > amb.pump.centroid,
+    `cicadas=${amb.cicadas.centroid} crowd=${amb.crowd.centroid} pump=${amb.pump.centroid}`);
+  check('the pump is the low, humming one', amb.pump.centroid < 600, `centroid=${amb.pump.centroid}`);
+  const ambNear = await renderEmitters({ kind: 'crowd', dist: 10, seconds: 1.5 });
+  const ambFar = await renderEmitters({ kind: 'crowd', dist: 105, seconds: 1.5 });
+  check('emitters fade with distance', ambFar.analysis.rms < ambNear.analysis.rms * 0.4,
+    `10 m ${ambNear.analysis.rms} -> 105 m ${ambFar.analysis.rms}`);
+
   /* -- robustness: partial, weird and hostile state must never throw or make noise blow up -- */
   {
     const ctx = makeCtx(2);
@@ -639,6 +679,7 @@ export async function runAudioTests({ quick = false } = {}) {
       music: { low: { ...m1.analysis, bpm: m1.bpm, onsets: m1.onsets.count, flux: +m1.onsets.flux.toFixed(0), measuredBpm: +m1.onsets.bpm.toFixed(1) },
                high: { ...m2.analysis, bpm: m2.bpm, onsets: m2.onsets.count, flux: +m2.onsets.flux.toFixed(0), measuredBpm: +m2.onsets.bpm.toFixed(1) } },
       scene: scene.analysis, pile: pileA,
+      ambience: amb,
       space: { rightL: +right.channels[0].toFixed(5), rightR: +right.channels[1].toFixed(5),
                near: right.analysis.rms, far: far.analysis.rms, rivals: riv.analysis.rms, voices: riv.voices } },
   };

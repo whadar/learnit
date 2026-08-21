@@ -99,6 +99,24 @@ export function createSurfaceVoice(ctx, dest, opts = {}) {
     try { squealA.start(0); squealB.start(0); vib.start(0); } catch (e) { /* */ }
   }
 
+  /* ---- wind over an open kart: rises with speed, thickens in a slipstream ---- */
+  const gWind = gainNode(ctx, 0.0001, out);
+  const fWind = filter(ctx, 'bandpass', 620, 0.55, 0, gWind);
+  loopSource(ctx, noise, fWind, { rate: 0.73 });
+
+  /* ---- mini-turbo charge: a spark whine that climbs through the three tiers ---- */
+  let gCharge = null, chargeOsc = null, chargeNoise = null, gChargeNz = null;
+  if (!rival) {
+    gCharge = gainNode(ctx, 0.0001, out);
+    const fC = filter(ctx, 'bandpass', 1800, 6, 0, gCharge);
+    chargeOsc = ctx.createOscillator(); chargeOsc.type = 'sawtooth'; chargeOsc.frequency.value = 320;
+    chargeOsc.connect(fC);
+    gChargeNz = gainNode(ctx, 0.0001, out);
+    chargeNoise = filter(ctx, 'bandpass', 5200, 4, 0, gChargeNz);
+    loopSource(ctx, noise, chargeNoise, { rate: 1.7 });
+    try { chargeOsc.start(0); } catch (e) { /* */ }
+  }
+
   /* ---- damped current tone, so surface changes crossfade ---- */
   const cur = { ...surfaceTone('tarmac') };
   const S = { speed: 0, surface: 'tarmac', slip: 0, kerb: 0, alive: true };
@@ -147,9 +165,29 @@ export function createSurfaceVoice(ctx, dest, opts = {}) {
     follow(gScrub.gain, scrub * 0.5 * lerp(1, 0.65, loose), now, 0.035);
     follow(fScrub.frequency, clamp(1150 + 900 * slip + 260 * v, 400, 6000), now, 0.05);
     follow(fScrub.Q, lerp(2.2, 6.5, clamp(slip, 0, 1)) * lerp(1, 0.45, loose), now, 0.08);
+    // wind: quadratic in speed, and a slipstream sits you in someone else's dirty air
+    const draft = clamp(p.draft ?? 0, 0, 1);
+    const windAmt = Math.pow(clamp(speed / 30, 0, 1.2), 1.9) * (0.6 + 0.7 * draft);
+    follow(gWind.gain, windAmt * 0.16, now, 0.08);
+    follow(fWind.frequency, clamp(420 + speed * 26 + draft * 300, 200, 4000), now, 0.1);
+
+    // brake squeal on top of the scrub
+    const brake = clamp(p.brake ?? 0, 0, 1) * clamp(speed / 6, 0, 1);
+
+    if (gCharge) {
+      // charge whine: pitch climbs through the tiers, sparks hiss louder each step
+      const charge = clamp(p.charge ?? 0, 0, 1);
+      const tier = clamp(p.tier ?? 0, 0, 3);
+      const on = charge > 0.001 ? 1 : 0;
+      follow(chargeOsc.frequency, 260 + 520 * charge + tier * 150, now, 0.06);
+      follow(gCharge.gain, on * (0.012 + 0.030 * charge) , now, 0.05);
+      follow(gChargeNz.gain, on * (0.010 + 0.045 * charge + tier * 0.012), now, 0.05);
+      follow(chargeNoise.frequency, clamp(3600 + 2600 * charge, 1500, 11000), now, 0.08);
+    }
+
     if (gSqueal) {
       // tarmac squeals; a field just hisses
-      const squeal = Math.pow(clamp(slip, 0, 1), 2.2) * clamp(speed / 12, 0, 1) * lerp(1, 0.12, loose);
+      const squeal = (Math.pow(clamp(slip, 0, 1), 2.2) + brake * 0.55) * clamp(speed / 12, 0, 1) * lerp(1, 0.12, loose);
       follow(gSqueal.gain, squeal * 0.055, now, 0.05);
       follow(squealA.frequency, clamp(940 + 420 * slip + 8 * speed, 500, 3000), now, 0.06);
       follow(squealB.frequency, clamp((940 + 420 * slip + 8 * speed) * 1.5, 600, 4500), now, 0.06);
@@ -158,7 +196,7 @@ export function createSurfaceVoice(ctx, dest, opts = {}) {
 
   function dispose() {
     S.alive = false;
-    for (const n of [src, grainSrc, grainMod, rattleSrc, scrubSrc, squealA, squealB, vib]) {
+    for (const n of [src, grainSrc, grainMod, rattleSrc, scrubSrc, squealA, squealB, vib, chargeOsc]) {
       if (!n) continue;
       try { n.stop(); } catch (e) { /* */ }
       try { n.disconnect(); } catch (e) { /* */ }

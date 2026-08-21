@@ -16,9 +16,9 @@ import { BloomPrefilterFrag, BlurShader, makeCompositeShader, makeGradeLUT } fro
  *   engine.composer = fx;                       // Engine.render() will call fx.render()
  *   fx.setSpeed(kmh, boostAmount);              // per frame, from the vehicle
  *
- * Pipeline (all HDR-linear until the composite pass):
+ * Pipeline:
  *
- *   scene -> rtScene (+depth)   full-res forward render, NoToneMapping
+ *   scene -> rtScene (+depth)   full-res forward render, renderer ACES, sRGB-encoded
  *     -> GTAO                   horizon-based AO, normals reconstructed from our depth
  *     -> UnrealBloom            soft-knee threshold bloom on real HDR highlights
  *     -> half-res gaussian      the blur source for depth of field
@@ -28,12 +28,18 @@ import { BloomPrefilterFrag, BlurShader, makeCompositeShader, makeGradeLUT } fro
  *
  * ## Colour management
  *
- * The contract puts the renderer in `SRGBColorSpace` + `ACESFilmicToneMapping`. Tone mapping
- * on the *renderer* would crush the scene to display range before bloom and depth of field
- * ever see it, so this module takes tone mapping over: it sets `renderer.toneMapping =
- * NoToneMapping` while it is alive and applies the identical ACES fit at the end of the
- * chain instead. `renderer.toneMappingExposure` is still honoured every frame, so exposure
- * tweaks made by other systems and preview pages keep working. `dispose()` restores both.
+ * This stack does **not** take tone mapping over from the renderer, and that is deliberate.
+ * three applies `fog_fragment` *after* `tonemapping_fragment` and `colorspace_fragment`, so
+ * `src/render/lighting.js`'s aerial perspective — which is most of what you see past 200 m
+ * on this course — is blended in display space against display-referred haze colours. Tone
+ * mapping in the composer instead would blend every hazy pixel in the wrong space; measured
+ * on the `lane` view it took the far pine ridge from RGB 134 to RGB 195 and turned it into
+ * white milk. So the scene target is tagged `SRGBColorSpace`, the renderer keeps its ACES
+ * curve, and the composer grades the display-referred image exactly as it would have
+ * reached the canvas. Nothing here can change a colour another module tuned.
+ *
+ * Bloom still gets a physically meaningful threshold: its prefilter inverts the tone curve
+ * to reconstruct how far over white a pixel was (see `postShaders.js`).
  *
  * ## Quality
  *
@@ -47,7 +53,7 @@ import { BloomPrefilterFrag, BlurShader, makeCompositeShader, makeGradeLUT } fro
 
 const TIER_MAX = 3;
 
-/** Renders the scene once into our own HDR target so the depth texture is never ping-ponged. */
+/** Renders the scene once into our own target so the depth texture is never ping-ponged. */
 class ScenePass extends Pass {
   constructor(scene, camera, target) {
     super();
@@ -150,13 +156,14 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
 
   const params = {
     exposure:        opts.exposure ?? 1.0,
-    // Bloom. Threshold sits above sunlit white plaster (~1.0-1.4 in our HDR scene) so
-    // village walls stay walls; only the sun disc, glints, flames and sparks bloom.
-    bloomStrength:   opts.bloomStrength ?? 0.50,
-    bloomRadius:     opts.bloomRadius ?? 0.72,
-    bloomThreshold:  opts.bloomThreshold ?? 1.45,
-    bloomKnee:       opts.bloomKnee ?? 0.55,
-    bloomClamp:      opts.bloomClamp ?? 3.0,
+    // Bloom. The threshold is in *reconstructed* HDR units (see the prefilter): sunlit
+    // white plaster comes back at ~4, the solar disc and boost flames at hundreds. 6.5 is
+    // therefore comfortably above the village walls and well below anything that glows.
+    bloomStrength:   opts.bloomStrength ?? 0.62,
+    bloomRadius:     opts.bloomRadius ?? 0.68,
+    bloomThreshold:  opts.bloomThreshold ?? 6.5,
+    bloomKnee:       opts.bloomKnee ?? 5.0,
+    bloomClamp:      opts.bloomClamp ?? 2.2,
     // Ambient occlusion.
     aoIntensity:     opts.aoIntensity ?? 1.0,
     aoRadius:        opts.aoRadius ?? 1.1,
@@ -168,7 +175,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     focusFar:        opts.focusFar ?? 2600,
     dofMax:          opts.dofMax ?? 0.34,
     // Motion blur: fraction of a frame of camera movement smeared across the image.
-    motionShutter:   opts.motionShutter ?? 0.60,
+    motionShutter:   opts.motionShutter ?? 0.72,
     motionMax:       opts.motionMax ?? 0.013,
     motionNear:      opts.motionNear ?? 2.5,
     motionFull:      opts.motionFull ?? 14,
@@ -176,8 +183,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     contrast:        opts.contrast ?? 1.0,
     saturation:      opts.saturation ?? 1.0,
     lutMix:          opts.lutMix ?? 1.0,
-    vignette:        opts.vignette ?? 0.30,
-    chromaKeep:      opts.chromaKeep ?? 0.65,
+    vignette:        opts.vignette ?? 0.28,
     chromatic:       opts.chromatic ?? 0.0038,
     // Boost rush.
     rushStrength:    opts.rushStrength ?? 0.024,
@@ -199,6 +205,22 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     depthTexture,
   });
   rtScene.texture.name = 'KatPost.scene';
+  // Canvas parity. `WebGLRenderer.setProgram()` silently disables tone mapping whenever it
+  // is drawing into a render target, and `WebGLPrograms` forces the output colour space to
+  // the working (linear) space there too. So *any* EffectComposer changes this engine's
+  // look: `fog_fragment` runs after both of those chunks, and lighting.js's aerial
+  // perspective ends up blended in linear space against display-referred haze colours.
+  // Measured on the `lane` view that took the far pine ridge from RGB 134 to RGB 195 and
+  // turned the whole distance into milk.
+  //
+  // `isXRRenderTarget` is the one flag that puts both switches back: with it set, three
+  // tone-maps in-material and encodes with `texture.colorSpace`, exactly as it would for
+  // the canvas. In the WebGLRenderer path the flag is read in only three places
+  // (WebGLRenderer.setProgram, WebGLPrograms.getParameters, WebGLTextures' internal-format
+  // choice, where it just forces a linear transfer function — which is what we want, since
+  // a half-float target must not be allocated as SRGB8_ALPHA8 and auto-decoded on sampling).
+  rtScene.texture.colorSpace = THREE.SRGBColorSpace;
+  rtScene.isXRRenderTarget = true;
 
   const composer = new EffectComposer(renderer);
   composer.setSize(width, height);
@@ -268,13 +290,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   composer.addPass(compositePass);
   composer.addPass(smaaPass);
 
-  // ---- renderer takeover ---------------------------------------------------------------
-  const prevToneMapping = renderer.toneMapping;
-  renderer.toneMapping = THREE.NoToneMapping;
-
   // ---- state ---------------------------------------------------------------------------
   let tier = -1;
-  let speedN = 0, boost = 0;
+  let speedN = 0, boost = 0, gradeOn = true;
   const prevViewProj = new THREE.Matrix4();
   const curViewProj = new THREE.Matrix4();
   let havePrev = false;
@@ -348,11 +366,13 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
 
     // ---- exposure + grade, driven by speed / boost ------------------------------------
     const punch = boost;
-    cu.uExposure.value = (renderer.toneMappingExposure || 1) * params.exposure * (1 + 0.07 * punch);
+    // A display-space gain, not an exposure control — `renderer.toneMappingExposure` still
+    // owns real exposure, so other systems' tuning keeps working. This is only the small
+    // brightness kick that comes with a boost.
+    cu.uExposure.value = params.exposure * (1 + 0.05 * punch);
     cu.uSaturation.value = params.saturation * (1 + 0.22 * punch + 0.05 * speedN);
     cu.uContrast.value = params.contrast * (1 + 0.10 * punch);
-    cu.uLutMix.value = params.lutMix;
-    cu.uChromaKeep.value = params.chromaKeep;
+    cu.uLutMix.value = gradeOn ? params.lutMix : 0;
     cu.uLift.value = 0.02 * punch;
     cu.uVignette.value = params.vignette + 0.20 * punch + 0.05 * smoothstep(0.6, 1.2, speedN);
     // CA scales only gently with boost: past ~4 px of separation the fringe stops reading
@@ -395,7 +415,6 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   }
 
   function dispose() {
-    renderer.toneMapping = prevToneMapping;
     for (const p of composer.passes) p.dispose?.();
     composer.passes.length = 0;
     composer.renderTarget1.dispose();
@@ -413,8 +432,8 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     params, lut,
     get quality() { return tier; },
     passes: { scenePass, sourcePass, aoPass, bloomPass, dofPass, compositePass, smaaPass },
-    /** Toggle the whole grade off (A/B comparisons): keeps ACES so the image stays sane. */
-    setGradeEnabled(on) { cu.uLutMix.value = on ? params.lutMix : 0; },
+    /** Toggle the grade LUT off for A/B comparisons; the rest of the stack keeps running. */
+    setGradeEnabled(on) { gradeOn = !!on; cu.uLutMix.value = gradeOn ? params.lutMix : 0; },
   };
 }
 

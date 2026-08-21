@@ -3,9 +3,21 @@
  *
  *   import { createAudio } from './audio/audio.js';
  *   const audio = createAudio({ character: 'mitzi' });
- *   audio.init(camera);                       // safe to call before any user gesture
- *   audio.update(dt, { vehicle, rivals, race, listener: camera });
- *   audio.play('boost', { tier: 3 });
+ *   audio.init(engine.camera);                // safe to call before any user gesture
+ *   engine.add({ update: (dt) => audio.update(dt, {
+ *     listener: engine.camera,                // a THREE.Camera, or { pos, forward, up }
+ *     vehicle:  race.player.vehicle,          // src/physics/vehicle.js instance or its .state
+ *     rivals:   race.racers.filter(r => !r.isPlayer)
+ *                 .map(r => ({ id: r.id, pos: r.vehicle.state.pos, vel: r.vehicle.state.vel, state: r.vehicle.state })),
+ *     race:     { phase: race.state.phase, countdown: race.state.countdown,
+ *                 lap: race.player.lap + 1, laps: race.laps, lapProgress: race.player.u / race.length },
+ *   })});
+ *   audio.setEmitters([{ kind: 'crowd', pos: [x, y, z] }, { kind: 'cicadas', pos: [x, y, z] }]);
+ *   audio.play('boost', { tier: 3 });         // explicit cues; most fire themselves off state
+ *
+ * update() raises its own cues from state edges — drift tiers, boosts, landings, wall scrapes,
+ * bumps, countdown, lap, finish — so items.js/race.js only need play() for their own events:
+ *   items.on('fire', e => audio.play(e.item, { pos: e.pos }));   // ids alias onto cues
  *
  * Everything is synthesised (see dsp.js / engineSynth.js / surface.js / sfx.js / music.js);
  * there are no audio files anywhere in this repo.
@@ -24,6 +36,7 @@ import { createEngineVoice, engineCharacter, firingHz } from './engineSynth.js';
 import { createSurfaceVoice } from './surface.js';
 import { createMusic } from './music.js';
 import { playCue, cueId, CUE_IDS } from './sfx.js';
+import { createEmitter, EMITTER_KINDS } from './ambience.js';
 
 const BUSES = ['engine', 'surface', 'sfx', 'music', 'ambience'];
 /** Minimum seconds between retriggers, per cue. Stops any state edge machine-gunning. */
@@ -35,7 +48,7 @@ const COOLDOWN = {
 };
 const DEFAULTS = {
   master: 0.7, engine: 0.46, surface: 0.46, sfx: 0.95, music: 0.36, ambience: 0.34,
-  seed: 7, character: 'mitzi', maxRivals: 4, reverb: true, offline: false, context: null,
+  seed: 7, character: 'mitzi', maxRivals: 4, maxEmitters: 5, reverb: true, offline: false, context: null,
   autoMusic: true, crowd: true, rolloff: 34,
 };
 
@@ -53,6 +66,8 @@ export function createAudio(opts = {}) {
   const bus = {}, duck = {};
   let engineVoice = null, surfaceVoice = null, music = null, crowd = null, crowdGain = null;
   const rivalVoices = new Map();
+  const emitters = new Map();          // trackside point sources (crowd, cicadas, pump, ...)
+  let emitterDefs = [];
   const lastPlayed = new Map();
   let simTime = 0;                       // offline clock
   let musicOverride = null, duckUntil = 0, duckAmount = 1;
@@ -168,7 +183,7 @@ export function createAudio(opts = {}) {
     const p = ctx.createPanner();
     p.panningModel = 'equalpower';           // cheap and stable under software rendering
     p.distanceModel = 'inverse';
-    p.refDistance = 6; p.maxDistance = 420; p.rolloffFactor = 1.1;
+    p.refDistance = 6; p.maxDistance = 420; p.rolloffFactor = 1.35;
     if (p.positionX) { p.positionX.value = pos[0]; p.positionY.value = pos[1]; p.positionZ.value = pos[2]; }
     else if (p.setPosition) p.setPosition(pos[0], pos[1], pos[2]);
     return p;
@@ -233,15 +248,16 @@ export function createAudio(opts = {}) {
 
     const busName = o.bus || 'sfx';
     const dest = bus[busName] || bus.sfx;
-    let head = dest;
+    let head = dest, tail = null;
     if (o.pos && ctx.createPanner) {
       const pan = makePanner(o.pos);
       pan.connect(dest);
-      head = pan;
+      head = pan; tail = pan;
     }
     // every cue gets its own voice gain, so its reverb send cannot leak the whole bus
     const node = gainNode(ctx, clamp(o.gain ?? 1, 0, 4), head);
-    if (verbSend) node.connect(gainNode(ctx, o.wet ?? 0.16, verbSend));
+    // the send is taken *after* the panner, so a distant source's reverb fades with it
+    if (verbSend) (tail || node).connect(gainNode(ctx, o.wet ?? 0.16, verbSend));
     const res = playCue(ctx, node, key, t, o);
     if (res) { S.cues++; S.lastCue = key; }
     return res;
@@ -305,9 +321,14 @@ export function createAudio(opts = {}) {
       const slipRaw = v.skid ?? 0;
       const drifting = !!v.drift?.active;
       const slip = clamp(Math.max(slipRaw, drifting ? 0.55 + clamp(Math.abs(v.driftSlipDeg ?? 20) / 40, 0, 0.55) : 0), 0, 1.3);
+      const dr = v.drift || {};
       surfaceVoice.update(step, {
         speed, surface: v.surface, grounded: v.grounded !== false, slip,
         kerb: (v.surface === 'kerb' || v.surface === 'rumble') ? 1 : clamp((v.rumble ?? 0) * 1.2, 0, 1),
+        brake: clamp(v.brake ?? 0, 0, 1),
+        draft: clamp(v.draft ?? 0, 0, 1),
+        charge: dr.active ? clamp((dr.charge ?? 0) / 2.65, 0, 1) : 0,
+        tier: dr.active ? (dr.tier ?? 0) : 0,
         gain: 1,
       }, t);
 
@@ -346,8 +367,9 @@ export function createAudio(opts = {}) {
       prev.bump = bumpI;
     }
 
-    /* ---------- rivals ---------- */
+    /* ---------- rivals & trackside sources ---------- */
     updateRivals(state.rivals, t, step);
+    updateEmitters(t);
 
     /* ---------- race state ---------- */
     const race = state.race || state.raceState || null;
@@ -458,6 +480,55 @@ export function createAudio(opts = {}) {
     }
   }
 
+  /**
+   * Trackside point sources. Pass once (they are static): each entry is
+   * `{ id?, kind:'crowd'|'cicadas'|'trees'|'pump'|'goats', pos:[x,y,z], gain?, range? }`.
+   * Only the nearest few are instantiated, so a hundred cicada spots cost nothing.
+   */
+  function setEmitters(list) {
+    emitterDefs = Array.isArray(list)
+      ? list.filter(e => e && e.pos && EMITTER_KINDS.includes(e.kind)).map((e, i) => ({ ...e, id: e.id ?? (e.kind + i) }))
+      : [];
+    for (const [id, em] of emitters) {
+      if (!emitterDefs.some(d => d.id === id)) { em.voice.dispose(); try { em.pan.disconnect(); } catch (e) { /* */ } emitters.delete(id); }
+    }
+    return api;
+  }
+
+  function updateEmitters(t) {
+    if (!emitterDefs.length) return;
+    const scored = [];
+    for (const d of emitterDefs) {
+      const dx = d.pos[0] - listenerPos.x, dy = d.pos[1] - listenerPos.y, dz = d.pos[2] - listenerPos.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const range = d.range ?? 0;
+      scored.push({ d, dist, range });
+    }
+    scored.sort((a, b) => a.dist - b.dist);
+    const keep = scored.slice(0, O.maxEmitters);
+    const alive = new Set();
+    for (const s of keep) {
+      const d = s.d;
+      alive.add(d.id);
+      let em = emitters.get(d.id);
+      if (!em) {
+        const pan = makePanner(d.pos);
+        pan.connect(bus.ambience);
+        const voice = createEmitter(ctx, pan, d.kind, { seed: (String(d.id).length * 31 + d.pos[0]) | 0 });
+        em = { voice, pan };
+        emitters.set(d.id, em);
+      }
+      const range = d.range ?? em.voice.range;
+      const g = clamp(1 - s.dist / range, 0, 1);
+      em.voice.setGain(g * g * (d.gain ?? 1), t);
+    }
+    for (const [id, em] of emitters) {
+      if (alive.has(id)) continue;
+      em.voice.dispose(); try { em.pan.disconnect(); } catch (e) { /* */ }
+      emitters.delete(id);
+    }
+  }
+
   function updateRace(race, t) {
     const phase = race.phase || race.state?.phase || '';
     const cd = race.countdown ?? 99;
@@ -543,6 +614,8 @@ export function createAudio(opts = {}) {
     try { music?.dispose(); } catch (e) { /* */ }
     for (const [, rv] of rivalVoices) { try { rv.voice.dispose(); } catch (e) { /* */ } }
     rivalVoices.clear();
+    for (const [, em] of emitters) { try { em.voice.dispose(); } catch (e) { /* */ } }
+    emitters.clear();
     try { crowd?.stop(); } catch (e) { /* */ }
     if (ctx) { clearCache(ctx); if (!O.context && ctx.close) { try { ctx.close(); } catch (e) { /* */ } } }
     inited = false; S.ready = false; S.running = false;
@@ -551,7 +624,7 @@ export function createAudio(opts = {}) {
 
   const api = {
     init, update, play, setMusicIntensity, setMasterVolume, setVolume, suspend, resume, dispose,
-    setListener, setCharacter, startMusic, stopMusic, duck: duckBuses,
+    setListener, setCharacter, startMusic, stopMusic, duck: duckBuses, setEmitters,
     state: S, cues: CUE_IDS,
     /** Test hook: the bus nodes, so tools/sim can tap the chain. */
     get buses() { return { ...bus, master, comp, limiter, verbSend }; },

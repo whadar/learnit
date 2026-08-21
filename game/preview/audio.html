@@ -9,7 +9,7 @@
 <script type="module">
 import {
   runAudioTests, renderCue, renderEngine, renderEngineSweep, renderSurface, renderMusic,
-  renderRaceScene, spectrogram, spectrum, mono, onsets, analyse,
+  renderRaceScene, renderEmitters, renderPositional, spectrogram, spectrum, mono, onsets, analyse,
 } from '../src/audio/testkit.js';
 import { CUE_IDS } from '../src/audio/sfx.js';
 import { PHRASE, DRUM_BASE, DRUM_BUSY, BASS_ROOT } from '../src/audio/music.js';
@@ -141,16 +141,22 @@ async function build() {
   DATA.sweepSg = spectrogram(mono(DATA.sweep.buffer), 48000, 1024, 384, 12000);
   DATA.eng = [];
   for (const rpm of [0.05, 0.35, 0.7, 1.0]) {
-    const r = await renderEngine(rpm, { seconds: 1.2 });
-    DATA.eng.push({ rpm, a: r.analysis, expected: r.expectedHz, sp: spectrum(mono(r.buffer), 48000, 4096), wav: mono(r.buffer) });
+    const r = await renderEngine(rpm, { seconds: 1.4, raw: true });
+    DATA.eng.push({ rpm, a: r.analysis, firing: r.firing, expected: r.expectedHz, sp: spectrum(mono(r.buffer), 48000, 4096), wav: mono(r.buffer) });
   }
   DATA.surf = [];
   for (const s of ['tarmac', 'gravel', 'dirt_track', 'grass', 'kerb']) {
     const r = await renderSurface(s, { seconds: 1.5, speed: 20 });
     DATA.surf.push({ s, a: r.analysis, sp: spectrum(mono(r.buffer), 48000, 4096), sg: spectrogram(mono(r.buffer), 48000, 1024, 256, 12000) });
   }
-  const scrub = await renderSurface('tarmac', { seconds: 1.5, speed: 22, slip: 1 });
-  DATA.surf.push({ s: 'drift scrub', a: scrub.analysis, sp: spectrum(mono(scrub.buffer), 48000, 4096), sg: spectrogram(mono(scrub.buffer), 48000, 1024, 256, 12000) });
+  for (const [label, opts] of [
+    ['drift scrub', { seconds: 1.5, speed: 22, slip: 1 }],
+    ['drift charge · tier 3', { seconds: 1.5, speed: 22, slip: 0.9, charge: 1, tier: 3 }],
+    ['wind · 32 m/s', { seconds: 1.5, speed: 32 }],
+  ]) {
+    const r = await renderSurface('tarmac', opts);
+    DATA.surf.push({ s: label, a: r.analysis, sp: spectrum(mono(r.buffer), 48000, 4096), sg: spectrogram(mono(r.buffer), 48000, 1024, 256, 12000), alt: true });
+  }
 
   DATA.mHi = await renderMusic(0.95, { seconds: 14 });
   DATA.mHiSg = spectrogram(mono(DATA.mHi.buffer), 48000, 1024, 256, 12000);
@@ -160,6 +166,17 @@ async function build() {
   DATA.scene = await renderRaceScene({ seconds: 16 });
   DATA.sceneWav = mono(DATA.scene.buffer);
   DATA.sceneSg = spectrogram(DATA.sceneWav, 48000, 1024, 256, 12000);
+
+  DATA.amb = [];
+  for (const kind of ['crowd', 'cicadas', 'trees', 'pump', 'goats']) {
+    const r = await renderEmitters({ kind, seconds: 2.2, dist: 12 });
+    DATA.amb.push({ kind, a: r.analysis, sp: spectrum(mono(r.buffer), 48000, 4096), sg: spectrogram(mono(r.buffer), 48000, 1024, 256, 12000) });
+  }
+  DATA.space = {
+    right: await renderPositional('horn', [26, 0, 0]),
+    left: await renderPositional('horn', [-26, 0, 0]),
+    far: await renderPositional('horn', [0, 0, -260]),
+  };
 
   DATA.cues = [];
   for (const id of CUE_SHOW) {
@@ -204,7 +221,7 @@ function viewEngine() {
     waveform(px + 8, ty + 30, tw - 16, 46, e.wav, ACC, 3);
     specCurve(px + 8, ty + 82, tw - 16, H - ty - 16 - 108, e.sp, ACC2);
     const a = e.a;
-    text(`f0 ${a.f0} Hz  ·  centroid ${a.centroid} Hz`, px + 8, H - 34, DIM, '10px ui-monospace,monospace');
+    text(`measured ${e.firing.toFixed(1)} Hz · centroid ${a.centroid} Hz`, px + 8, H - 34, DIM, '10px ui-monospace,monospace');
     text(`rms ${a.rms.toFixed(4)}  peak ${a.peak.toFixed(3)}`, px + 8, H - 22, DIM, '10px ui-monospace,monospace');
   }
 }
@@ -216,14 +233,13 @@ function viewSurfaces() {
   for (let i = 0; i < rows; i++) {
     const s = DATA.surf[i], ry = y + i * (rh + 6);
     panel(x, ry, w, rh, '', '');
-    text(s.s, x + 12, ry + 20, i === rows - 1 ? ACC2 : TXT, '600 13px ui-monospace,monospace');
-    text('20 m/s' + (i === rows - 1 ? ' · full slip' : ''), x + 12, ry + 36, DIM, '10px ui-monospace,monospace');
-    text(`rms ${s.a.rms.toFixed(4)}`, x + 12, ry + 52, DIM, '10px ui-monospace,monospace');
-    text(`centroid ${s.a.centroid} Hz`, x + 12, ry + 66, DIM, '10px ui-monospace,monospace');
-    text(`peak ${s.a.peak.toFixed(3)}`, x + 12, ry + 80, DIM, '10px ui-monospace,monospace');
+    text(s.s, x + 10, ry + 18, s.alt ? ACC2 : TXT, '600 11px ui-monospace,monospace');
+    text(s.alt ? 'tyre / body layer' : '20 m/s rolling', x + 10, ry + 32, DIM, '9px ui-monospace,monospace');
+    text(`rms ${s.a.rms.toFixed(4)}  pk ${s.a.peak.toFixed(2)}`, x + 10, ry + 46, DIM, '9px ui-monospace,monospace');
+    text(`centroid ${s.a.centroid} Hz`, x + 10, ry + 58, DIM, '9px ui-monospace,monospace');
     const gx = x + 150, gw = w - 150 - 300;
     specgram(gx, ry + 6, gw, rh - 12, s.sg, { fmax: 12000 });
-    specCurve(gx + gw + 14, ry + 12, 272, rh - 24, s.sp, i === rows - 1 ? ACC2 : ACC);
+    specCurve(gx + gw + 14, ry + 12, 272, rh - 24, s.sp, s.alt ? ACC2 : ACC);
     g.strokeStyle = LINE; g.strokeRect(gx + gw + 8.5, ry + 6.5, 283, rh - 13);
     text('spectrum', gx + gw + 16, ry + rh - 12, DIM, '9px ui-monospace,monospace');
   }
@@ -323,7 +339,6 @@ function viewMusic() {
   for (let st = 0; st < 16; st += 4) {
     text('beat ' + (st / 4 + 1), px + 44 + st * bw + bw / 2, y3 + h3 - 10, DIM, '9px ui-monospace,monospace', 'center');
   }
-  text('solid = every bar   ·   faded = fill above intensity 0.62', px + 44, y3 + 20, DIM, '9px ui-monospace,monospace');
 }
 
 function viewCues() {
@@ -349,8 +364,9 @@ function viewScene() {
   const x = 16, y = 56, w = W - 32;
   panel(x, y, w, 176, 'master output', `peak ${DATA.scene.analysis.peak.toFixed(3)} · rms ${DATA.scene.analysis.rms.toFixed(4)} (${DATA.scene.analysis.rmsDb} dB) · limiter holds below 0 dBFS`);
   waveform(x + 8, y + 26, w - 16, 142, DATA.sceneWav, ACC, 1);
-  const events = [[0.2, '3'], [1.2, '2'], [2.2, '1'], [3.4, 'GO'], [6, 'gravel'], [8.5, 'kerb'],
-    [9.4, 'drift'], [10.0, 'tier1'], [10.8, 'tier2'], [11.6, 'tier3'], [12.2, 'BOOST'], [13, 'bump'], [14, 'land'], [14.6, 'finish']];
+  const events = [[0.4, '3'], [1.4, '2'], [2.4, '1'], [3.4, 'GO'], [5.2, 'item'], [5.8, 'fire'], [6, 'gravel'],
+    [8.5, 'kerb'], [9.2, 'brake'], [9.4, 'drift'], [10.0, 'tier1'], [10.8, 'tier2'], [11.6, 'tier3'],
+    [12.2, 'BOOST'], [13, 'bump'], [14, 'land'], [14.6, 'finish']];
   for (const [t, label] of events) {
     const ex = x + 8 + (w - 16) * (t / 16);
     g.strokeStyle = 'rgba(255,182,77,0.55)'; g.setLineDash([2, 3]);
@@ -432,7 +448,54 @@ function viewTests() {
   text(`${t.total - t.failed} of ${t.total} checks pass`, 16, H - 12, t.failed ? BAD : OK, '600 12px ui-monospace,monospace');
 }
 
-const VIEWS = { engine: viewEngine, surfaces: viewSurfaces, music: viewMusic, cues: viewCues, scene: viewScene, tests: viewTests };
+function viewWorld() {
+  header('WORLD', 'trackside point sources + 3D placement through PannerNode');
+  const x = 16, w = W - 32;
+  const rows = DATA.amb.length;
+  const top = 52, hTop = H - top - 190;
+  const rh = Math.floor(hTop / rows) - 6;
+  for (let i = 0; i < rows; i++) {
+    const e = DATA.amb[i], ry = top + i * (rh + 6);
+    panel(x, ry, w, rh, '', '');
+    text(e.kind, x + 10, ry + 18, ACC2, '600 12px ui-monospace,monospace');
+    text(['start-straight crowd', 'cicadas in the pines', 'wind in the cypresses', 'irrigation pump', 'a flock over the wall'][i],
+      x + 10, ry + 32, DIM, '9px ui-monospace,monospace');
+    text(`rms ${e.a.rms.toFixed(4)}  centroid ${e.a.centroid} Hz`, x + 10, ry + 46, DIM, '9px ui-monospace,monospace');
+    const gx = x + 210, gw = w - 210 - 300;
+    specgram(gx, ry + 6, gw, rh - 12, e.sg, { fmax: 12000 });
+    specCurve(gx + gw + 14, ry + 12, 272, rh - 24, e.sp, ACC);
+    g.strokeStyle = LINE; g.strokeRect(gx + gw + 8.5, ry + 6.5, 283, rh - 13);
+  }
+  /* 3D proof */
+  const py = H - 176, ph = 160;
+  panel(x, py, w * 0.5 - 6, ph, 'stereo placement', 'a horn 26 m to each side, listener facing -Z');
+  const S3 = DATA.space;
+  const bars = [['26 m right', S3.right.channels], ['26 m left', S3.left.channels], ['260 m ahead', S3.far.channels]];
+  for (let i = 0; i < bars.length; i++) {
+    const [label, ch] = bars[i], by = py + 42 + i * 36;
+    text(label, x + 12, by + 12, TXT, '10px ui-monospace,monospace');
+    const bx = x + 120, bw2 = w * 0.5 - 6 - 130;
+    const mx = Math.max(...bars.flatMap(b => b[1]));
+    for (let c = 0; c < 2; c++) {
+      const v = ch[c] / mx;
+      g.fillStyle = c ? ACC2 : ACC;
+      g.fillRect(bx, by + c * 12, Math.max(1, v * bw2), 9);
+      text(c ? 'R' : 'L', bx - 12, by + 9 + c * 12, DIM, '9px ui-monospace,monospace');
+    }
+  }
+  panel(x + w * 0.5 + 6, py, w * 0.5 - 6, ph, 'how it is wired', '');
+  const lines = [
+    'engine · tyres · music · crowd  ->  glue compressor  ->  master',
+    'one-shot cues  ->  master (dry: the compressor eats transients)',
+    'master  ->  32 Hz high-pass  ->  soft-clip ceiling  ->  device',
+    'per-cue reverb send  ->  generated stone-street impulse',
+    'rivals & emitters  ->  PannerNode (inverse rolloff, Doppler by hand)',
+    'finish fanfare ducks the bed by 10 dB for 3.6 s',
+  ];
+  for (let i = 0; i < lines.length; i++) text(lines[i], x + w * 0.5 + 18, py + 44 + i * 17, i < 3 ? TXT : DIM, '10px ui-monospace,monospace');
+}
+
+const VIEWS = { engine: viewEngine, surfaces: viewSurfaces, music: viewMusic, cues: viewCues, scene: viewScene, world: viewWorld, tests: viewTests };
 let current = 'engine';
 function draw() {
   if (!DATA.ready) {

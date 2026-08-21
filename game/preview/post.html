@@ -55,8 +55,8 @@ function makeShots(w) {
   const h = (x, z) => w.heightAt(x, z);
   const S = {};
 
-  const still = (name, pos, look, fov, kmh = 0, boost = 0) => {
-    S[name] = { fov, kmh, boost, speed: 0, at: () => ({ pos: V(pos), look: V(look) }) };
+  const still = (name, pos, look, fov, kmh = 0, boost = 0, tweak = null) => {
+    S[name] = { fov, kmh, boost, speed: 0, tweak, at: () => ({ pos: V(pos), look: V(look) }) };
   };
 
   // Kart-eye on the residential lane: AO contact, plaster in sun, far houses in the DoF roll.
@@ -69,6 +69,17 @@ function makeShots(w) {
   still('sun', [402, h(402, 306) + 1.8, 306], [-40, h(-40, 250) + 104, 250], 58, 0);
   // Olive grove, low: AO under the canopies, saturation on the foliage.
   still('grove', [641, h(641, 118) + 1.7, 118], [688, h(688, 62) + 3.0, 62], 60, 0);
+
+  // ---- ablation views: same camera as `lane`, one effect removed at a time ------------
+  const LANE = [[244, 84.2, -64], [202, 84.6, -92], 62, 18];
+  const ab = (name, tweak) => still(name, LANE[0], LANE[1], LANE[2], LANE[3], 0, tweak);
+  ab('laneQ0',      f => f.setQuality(0));
+  ab('laneQ1',      f => f.setQuality(1));
+  ab('laneNoBloom', f => { f.passes.bloomPass.enabled = false; });
+  ab('laneNoDof',   f => { f.params.dofMax = 0; });
+  ab('laneNoGrade', f => { f.setGradeEnabled(false); });
+  ab('laneNoAo',    f => { if (f.passes.aoPass) { f.passes.aoPass.enabled = false;
+                            f.passes.sourcePass.enabled = true; } });
 
   if (track) {
     const ride = (name, s0, back, fov, kmh, boost, speed) => {
@@ -159,9 +170,19 @@ boot({
       const a = shots[k].at(0);
       game.views[k] = { pos: a.pos.toArray(), look: a.look.toArray(), fov: shots[k].fov };
     }
+    const baseDof = fx ? fx.params.dofMax : 0;
     game.setView = (name) => {
       const s = shots[name]; if (!s) throw new Error('unknown view: ' + name);
       shot = s; shotName = name; frame = 0;
+      if (fx) {                                  // reset, then apply this shot's ablation
+        fx.setQuality(TIER);
+        fx.passes.bloomPass.enabled = TIER >= 1;
+        if (fx.passes.aoPass) { fx.passes.aoPass.enabled = TIER >= 2;
+          fx.passes.sourcePass.enabled = !(TIER >= 2); }
+        fx.params.dofMax = baseDof;
+        fx.setGradeEnabled(!NOLUT);
+        s.tweak?.(fx);
+      }
       apply();
     };
 
