@@ -38,66 +38,118 @@ const _c1 = new THREE.Color();
 /**
  * Art-direction layer over `vfxLibrary.PRESETS`.
  *
- * The library presets are the *physics* of each effect; these overrides are the *look*, and
- * they live here because the look is a property of how this system composites — screen
- * blending with a sharpened coverage profile — not of the sprite atlas.
+ * The library presets are the *physics* of each effect; these overrides are the *look*.
  *
- * The rule for every additive effect below: a large sprite never carries a high alpha, and
- * only a *small* sprite is allowed to be near-white. Body layers stay saturated (deep orange
- * for fire, the charge-tier hue for sparks) so that when the screen blend does drive a
- * channel to 1.0 the result is a hot core inside a coloured flame, not a white lobe.
+ * The blowout post-mortem, because the shape of the fix is not obvious.  The boost plume
+ * used to be an additive stack: ten glow quads, each nearly opaque, all landing on the same
+ * hundred pixels.  Additive has no ceiling, so the sum clipped to flat white over a quarter
+ * of the frame and the kart disappeared inside it.  Screen blending (the `add` batch) fixes
+ * the *ceiling* — it can never exceed 1.0 — but it trades one failure for another: `dst +
+ * src*(1-dst)` spends the remaining headroom, and on a sunlit limestone road there is no
+ * headroom left, so the flame simply vanished.  Neither blend mode can carry a flame in a
+ * bright outdoor game.
+ *
+ * So the plume is split by *job*:
+ *   - the flame **body** is alpha-over (`blend:'fire'`).  Alpha-over is idempotent in hue:
+ *     stack fifty orange sprites and the result is still exactly that orange, never white,
+ *     and it reads at full contrast against pale sand because it *replaces* the background
+ *     instead of adding to it.  This is where the silhouette lives.
+ *   - only the **core** — one ~0.15 m kernel per exhaust — is additive/screen.  Its
+ *     footprint is a few hundred pixels, so that is the entire budget for clipped white and
+ *     for what the bloom prefilter can see.
+ *   - **soot** sits behind the fire, dark and alpha-blended, because a flame reads by value
+ *     contrast against something darker, not by being brighter than everything else.
  */
 const FX_TUNE = {
   /* mini-turbo charge sparks: short, stretched, individually readable comets */
   driftSpark: {
-    size: [0.19, 0.026], life: [0.20, 0.40], alpha: 0.85, stretch: 0.70,
+    size: [0.26, 0.030], life: [0.22, 0.44], alpha: 0.95, stretch: 0.60,
     speed: [4.0, 9.5], spread: 0.75, jitter: 1.3, drag: 3.6, grav: -4.5,
     turb: [0.04, 3.0], spin: 5, fadeIn: 0.03,
   },
   /* the soft bloom that sits under a spark shower — small and dim, it is not the star */
-  miniTurbo: { size: [0.24, 0.03], life: [0.13, 0.26], alpha: 0.34, speed: [0.8, 2.2] },
+  miniTurbo: { size: [0.22, 0.03], life: [0.13, 0.26], alpha: 0.38, speed: [0.8, 2.2] },
 
-  /* exhaust fire. Deep orange body, cool blue-black smoke, white only in `boostCore`. */
+  /* Exhaust fire body. Alpha-over, so this orange is the orange you see, no matter how many
+   * sprites overlap. The `flame` cell carries its own white-hot-base -> cool-tip ramp, and
+   * the colour ramp cools it further over life: bright orange at birth, deep red as it dies. */
   boostFlame: {
-    size: [0.30, 0.74], life: [0.13, 0.23], alpha: 0.30,
-    speed: [3.0, 7.0], spread: 0.20, jitter: 0.55, drag: 5.4, grav: 0.85,
-    turb: [0.05, 3.4], stretch: 0.05, fadeIn: 0.07, spin: 1.2,
-    colorA: [1.00, 0.60, 0.20], colorB: [1.00, 0.24, 0.045],
+    // `fire`, not `flame`: the `flame` cell bakes its own orange gradient into RGB, which
+    // multiplies with the particle ramp and drags the tip of every tongue to a muddy
+    // near-black red. The neutral cell lets the ramp alone own the hue — hot yellow-orange
+    // at birth, saturated red as it dies — which is the gradient that reads as fire.
+    blend: 'fire', sprite: 'fire',
+    size: [0.28, 0.62], life: [0.14, 0.24], alpha: 1.0,
+    speed: [3.0, 6.5], spread: 0.16, jitter: 0.30, drag: 5.4, grav: 0.35,
+    turb: [0.04, 3.4], stretch: 0, fadeIn: 0.04, spin: 0.5,
+    colorA: [1.00, 0.82, 0.34], colorB: [1.00, 0.26, 0.045],
   },
   boostBurst: {
-    count: 9, size: [0.36, 1.00], life: [0.20, 0.40], alpha: 0.26,
-    speed: [5, 12], spread: 0.38, jitter: 1.6, drag: 4.6, grav: 1.0,
-    turb: [0.14, 2.2], fadeIn: 0.05, spin: 2,
-    colorA: [1.00, 0.68, 0.28], colorB: [1.00, 0.22, 0.04],
+    blend: 'fire', sprite: 'fire',
+    count: 9, size: [0.40, 0.90], life: [0.18, 0.34], alpha: 0.95,
+    speed: [4.0, 9.0], spread: 0.32, jitter: 1.0, drag: 4.8, grav: 1.1,
+    turb: [0.10, 2.2], fadeIn: 0.03, spin: 1.1, stretch: 0,
+    colorA: [1.00, 0.86, 0.42], colorB: [1.00, 0.22, 0.035],
   },
+  /* Soot, not steam. Dark and short — it is the shadow the fire sits in. */
   boostSmoke: {
-    size: [0.24, 1.55], life: [0.45, 1.00], alpha: 0.22,
-    speed: [1.2, 3.2], spread: 0.45, jitter: 0.7, drag: 2.4, grav: 0.9,
-    colorA: [0.60, 0.56, 0.53], colorB: [0.26, 0.24, 0.25], fadeIn: 0.14,
+    sprite: 'wisp',
+    size: [0.16, 0.72], life: [0.26, 0.55], alpha: 0.22,
+    speed: [0.9, 2.4], spread: 0.36, jitter: 0.40, drag: 3.2, grav: 1.2,
+    colorA: [0.40, 0.37, 0.36], colorB: [0.17, 0.16, 0.17], fadeIn: 0.08, spin: 1.0,
   },
-  ember: { size: [0.052, 0.011], alpha: 0.85, stretch: 0.45, life: [0.45, 1.0] },
+  ember: { size: [0.058, 0.010], alpha: 0.9, stretch: 0.5, life: [0.35, 0.85] },
   impactShock: { alpha: 0.42 },
+
+  /* Tyre smoke: a pair of compact puffs off the rear wheels. It used to run at nearly twice
+   * this size and lifetime, which merged every puff into one fog bank around the kart. */
+  driftSmoke: {
+    size: [0.28, 1.40], life: [0.45, 0.95], alpha: 0.42,
+    speed: [0.8, 2.2], spread: 0.5, jitter: 0.5, drag: 2.1, grav: 0.6,
+    turb: [0.22, 0.6], fadeIn: 0.09, spin: 1.3,
+    colorA: [0.90, 0.89, 0.88], colorB: [0.50, 0.49, 0.50],
+  },
+  /* Surface dust: the cheapest speed cue in the game, so it is allowed to be big. */
+  dust: {
+    size: [0.55, 3.1], life: [0.75, 1.7], alpha: 0.52,
+    speed: [1.0, 3.0], spread: 0.7, jitter: 0.8, drag: 1.15, grav: 0.5,
+    turb: [0.45, 0.4], fadeIn: 0.10, spin: 0.9,
+  },
 };
 
 /** Effects that exist only here: the shaped layers the boost flame is built from. */
 const FX_EXTRA = {
   /** The white-hot kernel. Deliberately tiny — this is the only near-white boost layer. */
   boostCore: {
-    sprite: 'flare', blend: 'add', count: 1, life: [0.10, 0.17], size: [0.19, 0.032],
-    speed: [1.4, 3.2], spread: 0.14, jitter: 0.35, drag: 6.0, grav: 0.7, turb: [0.02, 3.0],
-    alpha: 0.50, colorA: [1.0, 0.95, 0.84], colorB: [1.0, 0.62, 0.22], fadeIn: 0.02,
+    // Alpha-over like the body, not additive: on a sunlit road a screen-blended core has no
+    // headroom left to spend and simply disappears. Alpha-over puts a real white-hot kernel
+    // on screen, and because it is ~0.15 m across it is also the entire clipped-white budget
+    // — which is exactly the seed the bloom prefilter wants and nothing more.
+    sprite: 'flare', blend: 'fire', count: 1, life: [0.09, 0.15], size: [0.17, 0.026],
+    speed: [1.8, 3.6], spread: 0.10, jitter: 0.22, drag: 6.0, grav: 0.4, turb: [0.02, 3.0],
+    alpha: 0.90, colorA: [1.0, 0.96, 0.84], colorB: [1.0, 0.58, 0.16], fadeIn: 0.02,
   },
-  /** Charge-tier coloured tongue riding outside the orange fire (MK8 tints its mini-turbo). */
+  /**
+   * The charge-tier tongue — MK8's blue / orange / purple mini-turbo colour, riding just
+   * outside the orange body. It uses the neutral `fire` cell rather than `flame`: `flame`
+   * bakes an orange gradient into its RGB, which would drag a blue tongue back to brown.
+   */
   boostTierFlame: {
-    sprite: 'flame', blend: 'add', count: 1, life: [0.16, 0.30], size: [0.36, 0.95],
-    speed: [3.5, 8.0], spread: 0.30, jitter: 0.8, drag: 5.0, grav: 1.0, turb: [0.08, 3.0],
-    alpha: 0.20, colorA: [0.55, 0.85, 1.0], colorB: [0.20, 0.45, 0.9], fadeIn: 0.06, spin: 1.4,
+    sprite: 'fire', blend: 'fire', count: 1, life: [0.13, 0.23], size: [0.26, 0.60],
+    speed: [3.4, 7.0], spread: 0.20, jitter: 0.42, drag: 5.2, grav: 0.4, turb: [0.05, 3.0],
+    alpha: 0.68, colorA: [0.37, 0.77, 1.0], colorB: [0.055, 0.20, 0.77], fadeIn: 0.04, spin: 0.7,
   },
   /** Grit lifted off the road by the exhaust blast — gives the fire something to sit in. */
   boostGrit: {
-    sprite: 'dust', blend: 'alpha', count: 1, life: [0.5, 1.1], size: [0.35, 2.0],
-    speed: [2.0, 5.0], spread: 0.6, jitter: 1.0, drag: 2.2, grav: 0.75, turb: [0.3, 0.9],
-    alpha: 0.34, colorA: [0.82, 0.78, 0.72], colorB: [0.45, 0.42, 0.40], fadeIn: 0.10, spin: 1.1,
+    sprite: 'dust', blend: 'alpha', count: 1, life: [0.5, 1.2], size: [0.35, 2.2],
+    speed: [2.0, 5.5], spread: 0.6, jitter: 1.0, drag: 2.0, grav: 0.8, turb: [0.3, 0.9],
+    alpha: 0.42, colorA: [0.82, 0.78, 0.72], colorB: [0.45, 0.42, 0.40], fadeIn: 0.10, spin: 1.1,
+  },
+  /** Rooster tail: the long, low plume a kart drags across loose ground at speed. */
+  rooster: {
+    sprite: 'dust', blend: 'alpha', count: 1, life: [0.9, 2.0], size: [0.5, 3.6],
+    speed: [2.5, 6.5], spread: 0.35, jitter: 1.1, drag: 1.5, grav: 0.55, turb: [0.55, 0.45],
+    alpha: 0.46, colorA: [0.90, 0.84, 0.72], colorB: [0.52, 0.47, 0.42], fadeIn: 0.12, spin: 0.8,
   },
 };
 
@@ -256,7 +308,7 @@ void main() {
   }
 
 #ifdef PREMUL
-  // Screen blending (`dst + src*(1-dst)`) needs premultiplied source: the blend factor is
+  // Screen blending (dst + src*(1-dst)) needs premultiplied source: the blend factor is
   // 1-dst, so the alpha has to already be folded into the colour.
   gl_FragColor = vec4(col * a, a);
 #else
@@ -315,7 +367,7 @@ export class ParticleBatch {
         uNearFar: { value: new THREE.Vector2(0.25, 8000) },
         uDepth: { value: null },
         uResolution: { value: new THREE.Vector2(1280, 720) },
-        uSoftness: { value: 1.4 },
+        uSoftness: { value: 0.55 },
       },
       transparent: true,
       depthTest: true,
@@ -496,7 +548,11 @@ export class TrailRibbon {
         uColorB: { value: new THREE.Color().fromArray(colorB) },
       },
       transparent: true, depthWrite: false, depthTest: true,
-      blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      // The fragment shader outputs premultiplied colour (col * a). AdditiveBlending would
+      // scale it by srcAlpha a second time and the ribbon would all but vanish; One/One is
+      // the correct factor pair for a premultiplied additive source.
+      blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+      blendEquation: THREE.AddEquation, side: THREE.DoubleSide,
     });
     this.mesh = new THREE.Mesh(geo, this.material);
     this.mesh.frustumCulled = false;
@@ -511,6 +567,13 @@ export class TrailRibbon {
   }
 
   setIntensity(v) { this.material.uniforms.uIntensity.value = v; this.mesh.visible = v > 0.01 && this.points.length > 2; }
+
+  /** Recolour the band — a mini-turbo trail carries the tier hue that bought it. */
+  setColors(a, b) {
+    const u = this.material.uniforms;
+    if (a) Array.isArray(a) ? u.uColorA.value.fromArray(a) : u.uColorA.value.set(a);
+    if (b) Array.isArray(b) ? u.uColorB.value.fromArray(b) : u.uColorB.value.set(b);
+  }
 
   update(time) {
     this.time = time;
@@ -849,12 +912,23 @@ export function createVFX(engine, world, opts = {}) {
   const capAlpha = Math.round((capacity.alpha ?? 2600) * lerp(0.35, 1, q.value));
   const capAdd = Math.round((capacity.add ?? 1800) * lerp(0.35, 1, q.value));
 
+  // Three batches, drawn in this order, because the order *is* the composition:
+  //   alpha  soot, tyre smoke, dust           — the dark backing the fire reads against
+  //   fire   the flame body, alpha-over       — owns the silhouette and the hue
+  //   add    cores, sparks, embers, screen    — the only layer allowed anywhere near white
+  // Keeping fire in its own batch is what guarantees a puff of tyre smoke emitted a frame
+  // later cannot paint over the flame: within one batch there is no sort, only push order.
   const batches = {
     alpha: new ParticleBatch(atlas, { capacity: capAlpha, blend: 'alpha', name: 'vfx.alpha', renderOrder: 10, soft, brightness: 1.0 }),
+    // No soft-fade on the fire batch. The exhaust plume is emitted flush against the kart's
+    // own bodywork, so a depth fade against the scene depth buffer erases exactly the part
+    // that matters — the base of the flame — and leaves only the tip poking past the
+    // silhouette. Fire is allowed to intersect the kart; smoke is not.
+    fire: new ParticleBatch(atlas, { capacity: Math.round(capAdd * 0.6), blend: 'alpha', name: 'vfx.fire', renderOrder: 11, soft: false, brightness: 1.0 }),
     // `screen`, not `add`: see the note in ParticleBatch. alphaPow tightens the glow skirt.
-    add: new ParticleBatch(atlas, { capacity: capAdd, blend: 'screen', name: 'vfx.add', renderOrder: 11, soft: false, brightness: 1.06, alphaPow: 1.3 }),
+    add: new ParticleBatch(atlas, { capacity: capAdd, blend: 'screen', name: 'vfx.add', renderOrder: 12, soft: false, brightness: 1.06, alphaPow: 1.3 }),
   };
-  group.add(batches.alpha.mesh, batches.add.mesh);
+  group.add(batches.alpha.mesh, batches.fire.mesh, batches.add.mesh);
 
   // --- decals (sibling module; degrade gracefully rather than take the whole system down) -
   let decals = null;
@@ -889,8 +963,7 @@ export function createVFX(engine, world, opts = {}) {
   if (soft) {
     try {
       depthPass = createDepthPass(engine, softScale);
-      const u = batches.alpha.uniforms;
-      u.uDepth.value = depthPass.target.depthTexture;
+      batches.alpha.uniforms.uDepth.value = depthPass.target.depthTexture;
       batches.alpha.setSoft(true);
     } catch (e) { console.warn('[vfx] soft particles unavailable:', e.message); depthPass = null; }
   }
@@ -914,7 +987,7 @@ export function createVFX(engine, world, opts = {}) {
   /** Emit a single particle from a preset + overrides. */
   function emitOne(P, o) {
     const blend = o.blend || P.blend || 'alpha';
-    const batch = blend === 'add' ? batches.add : batches.alpha;
+    const batch = blend === 'add' ? batches.add : blend === 'fire' ? batches.fire : batches.alpha;
     const px = o._px, py = o._py, pz = o._pz;
 
     // direction: base dir + cone spread
@@ -951,7 +1024,12 @@ export function createVFX(engine, world, opts = {}) {
     rec.t0 = time; rec.life = life;
     rec.size0 = sz[0] * sizeScale * (0.8 + rand() * 0.45);
     rec.size1 = sz[1] * sizeScale * (0.8 + rand() * 0.45);
-    rec.rot = rand() * Math.PI * 2;
+    // A flame tongue has an up. `rot` pins the sprite's local +Y to a screen angle and
+    // `rotJitter` fans it; without it every teardrop points somewhere different and the
+    // plume reads as confetti rather than fire.
+    rec.rot = o.rot !== undefined
+      ? o.rot + (o.rotJitter ?? 0) * (rand() * 2 - 1)
+      : rand() * Math.PI * 2;
     rec.spin = ((o.spin ?? P.spin ?? 0)) * (rand() * 2 - 1);
     rec.drag = o.drag ?? P.drag ?? 1;
     rec.grav = o.grav ?? P.grav ?? 0;
@@ -996,12 +1074,12 @@ export function createVFX(engine, world, opts = {}) {
     // A mini-turbo pop, layered so it has a silhouette: a saturated orange fan, a small
     // white kernel, a tier-coloured tongue, embers, and smoke/grit behind it for contrast.
     boostBurst: [
+      { p: 'boostSmoke', count: 5, scale: 1.3, own: true },
+      { p: 'boostGrit', count: 4, scale: 1.1 },
       { p: 'boostBurst', own: true },
-      { p: 'boostCore', count: 4, scale: 1.5, own: true },
-      { p: 'boostTierFlame', count: 6, scale: 1.15, tier: true },
-      { p: 'ember', count: 12, own: true },
-      { p: 'boostSmoke', count: 7, scale: 1.2, own: true },
-      { p: 'boostGrit', count: 5, scale: 1.1 },
+      { p: 'boostTierFlame', count: 5, scale: 1.25, tier: true },
+      { p: 'boostCore', count: 3, scale: 1.4, own: true },
+      { p: 'ember', count: 14, own: true },
       { p: 'impactShock', count: 1, scale: 0.30, own: true },
     ],
     spinOut: [
@@ -1098,7 +1176,7 @@ export function createVFX(engine, world, opts = {}) {
       if (fog.isFog) { fnear = fog.near; ffar = fog.far; }
       else if (fog.isFogExp2) { fnear = 10; ffar = Math.max(40, 3.0 / Math.max(fog.density, 1e-5)); }
     }
-    for (const k of ['alpha', 'add']) {
+    for (const k of ['alpha', 'fire', 'add']) {
       const b = batches[k], u = b.uniforms;
       u.uNearFar.value.set(cam.near, cam.far);
       if (fcol) { u.uFogColor.value.copy(fcol); u.uFogRange.value.set(fnear, ffar); }
@@ -1153,8 +1231,7 @@ export function createVFX(engine, world, opts = {}) {
     }
     speedFX.mesh.geometry.instanceCount = Math.max(12, Math.round(speedFX.mesh.geometry.attributes.aSeed.count * lerp(0.3, 1, e)));
     if (decals) decals.setQuality?.(e);
-    if (e < 0.35 && depthPass) batches.alpha.setSoft(false);
-    else if (depthPass) batches.alpha.setSoft(true);
+    if (depthPass) batches.alpha.setSoft(e >= 0.35);
     return q.value;
   }
 
@@ -1176,14 +1253,15 @@ export function createVFX(engine, world, opts = {}) {
     stats() {
       return {
         alpha: { alive: batches.alpha.alive(time), used: batches.alpha.used, capacity: batches.alpha.capacity },
+        fire: { alive: batches.fire.alive(time), used: batches.fire.used, capacity: batches.fire.capacity },
         add: { alive: batches.add.alive(time), used: batches.add.used, capacity: batches.add.capacity },
         decals: decals ? decals.stats() : null,
         emitted: stats.emitted, bursts: stats.bursts, quality: q.value, time,
       };
     },
-    clear() { batches.alpha.clear(); batches.add.clear(); decals?.clear(); },
+    clear() { batches.alpha.clear(); batches.fire.clear(); batches.add.clear(); decals?.clear(); },
     dispose() {
-      batches.alpha.dispose(); batches.add.dispose();
+      batches.alpha.dispose(); batches.fire.dispose(); batches.add.dispose();
       for (const l of amb.layers) l.dispose();
       speedFX.dispose(); depthPass?.dispose(); decals?.dispose();
       atlas.dispose();
@@ -1206,7 +1284,7 @@ function createKartRig(vfx, world, target, o = {}) {
   const rand = rng(seed);
   const wheels = o.wheels || [[-0.58, -0.24, -0.72], [0.58, -0.24, -0.72]];
   const front = o.frontWheels || [[-0.55, -0.24, 0.66], [0.55, -0.24, 0.66]];
-  const exhausts = o.exhausts || [[-0.30, -0.05, -0.92], [0.30, -0.05, -0.92]];
+  const exhausts = o.exhausts || [[-0.26, -0.20, -1.00], [0.26, -0.20, -1.00]];
   const sparkAnchor = o.sparkAnchor || [[-0.62, -0.18, -0.55], [0.62, -0.18, -0.55]];
 
   const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), vel = new THREE.Vector3();
@@ -1217,10 +1295,14 @@ function createKartRig(vfx, world, target, o = {}) {
   const trail = new TrailRibbon({ segments: 40, width: 0.36, fade: 0.5 });
   vfx.group.add(trail.mesh);
 
-  const acc = { smoke: 0, dust: 0, spark: 0, flame: 0, chip: 0, splash: 0, ember: 0, mud: 0, ripple: 0 };
+  const acc = { smoke: 0, smoke2: 0, dust: 0, rooster: 0, grit: 0, spark: 0, core: 0, flame: 0, chip: 0, splash: 0, ember: 0, mud: 0, ripple: 0 };
   let lastTier = 0, wasTier = 0, wasDrifting = false, wasBoosting = false, wasGrounded = true;
   // which charge tier bought the boost currently burning — MK8 tints the flame by it
   let boostTier = tierColor(1), boostTierT = 0;
+  // The last charge tier this kart actually reached. A boost can start without this rig ever
+  // having seen the release (a boost pad, a mushroom, or a scenario that fast-forwards the
+  // race headlessly), and without it the plume would lose its tier colour entirely.
+  let heldTier = 1;
   let mudLevel = 0;
   const skidId = seed;
   const TRAIL_ANCHOR = [0, -0.02, -0.95];
@@ -1294,8 +1376,11 @@ function createKartRig(vfx, world, target, o = {}) {
     if (grounded && spd > 1.2) {
       const heat = clamp(slip * 2.1, 0, 1.25) * (0.35 + 0.85 * fast);
       const loose = fx.rate * (0.30 + 0.85 * fast) * (0.45 + 0.85 * slip);
+      // Halved against the old rates. driftSmoke lives ~0.65 s, so 46/s on tarmac put ~30
+      // metre-wide puffs around the kart at once and they merged into one fog bank that hid
+      // the wheels. A pair of readable plumes needs ~8 concurrent, not 30.
       const smokeRate = onWater ? 22 * fast
-        : (fx.decal === 'tyre' ? fx.rate * heat : loose * 0.55 + fx.rate * heat * 0.5);
+        : (fx.decal === 'tyre' ? fx.rate * heat * 0.78 : loose * 0.62 + fx.rate * heat * 0.35);
       const n = rate('smoke', smokeRate * (o.rate ?? 1) * vfx.emitScale, dt);
       for (let i = 0; i < n; i++) {
         const w = wheels[i % wheels.length];
@@ -1304,14 +1389,40 @@ function createKartRig(vfx, world, target, o = {}) {
         const back = -0.25 - rand() * 0.4;
         wp.addScaledVector(fwd, back);
         dirv.set(0, fx.rise, 0).addScaledVector(fwd, -0.55 - rand() * 0.5).addScaledVector(right, (rand() * 2 - 1) * 0.6);
+        // Surface dust used to be emitted dead in world space, so at 80 km/h it swept past
+        // the chase lens inside 0.3 s and only ~10 puffs were ever in frame. Carrying a
+        // third of the kart's velocity keeps the plume behind the kart where it reads.
+        const inh = onWater ? 0 : 0.35;
         vfx.emit(onWater ? 'splashMist' : (fx.decal === 'tyre' ? 'driftSmoke' : 'dust'), {
           pos: wp, dir: dirv, count: 1, raw: true,
+          vx: vel.x * inh, vy: vel.y * inh, vz: vel.z * inh,
           colorA: fx.a, colorB: fx.b,
           scale: lerp(0.7, 1.25, rand()) * (fx.decal === 'tyre' ? lerp(0.8, 1.4, heat) : 1),
           opacity: fx.decal === 'tyre' ? clamp(0.35 + heat * 0.8, 0, 1.1) : clamp(0.5 + 0.5 * fast, 0, 1),
           speedScale: 0.7 + fast * 0.9,
           drag: fx.drag,
         });
+      }
+
+      // Rooster tail. `dust` above is the fine haze that hangs; this is the long low plume
+      // the rear wheels drag across loose ground, and it is the single strongest speed cue
+      // available on a pale sand surface where nothing else has any value contrast.
+      if (!onWater && fx.chips !== undefined && fx.decal !== 'tyre' && fast > 0.25) {
+        const rn = rate('rooster', fx.rate * 0.40 * fast * (0.55 + 0.7 * slip) * (o.rate ?? 1) * vfx.emitScale, dt);
+        for (let i = 0; i < rn; i++) {
+          const w = wheels[i % wheels.length];
+          local(w, wp);
+          wp.y += 0.02; wp.addScaledVector(fwd, -0.55 - rand() * 0.35);
+          dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.42 + rand() * 0.35)
+            .addScaledVector(right, (rand() * 2 - 1) * 0.45);
+          vfx.emit('rooster', {
+            pos: wp, dir: dirv, count: 1, raw: true,
+            vx: vel.x * 0.58, vy: vel.y * 0.58, vz: vel.z * 0.58,
+            colorA: fx.a, colorB: fx.b,
+            scale: 0.85 + rand() * 0.6, speedScale: 0.55 + fast * 0.85,
+            opacity: clamp(0.55 + 0.5 * fast, 0, 1.1),
+          });
+        }
       }
 
       // chips, straw, grass blades kicked out of the loose stuff
@@ -1376,6 +1487,7 @@ function createKartRig(vfx, world, target, o = {}) {
     /* --- mini-turbo charge sparks ------------------------------------------------- */
     if (st.drifting && st.tier > 0) {
       const T = tierColor(st.tier);
+      heldTier = st.tier;
       const n = rate('spark', T.rate * (0.6 + 0.5 * fast) * vfx.emitScale, dt);
       for (let i = 0; i < n; i++) {
         const a = sparkAnchor[i % sparkAnchor.length];
@@ -1413,15 +1525,18 @@ function createKartRig(vfx, world, target, o = {}) {
       const tier = clamp(wasTier, 1, 3);
       const T = tierColor(tier);
       events.boosts++;
-      boostTier = T; boostTierT = 0.75;
+      boostTier = T; boostTierT = 0.9; heldTier = tier;
       for (const e of exhausts) {
         local(e, wp);
         dirv.copy(fwd).multiplyScalar(-1);
         vfx.emit('boostBurst', {
           pos: wp, dir: dirv, scale: 0.62 + 0.16 * tier,
-          tierA: T.core, tierB: T.glow, speedScale: 0.9 + 0.25 * tier,
+          vx: vel.x * 0.85, vy: vel.y * 0.85, vz: vel.z * 0.85,
+          rot: 0, rotJitter: 0.45,
+          tierA: T.flameA, tierB: T.flameB, speedScale: 0.9 + 0.25 * tier,
         });
       }
+      trail.setColors(T.core, T.flameA);
       // a fan of tier-coloured sparks thrown off the rear as the turbo lets go
       for (const a of sparkAnchor) {
         local(a, wp);
@@ -1441,59 +1556,93 @@ function createKartRig(vfx, world, target, o = {}) {
     const boostAmt = st.boosting ? 1 : 0;
     if (st.boosting && !wasBoosting && !releasedBurst) {        // boost pad / item boost kick
       events.boosts++;
+      boostTier = tierColor(heldTier); boostTierT = 0.9;
+      trail.setColors(boostTier.core, boostTier.flameA);
       for (const e of exhausts) {
         local(e, wp);
         dirv.copy(fwd).multiplyScalar(-1);
-        vfx.emit('boostBurst', { pos: wp, dir: dirv, scale: 0.8, speedScale: 1.1 });
+        vfx.emit('boostBurst', {
+          pos: wp, dir: dirv, scale: 0.8, speedScale: 1.1, rot: 0, rotJitter: 0.45,
+          vx: vel.x * 0.85, vy: vel.y * 0.85, vz: vel.z * 0.85,
+        });
       }
     }
     if (st.boosting) {
-      /* The exhaust plume is built in layers so it has a silhouette instead of a mass:
-       *   grit + smoke   dark, alpha-blended, laid down first so the fire has a backing
-       *   flame body     deep orange, low alpha, many small sprites -> a tapered tongue
+      /* The exhaust plume, back to front:
+       *   soot           dark, alpha-blended, laid down first so the fire has a backing
+       *   flame body     orange, alpha-over -> keeps its hue and silhouette under any overlap
        *   tier tongue    the charge colour that earned this boost, riding the outside
-       *   core           one tiny near-white kernel per exhaust, ~0.2 m across
+       *   core           one ~0.15 m near-white kernel per exhaust: the whole bloom budget
        *   embers         individually readable specks trailing up and back
-       * The rates are roughly half what they were: with screen blending the plume gets its
-       * density from overlap, and past ~4 concurrent sprites per exhaust it stops reading. */
-      const nf = rate('flame', 34 * vfx.emitScale, dt);
+       *
+       * INHERIT is the other half of the old blowout. Particles were emitted with only their
+       * own exhaust velocity, so at 60 km/h the kart drove out from under them and a 0.2 s
+       * plume ended up 3 m behind the kart — which, from a chase camera 5 m back, is 2 m from
+       * the lens and fills a third of the screen. Carrying most of the kart's velocity pins
+       * the plume to the exhaust; what is left over (~12% of forward speed plus the exhaust
+       * blast) is what stretches it into a tongue about a metre long. */
+      const INHERIT = 0.82;
+      const ivx = vel.x * INHERIT, ivy = vel.y * INHERIT, ivz = vel.z * INHERIT;
+      const tierMix = clamp(boostTierT / 0.45, 0, 1);
+
+      const nf = rate('flame', 54 * vfx.emitScale, dt);
       for (let i = 0; i < nf; i++) {
         const e = exhausts[i % exhausts.length];
         local(e, wp);
-        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.16).addScaledVector(right, (rand() * 2 - 1) * 0.10);
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.06).addScaledVector(right, (rand() * 2 - 1) * 0.08);
         vfx.emit('boostFlame', {
-          pos: wp, dir: dirv, count: 1, raw: true,
-          scale: 0.85 + rand() * 0.45, speedScale: 0.8 + fast * 0.6,
+          pos: wp, dir: dirv, count: 1, raw: true, vx: ivx, vy: ivy, vz: ivz,
+          rot: 0, rotJitter: 0.45,
+          scale: 0.85 + rand() * 0.40, speedScale: 0.85 + fast * 0.35,
         });
-        if (boostTierT > 0 && rand() < 0.6) {
+        if (tierMix > 0 && rand() < 0.55) {
+          local(e, wp);
+          // splayed outwards and set a little further back, so the tier colour rides the
+          // outside of the orange core the way MK8's mini-turbo flame does
+          wp.addScaledVector(right, (e[0] < 0 ? -1 : 1) * (0.08 + rand() * 0.12));
+          wp.addScaledVector(fwd, -0.12 - rand() * 0.10);
           vfx.emit('boostTierFlame', {
-            pos: wp, dir: dirv, count: 1, raw: true,
-            colorA: boostTier.core, colorB: boostTier.glow,
-            scale: 1.0 + rand() * 0.5, opacity: clamp(boostTierT / 0.5, 0, 1),
-            speedScale: 0.9 + fast * 0.5,
+            pos: wp, dir: dirv, count: 1, raw: true, vx: ivx, vy: ivy, vz: ivz,
+            rot: 0, rotJitter: 0.40,
+            colorA: boostTier.flameA, colorB: boostTier.flameB,
+            scale: 0.95 + rand() * 0.35, opacity: tierMix,
+            speedScale: 0.95 + fast * 0.35,
           });
         }
-        if (rand() < 0.5) {
-          local(e, wp); wp.y -= 0.04;
-          dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.5);
-          vfx.emit('boostSmoke', { pos: wp, dir: dirv, count: 1, raw: true, scale: 1.0 + rand() * 0.5 });
-        }
       }
-      const nc = rate('spark', 24 * vfx.emitScale, dt);
+      // soot: half the flame rate, launched a little high and wide so it frames the fire
+      const ns = rate('smoke2', 10 * vfx.emitScale, dt);
+      for (let i = 0; i < ns; i++) {
+        local(exhausts[i % exhausts.length], wp);
+        wp.y += 0.05;
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.65).addScaledVector(right, (rand() * 2 - 1) * 0.35);
+        vfx.emit('boostSmoke', {
+          pos: wp, dir: dirv, count: 1, raw: true, vx: ivx * 0.82, vy: ivy * 0.82, vz: ivz * 0.82,
+          scale: 0.9 + rand() * 0.6,
+        });
+      }
+      const nc = rate('core', 28 * vfx.emitScale, dt);
       for (let i = 0; i < nc; i++) {
         local(exhausts[i % exhausts.length], wp);
-        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.1);
-        vfx.emit('boostCore', { pos: wp, dir: dirv, count: 1, raw: true, scale: 0.9 + rand() * 0.35 });
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.12);
+        vfx.emit('boostCore', {
+          pos: wp, dir: dirv, count: 1, raw: true, vx: ivx, vy: ivy, vz: ivz,
+          scale: 0.9 + rand() * 0.30,
+        });
       }
-      const en = rate('ember', 20 * vfx.emitScale, dt);
+      const en = rate('ember', 22 * vfx.emitScale, dt);
       for (let i = 0; i < en; i++) {
         local(exhausts[i % exhausts.length], wp);
-        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.55).addScaledVector(right, (rand() * 2 - 1) * 0.4);
-        vfx.emit('ember', { pos: wp, dir: dirv, count: 1, raw: true, speedScale: 0.9 + rand() });
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.6).addScaledVector(right, (rand() * 2 - 1) * 0.45);
+        vfx.emit('ember', {
+          pos: wp, dir: dirv, count: 1, raw: true, speedScale: 0.9 + rand(),
+          vx: ivx * 0.55, vy: ivy * 0.55, vz: ivz * 0.55,
+          colorA: boostTier.core, colorB: boostTier.flameA || PALETTE.boostFlame, opacity: 1,
+        });
       }
       // grit torn off the road by the blast — the dust plume a boost should leave behind
       if (grounded && fx.wet === 0) {
-        const gn = rate('dust', (10 + 12 * fast) * vfx.emitScale, dt);
+        const gn = rate('grit', (12 + 16 * fast) * vfx.emitScale, dt);
         for (let i = 0; i < gn; i++) {
           local(wheels[i % wheels.length], wp);
           wp.y += 0.04; wp.addScaledVector(fwd, -0.35 - rand() * 0.5);
@@ -1512,7 +1661,7 @@ function createKartRig(vfx, world, target, o = {}) {
     local(TRAIL_ANCHOR, wp);
     trail.push(wp, right, time, (o.trailWidth ?? 0.34) * (0.7 + 0.5 * fast));
     trail.update(time);
-    const targetTrail = boostAmt * clamp(0.35 + fast * 0.8, 0, 1.2);
+    const targetTrail = boostAmt * clamp(0.16 + fast * 0.26, 0, 0.45);
     trail.setIntensity(damp(trail.material.uniforms.uIntensity.value, targetTrail, 8, dt));
 
     // screen rush: strongest during a boost, present at high speed

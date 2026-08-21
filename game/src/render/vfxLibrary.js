@@ -141,6 +141,20 @@ const SPRITE_FN = {
     const hot = clamp01(Math.pow(y, 1.5) * 1.25 + Math.exp(-(dx * dx) / 0.006) * 0.5);
     o[0] = 1; o[1] = 0.42 + 0.58 * hot; o[2] = 0.12 + 0.85 * hot * hot; o[3] = clamp01(a);
   },
+  /**
+   * Neutral-RGB flame tongue. Same eroded teardrop silhouette as `flame`, but white, so the
+   * per-particle colour ramp owns the hue outright — that is what lets a mini-turbo tongue
+   * stay blue/purple instead of being dragged back to orange by a baked-in fire gradient.
+   */
+  fire(u, v, o) {
+    const y = 1 - v;                             // 0 at tip (top of cell), 1 at base
+    const halfW = 0.11 + 0.31 * Math.pow(y, 0.58) * (1 - 0.22 * (1 - y));
+    const dx = Math.abs(u - 0.5);
+    const erode = 0.74 + 0.52 * fbm(u * 6.5, v * 3.8 + 5, 67, 4, 0.55);
+    let a = sstep(halfW * erode, halfW * 0.30, dx) * sstep(0.02, 0.22, y) * sstep(1.0, 0.84, y);
+    a *= 0.58 + 0.62 * fbm(u * 9 + 11, v * 5 + 2, 69, 3);
+    o[0] = 1; o[1] = 1; o[2] = 1; o[3] = clamp01(a);
+  },
   /** Water droplet: elongated teardrop with a specular pip. */
   drop(u, v, o) {
     const y = 1 - v, dx = u - 0.5;
@@ -221,7 +235,7 @@ export const SPRITES = [
   'smoke', 'wisp', 'dust', 'spark', 'flare',
   'ring', 'shock', 'chip', 'flame', 'drop',
   'leaf', 'straw', 'star', 'streak', 'mote',
-  'bird', 'blob',
+  'bird', 'blob', 'fire',
 ];
 /** Sprite name -> atlas cell index (row-major, 5 columns x 4 rows). */
 export const SPRITE_INDEX = Object.freeze(SPRITES.reduce((m, n, i) => (m[n] = i, m), {}));
@@ -356,10 +370,10 @@ export const PALETTE = {
 
 /** Mini-turbo charge tiers, Mario-Kart style: blue -> orange -> purple. */
 export const TIERS = [
-  { name: 'none', core: PALETTE.white, glow: PALETTE.white, rate: 0, size: 0 },
-  { name: 'blue', core: C(0xd8f7ff), glow: PALETTE.sparkBlue, rate: 34, size: 0.34 },
-  { name: 'orange', core: C(0xfff0cd), glow: PALETTE.sparkOrange, rate: 52, size: 0.42 },
-  { name: 'purple', core: C(0xf4dcff), glow: PALETTE.sparkPurple, rate: 74, size: 0.52 },
+  { name: 'none', core: PALETTE.white, glow: PALETTE.white, rate: 0, size: 0, flameA: PALETTE.boostFlame, flameB: C(0xc02800) },
+  { name: 'blue', core: C(0xe4faff), glow: PALETTE.sparkBlue, rate: 40, size: 0.85, flameA: C(0x5ec4ff), flameB: C(0x0e34c4) },
+  { name: 'orange', core: C(0xfff3d6), glow: PALETTE.sparkOrange, rate: 58, size: 1.00, flameA: C(0xffb43c), flameB: C(0xc42a00) },
+  { name: 'purple', core: C(0xf7e6ff), glow: PALETTE.sparkPurple, rate: 78, size: 1.15, flameA: C(0xd68cff), flameB: C(0x5c10b4) },
 ];
 /** Charge tier (0..3) -> { core, glow, rate, size }. Accepts fractional tiers for blends. */
 export function tierColor(t) { return TIERS[Math.max(0, Math.min(3, Math.round(t || 0)))]; }
@@ -376,18 +390,18 @@ export const SURFACE_FX = {
   concrete: { sprite: 'smoke', a: PALETTE.tyreSmoke, b: PALETTE.gravelDark, rate: 34, size: [0.5, 2.2], rise: 0.5, drag: 1.6, chips: 0.1, decal: 'tyre', decalAlpha: 0.6, wet: 0 },
   paved: { sprite: 'smoke', a: PALETTE.tyreSmoke, b: PALETTE.gravelDark, rate: 36, size: [0.5, 2.2], rise: 0.5, drag: 1.6, chips: 0.1, decal: 'tyre', decalAlpha: 0.6, wet: 0 },
   kerb: { sprite: 'dust', a: PALETTE.limestone, b: PALETTE.gravelDark, rate: 30, size: [0.4, 1.6], rise: 0.6, drag: 1.8, chips: 0.5, decal: 'scuff', decalAlpha: 0.35, wet: 0 },
-  dirt_track: { sprite: 'dust', a: PALETTE.limestone, b: PALETTE.limestoneDark, rate: 88, size: [0.8, 4.2], rise: 0.85, drag: 1.05, chips: 0.5, decal: 'scuff', decalAlpha: 0.30, wet: 0 },
-  dirt: { sprite: 'dust', a: PALETTE.limestone, b: PALETTE.soilDark, rate: 96, size: [0.85, 4.6], rise: 0.9, drag: 1.0, chips: 0.6, decal: 'scuff', decalAlpha: 0.30, wet: 0 },
-  unpaved: { sprite: 'dust', a: PALETTE.limestone, b: PALETTE.limestoneDark, rate: 90, size: [0.8, 4.4], rise: 0.88, drag: 1.05, chips: 0.55, decal: 'scuff', decalAlpha: 0.30, wet: 0 },
-  gravel: { sprite: 'dust', a: PALETTE.gravel, b: PALETTE.gravelDark, rate: 78, size: [0.7, 3.4], rise: 0.7, drag: 1.2, chips: 1.4, decal: 'scuff', decalAlpha: 0.26, wet: 0 },
+  dirt_track: { sprite: 'dust', a: C(0xd9c39a), b: C(0x7d6540), rate: 88, size: [0.8, 4.2], rise: 0.85, drag: 1.05, chips: 0.5, decal: 'scuff', decalAlpha: 0.30, wet: 0 },
+  dirt: { sprite: 'dust', a: C(0xd6bd92), b: C(0x6f5734), rate: 96, size: [0.85, 4.6], rise: 0.9, drag: 1.0, chips: 0.6, decal: 'scuff', decalAlpha: 0.30, wet: 0 },
+  unpaved: { sprite: 'dust', a: C(0xd9c39a), b: C(0x7d6540), rate: 90, size: [0.8, 4.4], rise: 0.88, drag: 1.05, chips: 0.55, decal: 'scuff', decalAlpha: 0.30, wet: 0 },
+  gravel: { sprite: 'dust', a: C(0xc4b69f), b: C(0x6d6355), rate: 78, size: [0.7, 3.4], rise: 0.7, drag: 1.2, chips: 1.4, decal: 'scuff', decalAlpha: 0.26, wet: 0 },
   grass: { sprite: 'dust', a: PALETTE.grass, b: PALETTE.grassDark, rate: 40, size: [0.5, 2.0], rise: 0.7, drag: 1.9, chips: 1.2, chipSprite: 'leaf', decal: 'scuff', decalAlpha: 0.18, wet: 0 },
   crop: { sprite: 'dust', a: PALETTE.straw, b: PALETTE.strawDark, rate: 58, size: [0.6, 2.8], rise: 0.85, drag: 1.5, chips: 1.6, chipSprite: 'straw', decal: 'scuff', decalAlpha: 0.22, wet: 0 },
   scrub: { sprite: 'dust', a: PALETTE.straw, b: PALETTE.grassDark, rate: 50, size: [0.55, 2.4], rise: 0.75, drag: 1.7, chips: 1.1, chipSprite: 'leaf', decal: 'scuff', decalAlpha: 0.2, wet: 0 },
   forest: { sprite: 'dust', a: PALETTE.leafDry, b: PALETTE.grassDark, rate: 42, size: [0.5, 2.2], rise: 0.7, drag: 1.8, chips: 1.3, chipSprite: 'leaf', decal: 'scuff', decalAlpha: 0.2, wet: 0 },
   orchard: { sprite: 'dust', a: PALETTE.soil, b: PALETTE.soilDark, rate: 84, size: [0.75, 3.8], rise: 0.85, drag: 1.15, chips: 0.7, decal: 'scuff', decalAlpha: 0.26, wet: 0 },
   soil: { sprite: 'dust', a: PALETTE.soil, b: PALETTE.soilDark, rate: 92, size: [0.8, 4.2], rise: 0.9, drag: 1.05, chips: 0.8, decal: 'scuff', decalAlpha: 0.3, wet: 0 },
-  farmyard: { sprite: 'dust', a: PALETTE.limestone, b: PALETTE.soilDark, rate: 86, size: [0.78, 4.0], rise: 0.85, drag: 1.1, chips: 0.7, decal: 'scuff', decalAlpha: 0.28, wet: 0 },
-  sand: { sprite: 'dust', a: C(0xf2ddb0), b: C(0xc9a877), rate: 110, size: [0.9, 5.0], rise: 0.95, drag: 0.95, chips: 0.4, decal: 'scuff', decalAlpha: 0.24, wet: 0 },
+  farmyard: { sprite: 'dust', a: C(0xd9c39a), b: C(0x6f5734), rate: 86, size: [0.78, 4.0], rise: 0.85, drag: 1.1, chips: 0.7, decal: 'scuff', decalAlpha: 0.28, wet: 0 },
+  sand: { sprite: 'dust', a: C(0xe6cd9e), b: C(0x92764a), rate: 110, size: [0.9, 5.0], rise: 0.95, drag: 0.95, chips: 0.4, decal: 'scuff', decalAlpha: 0.24, wet: 0 },
   water: { sprite: 'drop', a: PALETTE.water, b: PALETTE.waterDark, rate: 120, size: [0.30, 1.1], rise: 1.6, drag: 0.7, chips: 0, decal: null, decalAlpha: 0, wet: 1 },
 };
 export function surfaceFX(name) { return SURFACE_FX[name] || SURFACE_FX.dirt; }
