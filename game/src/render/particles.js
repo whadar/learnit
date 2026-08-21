@@ -67,8 +67,8 @@ const FX_TUNE = {
     // stretch is a *multiplier on screen-space velocity*, so raising it and the base size
     // together turned a 0.26 m spark into a 3 m streak and the shower into a firework that
     // bloomed to white over the kart. Short and dense reads as a mini-turbo; long does not.
-    size: [0.28, 0.034], life: [0.20, 0.40], alpha: 0.85, stretch: 0.34,
-    speed: [3.4, 8.0], spread: 0.70, jitter: 1.2, drag: 4.2, grav: -4.5,
+    size: [0.34, 0.040], life: [0.20, 0.40], alpha: 0.88, stretch: 0.30,
+    speed: [2.6, 6.2], spread: 0.42, jitter: 0.7, drag: 6.0, grav: -5.5,
     turb: [0.04, 3.0], spin: 5, fadeIn: 0.03,
   },
   /* the soft bloom that sits under a spark shower — small and dim, it is not the star */
@@ -112,7 +112,7 @@ const FX_TUNE = {
    * column rather than as a wash — which is what lets it be this big without flattening. */
   driftSmoke: {
     lit: 1,
-    size: [0.34, 1.85], life: [0.50, 1.05], alpha: 0.42,
+    size: [0.32, 1.55], life: [0.46, 0.95], alpha: 0.38,
     speed: [1.1, 2.9], spread: 0.5, jitter: 0.6, drag: 2.0, grav: 0.85,
     turb: [0.26, 0.65], fadeIn: 0.07, spin: 1.3,
     colorA: [0.93, 0.91, 0.89], colorB: [0.46, 0.44, 0.45],
@@ -1009,9 +1009,40 @@ export function createVFX(engine, world, opts = {}) {
   group.add(batches.alpha.mesh, batches.fire.mesh, batches.add.mesh);
 
   // --- decals (sibling module; degrade gracefully rather than take the whole system down) -
+  /**
+   * Skid marks snap to `world.heightAt` — the raw SRTM heightfield. The circuit does not
+   * live there: the road ribbon is built on its own smoothed spline and sits anything up to
+   * 0.7 m above the terrain on an embanked corner, so every mark the karts laid on tarmac
+   * was stamped *under* the road and never drawn. The rig knows exactly where its wheels are
+   * touching, so it hands that height over through `surfaceHint` for the duration of one
+   * stamp and the mark lands on the surface the tyre is actually scrubbing.
+   */
+  const hint = { on: false, x: 0, z: 0, y: 0, r2: 4 };
+  // two interleaved trails per rear wheel per kart, so the buffer turns over twice as fast
+  const decalCap = decalOpts.capacity ?? 2800;
+  const decalWorld = (world && world.heightAt) ? {
+    heightAt(x, z) {
+      if (hint.on) {
+        const dx = x - hint.x, dz = z - hint.z;
+        if (dx * dx + dz * dz <= hint.r2) return hint.y;
+      }
+      return world.heightAt(x, z);
+    },
+    normalAt: world.normalAt ? (x, z, out) => world.normalAt(x, z, out) : undefined,
+    slopeAt: world.slopeAt ? (x, z) => world.slopeAt(x, z) : undefined,
+    inBounds: world.inBounds ? (x, z) => world.inBounds(x, z) : undefined,
+  } : world;
+  /** surfaceHint(x, z, y, radius) — or no arguments to clear it. */
+  function surfaceHint(x, z, y, r) {
+    if (x === undefined || x === null || !Number.isFinite(y)) { hint.on = false; return; }
+    hint.on = true; hint.x = x; hint.z = z; hint.y = y; hint.r2 = (r || 2) * (r || 2);
+  }
+
   let decals = null;
   try {
-    decals = createDecals(engine, world, { seed: seed + 5, parent: group, ...decalOpts });
+    decals = createDecals(engine, decalWorld, {
+      seed: seed + 5, parent: group, capacity: decalCap, ...decalOpts,
+    });
   } catch (e) { console.warn('[vfx] decals unavailable:', e.message); decals = null; }
 
   // --- speed FX (camera children) --------------------------------------------------
@@ -1343,7 +1374,7 @@ export function createVFX(engine, world, opts = {}) {
     group, atlas, batches, decals, ambience: amb, speedLines: speedFX, rigs,
     /** Emission multiplier from the quality setting; continuous rigs scale their rates by it. */
     get emitScale() { return qEmit(); },
-    emit, update, resize, attach, setQuality, setSunDirection,
+    emit, update, resize, attach, setQuality, setSunDirection, surfaceHint,
     get time() { return time; },
     /** Screen-space rush intensity, 0..1. Driven by rigs, or set it yourself. */
     set speed(v) { speedFX.intensity = clamp(v, 0, 1); },
@@ -1414,6 +1445,7 @@ function createKartRig(vfx, world, target, o = {}) {
     slide: 0,          // 0..1 "this kart is sideways", measured, not declared
     slideT: 0,         // seconds of continuous slide — the charge clock
     airT: 0,           // seconds since the last real ground contact
+    airTime: null,     // the physics' own airborne clock, when it keeps one
     contact: 1,        // 0..1 how much ground effect this kart still earns
   };
 
@@ -1435,7 +1467,7 @@ function createKartRig(vfx, world, target, o = {}) {
    */
   const SLIDE_ON = 0.30;         // slip fraction where a corner becomes a slide
   const SLIDE_FULL = 0.52;       // slip fraction that charges at full rate
-  const TIER_T = [0.16, 0.44, 0.92];   // seconds of full slide per charge tier
+  const TIER_T = [0.20, 0.72, 1.45];   // seconds of full slide per charge tier
 
   /**
    * Ground contact, with coyote time.
@@ -1451,7 +1483,7 @@ function createKartRig(vfx, world, target, o = {}) {
    * out over a third of a second and only a genuine jump silences it. Sparks ignore this
    * entirely — a mini-turbo charge survives a hop in MK8, which is exactly how you start one.
    */
-  const COYOTE_ON = 0.09, COYOTE_OFF = 0.42;
+  const COYOTE_ON = 0.12, COYOTE_OFF = 0.55;
 
   function readState(dt, override) {
     const t = target || {};
@@ -1477,6 +1509,12 @@ function createKartRig(vfx, world, target, o = {}) {
     st.charge = t.driftCharge ?? s?.charge ?? 0;
     st.boosting = !!(t.boosting ?? s?.boosting ?? (s?.boostT > 0));
     st.grounded = (t.grounded ?? s?.grounded ?? true) !== false;
+    // The physics keeps its own airborne clock; prefer it. Integrating render dt here is
+    // wrong whenever the simulation is not stepped at the render rate — the review harness
+    // fixes the sim at 1/60 while frames land at 1/15 under software rasterisation, which
+    // made the rig believe a 0.2 s hop had lasted the best part of a second and shut every
+    // ground effect off in exactly the frame that most needed them.
+    st.airTime = t.airTime ?? s?.airTime ?? null;
     st.surface = t.surface ?? s?.surface ?? 'tarmac';
     st.steer = s?.steer ?? 0;
 
@@ -1490,7 +1528,8 @@ function createKartRig(vfx, world, target, o = {}) {
     if (o.slip !== undefined) st.slip = o.slip;
 
     // --- ground contact, smoothed ---------------------------------------------------
-    st.airT = st.grounded ? 0 : st.airT + dt;
+    st.airT = st.grounded ? 0
+      : (st.airTime !== null && st.airTime !== undefined ? st.airTime : st.airT + dt);
     st.contact = 1 - smoothstep(COYOTE_ON, COYOTE_OFF, st.airT);
 
     // --- measured slide -> charge clock -> tier ------------------------------------
@@ -1512,6 +1551,42 @@ function createKartRig(vfx, world, target, o = {}) {
     return out;
   }
 
+  /** The physics wheel array, when the target is a vehicle handle: [FL, FR, RL, RR]. */
+  function physWheels() {
+    const w = target && target.wheels;
+    return (Array.isArray(w) && w.length >= 4) ? w : null;
+  }
+
+  /**
+   * Distance from this rig's rear-wheel anchor down to the surface the tyre is on, learned
+   * from the physics whenever a wheel is actually touching. The anchors are art positions in
+   * kart space and the contact patch is wherever the suspension currently puts it, so the
+   * gap is a per-kart constant worth measuring rather than guessing — and once measured it
+   * survives the hops and kerb-hops where no wheel reports a contact at all.
+   */
+  const wtmp = new THREE.Vector3();
+  const markPrev = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  const markHave = [false, false, false, false];
+  function breakMarks() {
+    if (!vfx.decals) return;
+    for (let i = 0; i < 4; i++) {
+      vfx.decals.breakTrail(skidId + i); vfx.decals.breakTrail(skidId + 4 + i);
+      markHave[i] = false;
+    }
+  }
+  let wheelDrop = 0.40;
+  function trackSurfaceLift(dt) {
+    const pw = physWheels();
+    if (!pw) return;
+    for (let i = 2; i < 4; i++) {
+      const c = pw[i];
+      if (!c || !c.contact || !c.contactPos || !Number.isFinite(c.contactPos.y)) continue;
+      local(wheels[i - 2] || wheels[0], wtmp);
+      wheelDrop = damp(wheelDrop, clamp(wtmp.y - c.contactPos.y, 0.02, 1.4), 8, dt);
+      return;
+    }
+  }
+
   /** Poisson-ish rate emitter: accumulates fractional counts so low rates still sparkle. */
   function rate(key, perSec, dt) {
     acc[key] += perSec * dt;
@@ -1522,6 +1597,7 @@ function createKartRig(vfx, world, target, o = {}) {
 
   function update(dt, time, override) {
     readState(dt, override);
+    trackSurfaceLift(dt);
     const fx = surfaceFX(st.surface);
     const spd = st.speed;
     const fast = clamp(spd / 26, 0, 1.35);
@@ -1538,7 +1614,7 @@ function createKartRig(vfx, world, target, o = {}) {
       // metre-wide puffs around the kart at once and they merged into one fog bank that hid
       // the wheels. A pair of readable plumes needs ~8 concurrent, not 30.
       const smokeRate = (onWater ? 22 * fast
-        : (hard ? fx.rate * heat * 1.15 : loose * 1.00 + fx.rate * heat * 0.35)) * st.contact;
+        : (hard ? fx.rate * heat * 0.72 : loose * 1.00 + fx.rate * heat * 0.35)) * st.contact;
       const n = rate('smoke', smokeRate * (o.rate ?? 1) * vfx.emitScale, dt);
       for (let i = 0; i < n; i++) {
         const w = wheels[i % wheels.length];
@@ -1557,15 +1633,15 @@ function createKartRig(vfx, world, target, o = {}) {
         // pinned around the kart instead of behind it, and a veil that sits *between* the
         // lens and the hero is what desaturated the kart in the round-2 grove shot. A third
         // keeps the column trailing without letting it sweep out of frame in one beat.
-        const inh = onWater ? 0 : (hard ? 0.40 : 0.30);
+        const inh = onWater ? 0 : (hard ? 0.32 : 0.44);
         vfx.emit(onWater ? 'splashMist' : (hard ? 'driftSmoke' : 'dust'), {
           pos: wp, dir: dirv, count: 1, raw: true,
           vx: vel.x * inh, vy: vel.y * inh, vz: vel.z * inh,
           colorA: fx.a, colorB: fx.b,
-          scale: lerp(0.7, 1.25, rand()) * (hard ? lerp(0.85, 1.5, heat) : 1),
+          scale: lerp(0.58, 1.42, rand()) * (hard ? lerp(0.85, 1.5, heat) : 1),
           // per-puff opacity spread: identical alphas integrate to a flat plateau, a spread
           // of them keeps individual puffs readable inside the plume
-          opacity: (hard ? clamp(0.42 + heat * 0.85, 0, 1.15) : clamp(0.52 + 0.48 * fast, 0, 1.05))
+          opacity: (hard ? clamp(0.36 + heat * 0.50, 0, 0.98) : clamp(0.52 + 0.48 * fast, 0, 1.05))
             * lerp(0.7, 1.18, rand()),
           speedScale: 0.7 + fast * 0.9,
           drag: fx.drag,
@@ -1612,7 +1688,7 @@ function createKartRig(vfx, world, target, o = {}) {
             .addScaledVector(right, (rand() * 2 - 1) * 0.45);
           vfx.emit('rooster', {
             pos: wp, dir: dirv, count: 1, raw: true,
-            vx: vel.x * 0.42, vy: vel.y * 0.42, vz: vel.z * 0.42,
+            vx: vel.x * 0.52, vy: vel.y * 0.52, vz: vel.z * 0.52,
             colorA: fx.a, colorB: fx.b,
             scale: 0.85 + rand() * 0.6, speedScale: 0.55 + fast * 0.85,
             opacity: clamp(0.50 + 0.45 * fast, 0, 1.05) * lerp(0.72, 1.16, rand()),
@@ -1670,22 +1746,59 @@ function createKartRig(vfx, world, target, o = {}) {
     if (vfx.decals && st.contact > 0.35 && spd > 3) {
       const heat = clamp(Math.max(slip * 2.0, st.slide * 1.15), 0, 1) * st.contact;
       const strength = (fx.decalAlpha || 0) * heat * (1 + 0.45 * st.slide) * (st.boosting ? 1.15 : 1);
-      const marks = st.slide > 0.25 ? wheels.concat(front) : wheels;
+      // a crossed-up kart scrubs its fronts as hard as its rears
+      // Two lines, not four. A crossed-up kart does scrub its fronts, but four parallel
+      // ladders read as clutter from a chase lens; the rears are the mark of a drift.
+      const marks = wheels;
+      const pw = physWheels();
+      const pIdx = [2, 3];
       if (fx.decal && strength > 0.04) {
+        const opts = {
+          kind: fx.decal,
+          // A stamp is drawn at half the axes it is handed, so ask for twice the rubber a
+          // tyre actually lays and the mark comes out tyre-width on screen.
+          width: (o.markWidth ?? 0.52) * (1.0 + 0.30 * st.slide),
+          alpha: clamp(strength, 0, 0.78),
+          life: fx.decal === 'tyre' ? 11 : 7,
+          // A stamp is only laid once the wheel has travelled `segment`, and it covers half
+          // of what it was given. Leaving that at the 0.42 m default meant a kart moving
+          // 0.37 m per step stamped every *other* step, so the mark came out as a ladder of
+          // blocks with a metre of clean road between them. Stamping every step, and filling
+          // the halves with the interleaved trail below, is what makes it a continuous line.
+          segment: 0.26,
+        };
         for (let i = 0; i < marks.length; i++) {
-          local(marks[i], wp); wp.y -= 0.16;
-          vfx.decals.trail(skidId + i, wp, fwd, {
-            kind: fx.decal,
-            width: (o.markWidth ?? 0.34) * (1.0 + 0.75 * st.slide),
-            alpha: clamp(strength, 0, 1),
-            life: fx.decal === 'tyre' ? 14 : 7,
-          });
+          local(marks[i], wp);
+          // The surface height, in order of preference: the physics wheel that is touching
+          // right now, else this kart's own measured wheel-to-road drop. Either way the mark
+          // lands on the road ribbon, not on the terrain half a metre below it.
+          const c = pw && pw[pIdx[i]];
+          let sy;
+          if (c && c.contact && c.contactPos && Number.isFinite(c.contactPos.y)) {
+            sy = c.contactPos.y; wp.x = c.contactPos.x; wp.z = c.contactPos.z;
+          } else sy = wp.y - wheelDrop;
+          wp.y = sy;
+          vfx.surfaceHint(wp.x, wp.z, sy, 2.2);
+          vfx.decals.trail(skidId + i, wp, fwd, opts);
+          // Each stamp only covers the middle half of the ground it was given, so a mark
+          // laid at 22 m/s comes out as a row of dashes with a metre of clean road between
+          // them. A second trail per wheel, fed the midpoints, is exactly half a phase out
+          // and drops its stamps into the first one's gaps: one continuous scrub.
+          const mp = markPrev[i];
+          if (mp.set !== undefined && markHave[i]) {
+            wtmp.set((mp.x + wp.x) * 0.5, (mp.y + wp.y) * 0.5, (mp.z + wp.z) * 0.5);
+            vfx.surfaceHint(wtmp.x, wtmp.z, wtmp.y, 2.2);
+            vfx.decals.trail(skidId + 4 + i, wtmp, fwd, opts);
+          }
+          mp.copy(wp); markHave[i] = true;
+          vfx.surfaceHint();
         }
-        for (let i = marks.length; i < 4; i++) vfx.decals.breakTrail(skidId + i);
-      } else {
-        for (let i = 0; i < 4; i++) vfx.decals.breakTrail(skidId + i);
-      }
-    } else if (vfx.decals) { for (let i = 0; i < 4; i++) vfx.decals.breakTrail(skidId + i); }
+        for (let i = marks.length; i < 4; i++) {
+          vfx.decals.breakTrail(skidId + i); vfx.decals.breakTrail(skidId + 4 + i);
+          markHave[i] = false;
+        }
+      } else { breakMarks(); }
+    } else if (vfx.decals) { breakMarks(); }
 
     /* --- mini-turbo charge sparks ------------------------------------------------- */
     if (st.drifting && st.tier > 0) {
@@ -1693,13 +1806,13 @@ function createKartRig(vfx, world, target, o = {}) {
       heldTier = st.tier;
       // sparks come off the loaded, outboard rear wheel — the one being dragged sideways
       const sgn = vel.dot(right) < 0 ? -1 : 1;
-      const n = rate('spark', T.rate * 1.7 * (0.55 + 0.55 * fast) * (0.35 + 0.75 * st.slide) * vfx.emitScale, dt);
+      const n = rate('spark', T.rate * 3.6 * (0.55 + 0.55 * fast) * (0.35 + 0.75 * st.slide) * vfx.emitScale, dt);
       for (let i = 0; i < n; i++) {
         const a = sparkAnchor[i % sparkAnchor.length];
         local(a, wp);
         wp.addScaledVector(right, sgn * 0.10 * (a[0] * sgn > 0 ? 1.6 : 0.4));
-        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.55)
-          .addScaledVector(right, sgn * (0.25 + rand() * 0.85));
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.40 + rand() * 0.35)
+          .addScaledVector(right, sgn * (0.35 + rand() * 0.55));
         // hot at birth, cooling into the saturated tier hue: a spark reads as a coloured
         // comet with a white tip rather than a white dot with a coloured halo.
         // white at the tip, saturated tier hue in the tail: a spark has to read as a
@@ -1710,10 +1823,13 @@ function createKartRig(vfx, world, target, o = {}) {
           scale: T.size * (0.85 + rand() * 0.75),
           speedScale: 0.8 + rand() * 0.8,
         });
-        if (rand() < 0.30) {
+        // the soft tier-coloured pool the shower sits in: MK8 reads its charge level from
+        // this glow as much as from the individual sparks
+        if (rand() < 0.40) {
           vfx.emit('miniTurbo', {
             pos: wp, dir: dirv, count: 1, raw: true,
-            colorA: T.flameA, colorB: T.flameB, scale: T.size * 1.2, opacity: 0.7,
+            colorA: T.flameA, colorB: T.flameB, scale: T.size * (1.1 + rand() * 0.7),
+            opacity: 0.62, speedScale: 0.5 + rand() * 0.5,
           });
         }
       }

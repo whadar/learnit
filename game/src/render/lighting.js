@@ -434,6 +434,119 @@ export function createLighting(engine, world, sky, opts = {}) {
   }
   applyPalette();
 
+  // ---- contact shadows -------------------------------------------------------------------
+  //
+  // A shadow map can only ever darken the ground *behind* an occluder. What sells a kart as
+  // standing on the road is the little wedge of near-black right where rubber meets tarmac —
+  // the ambient occlusion of a 1 m box sitting on a plane, which no directional shadow map
+  // resolves at this sun angle (elevation ~56 deg puts the cast shadow almost entirely under
+  // the chassis). MK8 draws it as an explicit soft blob under every kart and so does this.
+  //
+  // One InstancedMesh, multiplicative blending so it darkens the road's own texture instead of
+  // painting grey over it, lifted 3 cm and polygon-offset so it never z-fights the surface,
+  // pulled a little down-sun so it reads as anchored to the light rather than stamped.
+  const contact = (() => {
+    if (opts.contactShadows === false) return null;
+    try {
+      const S = 96, cv = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
+      if (!cv) return null;
+      cv.width = cv.height = S;
+      const c = cv.getContext('2d');
+      // Black with a soft alpha ramp: a wide flat core under the chassis and a long shoulder,
+      // slightly squashed across the kart so the pool reads as an occlusion wedge and never as
+      // a drawn ellipse.
+      const img = c.createImageData(S, S);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const dx = (x + 0.5) / S * 2 - 1, dy = (y + 0.5) / S * 2 - 1;
+        const r = Math.sqrt(dx * dx * 1.20 + dy * dy * 0.86);
+        const t = 1 - Math.min(1, Math.max(0, (r - 0.14) / 0.80));
+        const a = t * t * (3 - 2 * t);                 // smoothstep shoulder
+        const i = (y * S + x) * 4;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = 0;
+        img.data[i + 3] = Math.round(255 * a);
+      }
+      c.putImageData(img, 0, 0);
+      const tex = new THREE.CanvasTexture(cv);
+      tex.colorSpace = THREE.NoColorSpace;
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.minFilter = THREE.LinearMipmapLinearFilter; tex.generateMipmaps = true;
+
+      const geo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex, color: 0x000000, transparent: true, opacity: opts.contactStrength ?? 0.62,
+        depthWrite: false, fog: false, toneMapped: false,
+        polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8,
+      });
+      const MAX = opts.contactMax ?? 24;
+      const mesh = new THREE.InstancedMesh(geo, mat, MAX);
+      mesh.name = 'lighting:contact';
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = false;
+      mesh.renderOrder = 3; mesh.count = 0;
+      mesh.userData.__ktContact = true;
+      scene.add(mesh);
+
+      const targets = [];
+      const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
+      const _n = new THREE.Vector3(), _fw = new THREE.Vector3(), _rt = new THREE.Vector3();
+      const _m = new THREE.Matrix4();
+      const _basis = new THREE.Matrix4();
+
+      function collect() {
+        targets.length = 0;
+        scene.traverse(o => {
+          if (targets.length >= MAX) return;
+          if (o.userData && o.userData.contactShadow === false) return;
+          if (/^racer:/.test(o.name || '')) targets.push(o);
+        });
+      }
+
+      function update() {
+        if (!targets.length) return;
+        let n = 0;
+        for (const o of targets) {
+          if (!o.visible || !o.parent) continue;
+          o.getWorldPosition(_p);
+          // `createRacer` builds each rig with its wheels on the ground at local y = 0, so the
+          // root's world Y *is* the contact height. The heightfield is only a sanity reference
+          // here: the track ribbon is graded and can sit a metre above raw terrain, and putting
+          // the pool on `heightAt` buries it under the road.
+          const gy = world ? world.heightAt(_p.x, _p.z) : _p.y;
+          const air = Number.isFinite(gy) ? Math.max(0, _p.y - gy) : 0;
+          // A kart in the air has no contact to occlude: the pool widens, then is dropped once
+          // it would only be a smudge.
+          if (air > 2.4) continue;
+          const grow = 1 + Math.min(0.9, Math.max(0, air - 1.1) * 0.6);
+
+          o.getWorldQuaternion(_q);
+          _n.set(0, 1, 0).applyQuaternion(_q);
+          if (!Number.isFinite(_n.x) || _n.lengthSq() < 1e-6) _n.set(0, 1, 0); else _n.normalize();
+          _fw.set(0, 0, 1).applyQuaternion(_q);
+          _fw.addScaledVector(_n, -_fw.dot(_n));
+          if (_fw.lengthSq() < 1e-6) _fw.set(0, 0, 1); else _fw.normalize();
+          _rt.crossVectors(_n, _fw).normalize();
+
+          _basis.makeBasis(_rt, _n, _fw);
+          _basis.setPosition(
+            _p.x + lightDir.x * 0.30,
+            _p.y + 0.04,
+            _p.z + lightDir.z * 0.30);
+          _s.set(2.30 * grow, 1, 3.00 * grow);
+          _m.copy(_basis).scale(_s);
+          mesh.setMatrixAt(n, _m);
+          n++;
+        }
+        mesh.count = n;
+        mesh.instanceMatrix.needsUpdate = true;
+      }
+
+      return { mesh, collect, update };
+    } catch (e) {
+      console.warn('[lighting] contact shadows unavailable:', e);
+      return null;
+    }
+  })();
+
   // ---- frame loop -----------------------------------------------------------------------
   const lastCamPos = new THREE.Vector3(1e9, 1e9, 1e9);
   const lastCamQuat = new THREE.Quaternion(9, 9, 9, 9);
@@ -449,7 +562,8 @@ export function createLighting(engine, world, sky, opts = {}) {
 
   const system = {
     update(dt) {
-      if ((frame++ % 30) === 0) scan();
+      if ((frame++ % 30) === 0) { scan(); contact?.collect(); }
+      contact?.update();
       const cam = engine.camera;
       const moved = cam.position.distanceToSquared(lastCamPos) > 2.5e-3 ||
                     Math.abs(cam.quaternion.dot(lastCamQuat)) < 0.99999;
@@ -467,7 +581,9 @@ export function createLighting(engine, world, sky, opts = {}) {
   };
   engine.add(system);
 
+
   scan();
+  contact?.collect();
   const env = buildEnv();
 
   const api = {
