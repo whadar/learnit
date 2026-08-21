@@ -144,6 +144,13 @@ export function createLighting(engine, world, sky, opts = {}) {
   const cascades = opts.cascades ?? 3;
   const shadowMapSize = opts.shadowMapSize ?? 2048;
   const shadowFar = opts.shadowFar ?? 1000;
+  // Depth bias, expressed in **metres** rather than in normalised shadow-map depth. The old
+  // form (`shadowBias: -0.00008`) is a fraction of the light camera's near..far span, and
+  // that span was 3499 m — so the real bias was 28 cm and every kart, item box and traffic
+  // cone lost its contact shadow to peter-panning. `tuneCascades()` below converts this to
+  // per-cascade normalised units after every frustum update.
+  const biasMetres = opts.shadowBiasMetres ?? 0.030;
+  const lightMargin = opts.lightMargin ?? 150;
   // three's 'practical' split (lambda 0.5) spends far too much of cascade 0 on empty
   // distance; at kart height that shows up as stair-stepped eaves. Bias hard toward the
   // logarithmic split so the first cascade is a tight ~50 m box.
@@ -169,7 +176,9 @@ export function createLighting(engine, world, sky, opts = {}) {
     apFalloff:   { value: opts.hazeFalloff ?? 0.0075 },
     apBase:      { value: groundY },
     apSunAmount: { value: 0.55 },
-    apMax:       { value: opts.hazeMax ?? 0.82 },
+    // A 1.5 km course never needs the distance fully replaced by haze; capping the mix
+    // keeps the far ridge a *ridge* rather than a silhouette-free band of sky.
+    apMax:       { value: opts.hazeMax ?? 0.62 },
   };
   const csmUniforms = {
     CSM_cascades: { value: [] },
@@ -179,6 +188,39 @@ export function createLighting(engine, world, sky, opts = {}) {
 
   // ---- CSM -----------------------------------------------------------------------------
   let csm = null;
+
+  /**
+   * Fit each cascade's light camera depth range to the cascade it actually covers, then
+   * derive the depth/normal bias from that range.
+   *
+   * three's CSM gives every cascade the same `lightNear`/`lightFar`, so the near box that
+   * holds the karts was sharing a 3500 m depth range with the 1 km distance cascade. Two
+   * things go wrong: normalised bias becomes a huge distance, and the 24-bit depth buffer
+   * spends its precision on empty air. Sizing per cascade lets the contact shadow sit
+   * 3 cm from the tyre instead of 28 cm away from it.
+   */
+  function tuneCascades() {
+    if (!csm) return;
+    for (const l of csm.lights) {
+      const cam = l.shadow.camera;
+      const w = Math.max(cam.right - cam.left, 1);
+      cam.near = 1;
+      cam.far = lightMargin + w * 1.6 + 60;
+      cam.updateProjectionMatrix();
+      const span = cam.far - cam.near;
+      l.shadow.bias = -(biasMetres / span);
+      // Slope/texel term: enough to kill acne on the terrain, small enough that a 1 m object
+      // still meets its own shadow. One shadow texel is w / shadowMapSize metres.
+      l.shadow.normalBias = opts.normalBias ?? Math.max(0.02, 1.7 * (w / shadowMapSize));
+      // three's PCF filter is a 5-tap Vogel disk scaled by `shadow.radius` *in texels*, with
+      // a per-pixel rotation. At the default radius of 1 the disk collapses onto one texel
+      // and every shadow boundary is a hard stair-step — which is what the review saw on the
+      // olive canopies. 2.6 texels gives a real penumbra at every cascade scale for free
+      // (the taps are hardware-filtered), and the rotation is a deterministic function of
+      // gl_FragCoord, so screenshots stay reproducible.
+      l.shadow.radius = opts.shadowRadius ?? 2.6;
+    }
+  }
   const lightDir = new THREE.Vector3().copy(sky.sunDir).negate(); // from sun toward ground
   if (useCSM) {
     try {
@@ -190,20 +232,17 @@ export function createLighting(engine, world, sky, opts = {}) {
         mode: 'custom',
         customSplitsCallback: customSplits,
         shadowMapSize,
-        shadowBias: opts.shadowBias ?? -0.00008,
+        shadowBias: 0,          // set per cascade by tuneCascades()
         lightDirection: lightDir.clone(),
         lightIntensity: pal.sunIntensity,
         lightNear: 1,
         lightFar: 3500,
-        lightMargin: opts.lightMargin ?? 260,
+        lightMargin,
       });
       csm.fade = true;
       csm.updateFrustums();
-      for (const l of csm.lights) {
-        l.color.copy(pal.sunColor);
-        l.shadow.normalBias = opts.normalBias ?? 0.11;
-        l.shadow.bias = opts.shadowBias ?? -0.00008;
-      }
+      for (const l of csm.lights) l.color.copy(pal.sunColor);
+      tuneCascades();
     } catch (e) {
       console.warn('[lighting] CSM unavailable, falling back to a single shadow map:', e);
       csm = null;
@@ -218,8 +257,8 @@ export function createLighting(engine, world, sky, opts = {}) {
   if (!csm) {
     sun.castShadow = true;
     sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
-    sun.shadow.normalBias = opts.normalBias ?? 0.11;
-    sun.shadow.bias = opts.shadowBias ?? -0.00008;
+    sun.shadow.normalBias = opts.normalBias ?? 0.05;
+    sun.shadow.bias = opts.shadowBias ?? -(biasMetres / 3999);
     const c = sun.shadow.camera;
     c.left = -260; c.right = 260; c.top = 260; c.bottom = -260; c.near = 1; c.far = 4000;
     c.updateProjectionMatrix();
@@ -254,7 +293,11 @@ export function createLighting(engine, world, sky, opts = {}) {
       scene.environment = envMap;
       // The dome already renders in exposed units (sky.uExposure), so the IBL lands at a
       // sane fraction of the sun without any extra normalisation.
-      scene.environmentIntensity = opts.envIntensity ?? 0.45;
+      // Sky IBL is the other half of the ambient-fill problem (see sky.js's hemiIntensity
+      // note): at 0.45 the shaded side of every object was lit almost as brightly as the
+      // sunlit side and cast shadows read as a faint blue smudge. 0.24 keeps the bounce
+      // colour without eating the sun's contrast.
+      scene.environmentIntensity = opts.envIntensity ?? 0.35;
       return envMap;
     } catch (e) {
       console.warn('[lighting] environment map generation failed:', e);
@@ -400,7 +443,7 @@ export function createLighting(engine, world, sky, opts = {}) {
       if (moved) { lastCamPos.copy(cam.position); lastCamQuat.copy(cam.quaternion); }
       dirty = false;
     },
-    resize() { if (csm) { csm.updateFrustums(); refreshCSMUniforms(); dirty = true; } },
+    resize() { if (csm) { csm.updateFrustums(); tuneCascades(); refreshCSMUniforms(); dirty = true; } },
   };
   engine.add(system);
 
@@ -416,7 +459,7 @@ export function createLighting(engine, world, sky, opts = {}) {
     /** Re-read sky.palette / sky.sunDir after a time-of-day change. */
     refresh(rebuildEnv = true) {
       applyPalette();
-      if (csm) { csm.updateFrustums(); refreshCSMUniforms(); }
+      if (csm) { csm.updateFrustums(); tuneCascades(); refreshCSMUniforms(); }
       if (rebuildEnv) api.envMap = buildEnv();
       // Nothing to recompile: every patched shader holds the *same* uniform objects.
     },

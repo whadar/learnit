@@ -306,7 +306,11 @@ export function makeCompositeShader() {
         #if USE_DOF == 1
         {
           float coc = smoothstep( uFocus.x, uFocus.y, dist ) * uDofMax;
-          coc = max( coc, isSky * uDofMax * 0.55 );
+          // The dome used to be force-blurred at 0.55 of the full circle of confusion — a
+          // 0.19 CoC over every sky pixel, which is enough to dissolve a cumulus edge into
+          // the gradient behind it. The sky is the one surface with no aliasing to hide, so
+          // it gets only a whisper, just enough to soften the dome's own banding.
+          coc = max( coc, isSky * uDofMax * 0.10 );
           col = mix( col, min( texture2D( tBlur, uv ).rgb, vec3( KAT_MAX ) ), coc );
         }
         #endif
@@ -426,9 +430,21 @@ export function makeGradeLUT(opts = {}) {
         // --- display-referred shaping ------------------------------------------------------
         let lum = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
 
-        // saturation, eased off in the very brightest values so plaster stays white
-        const satHere = sat * (1 - 0.45 * Math.max(0, lum - 0.82) / 0.18);
-        for (let k = 0; k < 3; k++) out[k] = lum + (out[k] - lum) * satHere;
+        // Saturation, applied as *vibrance*: the push is strongest on the near-neutral
+        // limestone dust and dry stubble that make up most of this course, and eases off
+        // both in the very brightest values (so plaster stays white) and on colours that
+        // are already saturated (so the red pantiles, the item-box gold and the kart
+        // liveries keep their gradients instead of smearing into flat primaries). A flat
+        // multiplier at this strength turns the whole moshav into orange poster paint.
+        {
+          const mx = Math.max(out[0], out[1], out[2]);
+          const mn = Math.min(out[0], out[1], out[2]);
+          const chroma = mx > 1e-4 ? (mx - mn) / mx : 0;
+          const hiRoll = 1 - 0.45 * clamp((lum - 0.82) / 0.18, 0, 1);
+          const vib = 1 - 0.60 * clamp(chroma / 0.50, 0, 1);
+          const satHere = 1 + (sat - 1) * hiRoll * vib;
+          for (let k = 0; k < 3; k++) out[k] = lum + (out[k] - lum) * satHere;
+        }
 
         // filmic S-curve about a 0.46 pivot
         for (let k = 0; k < 3; k++) {

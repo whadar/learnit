@@ -174,9 +174,11 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     bloomThreshold:  opts.bloomThreshold ?? 12.0,
     bloomKnee:       opts.bloomKnee ?? 6.0,
     bloomClamp:      opts.bloomClamp ?? 0.52,
-    // Ambient occlusion.
-    aoIntensity:     opts.aoIntensity ?? 1.0,
-    aoRadius:        opts.aoRadius ?? 1.1,
+    // Ambient occlusion. The radius is world-space metres: 1.1 m is a room-scale radius
+    // that misses the thing it is most needed for here — the wedge of darkness where a tyre
+    // meets the road. 0.55 m hugs contacts, which is what glues a kart to the ground.
+    aoIntensity:     opts.aoIntensity ?? 1.15,
+    aoRadius:        opts.aoRadius ?? 0.55,
     aoScale:         opts.aoScale ?? 1.0,
     aoThickness:     opts.aoThickness ?? 1.4,
     aoDistanceExponent: opts.aoDistanceExponent ?? 1.4,
@@ -185,27 +187,41 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     focusFar:        opts.focusFar ?? 2600,
     dofMax:          opts.dofMax ?? 0.34,
     // Motion blur: fraction of a frame of camera movement smeared across the image.
-    motionShutter:   opts.motionShutter ?? 0.72,
-    motionMax:       opts.motionMax ?? 0.013,
-    motionNear:      opts.motionNear ?? 2.5,
-    motionFull:      opts.motionFull ?? 14,
+    //
+    // `motionNear`/`motionFull` are the distances over which the blur fades in. They used to
+    // be 2.5 m and 14 m — which is *exactly* the band of road the chase camera looks at, so
+    // every gameplay frame had its aggregate, seams, racing line and decals smeared into a
+    // directional mush. Mario Kart keeps the track surface razor sharp at 200cc because
+    // readability at speed is the whole point; the speed cue comes from the scenery
+    // streaming past, not from the tarmac dissolving. 14 m to 70 m puts the fade-in beyond
+    // the road the player is reading and onto the trees and buildings going by.
+    motionShutter:   opts.motionShutter ?? 0.55,
+    motionMax:       opts.motionMax ?? 0.011,
+    motionNear:      opts.motionNear ?? 14,
+    motionFull:      opts.motionFull ?? 70,
     // Grade. `saturation` is a display-space trim on top of the LUT's own 1.28 push; it
     // exists so the base look can carry the Mario Kart punch on its own. It used to sit at
     // 1.0 and the frames only looked saturated because a wrongly-binary boost flag was
     // multiplying it by 1.22 nearly all the time — when that bug went, so did the punch.
     contrast:        opts.contrast ?? 1.0,
-    saturation:      opts.saturation ?? 1.05,
+    saturation:      opts.saturation ?? 1.02,
     lutMix:          opts.lutMix ?? 1.0,
-    vignette:        opts.vignette ?? 0.28,
+    // The vignette was measured crushing the corner mid-tones and adding to the milky
+    // reading; a Mario Kart frame is evenly lit corner to corner.
+    vignette:        opts.vignette ?? 0.17,
     chromatic:       opts.chromatic ?? 0.0038,
     // Boost rush. `rushOn`/`rushLinesOn` are the *boost* levels at which each half of the
     // effect starts to appear. They sit high on purpose: the rush is the reward for a fat
     // mini-turbo, so a tier-1 charge (which reaches ~0.20 of full punch) must leave the
     // frame completely clean, and only a tier-3 or a mushroom pushes it to the top.
+    // The speed lines in particular have to be *rare*. Review round 1 found a faint diagonal
+    // streak veil over the whole of photoFinish — a plate in which the player kart is not
+    // even on screen — because a mid-range boost was enough to switch them on and the broad
+    // edge flare that comes with them reads as haze rather than as speed.
     rushStrength:    opts.rushStrength ?? 0.024,
-    rushLines:       opts.rushLines ?? 0.42,
-    rushOn:          opts.rushOn ?? 0.30,
-    rushLinesOn:     opts.rushLinesOn ?? 0.42,
+    rushLines:       opts.rushLines ?? 0.32,
+    rushOn:          opts.rushOn ?? 0.34,
+    rushLinesOn:     opts.rushLinesOn ?? 0.58,
     speedRef:        opts.speedRef ?? 110,     // km/h that counts as "full speed"
   };
 
@@ -292,7 +308,13 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   compositePass.material.depthTest = false;
   compositePass.material.depthWrite = false;
   const cu = compositePass.uniforms;
-  const lut = makeGradeLUT(opts.lut);
+  // The LUT is where most of the punch lives: it works in linear light, before the
+  // display-space trims above, so it can push chroma without tearing the terracotta roofs.
+  // Round 1 measured a mean chroma of 0.19 against Mario Kart's 0.33-0.42 with the LUT at
+  // 1.28 / 1.10; this pushes both and deepens the cool-shade split so the warm sun reads
+  // as warm against it.
+  const lut = makeGradeLUT({ saturation: 1.42, contrast: 1.10, shadeTint: 1.15, warmth: 0.97,
+    ...(opts.lut || {}) });
   cu.tLut.value = lut;
   cu.tDepth.value = depthTexture;
   cu.tBlur.value = dofPass.texture;
@@ -409,8 +431,8 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // Blur represents shutter-open time. The reprojection vector already spans one frame,
     // so scaling by the shutter fraction keeps blur frame-rate independent; the clamp then
     // stops a hitched frame from smearing the whole screen.
-    cu.uMotionScale.value = params.motionShutter * (0.45 + 0.75 * speedN + 1.10 * punch);
-    cu.uMotionMax.value = params.motionMax * (0.55 + 0.55 * speedN + 0.9 * punch);
+    cu.uMotionScale.value = params.motionShutter * (0.22 + 0.62 * speedN + 1.00 * punch);
+    cu.uMotionMax.value = params.motionMax * (0.40 + 0.55 * speedN + 0.9 * punch);
     cu.uMotionNear.value.set(params.motionNear, params.motionFull);
 
     // ---- boost rush ---------------------------------------------------------------------

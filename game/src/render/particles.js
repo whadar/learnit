@@ -104,14 +104,14 @@ const FX_TUNE = {
   /* Tyre smoke: a pair of compact puffs off the rear wheels. It used to run at nearly twice
    * this size and lifetime, which merged every puff into one fog bank around the kart. */
   driftSmoke: {
-    size: [0.28, 1.40], life: [0.45, 0.95], alpha: 0.42,
+    size: [0.28, 1.35], life: [0.45, 0.92], alpha: 0.36,
     speed: [0.8, 2.2], spread: 0.5, jitter: 0.5, drag: 2.1, grav: 0.6,
     turb: [0.22, 0.6], fadeIn: 0.09, spin: 1.3,
     colorA: [0.90, 0.89, 0.88], colorB: [0.50, 0.49, 0.50],
   },
   /* Surface dust: the cheapest speed cue in the game, so it is allowed to be big. */
   dust: {
-    size: [0.55, 3.1], life: [0.75, 1.7], alpha: 0.52,
+    size: [0.40, 2.3], life: [0.75, 1.6], alpha: 0.80,
     speed: [1.0, 3.0], spread: 0.7, jitter: 0.8, drag: 1.15, grav: 0.5,
     turb: [0.45, 0.4], fadeIn: 0.10, spin: 0.9,
   },
@@ -125,9 +125,9 @@ const FX_EXTRA = {
     // headroom left to spend and simply disappears. Alpha-over puts a real white-hot kernel
     // on screen, and because it is ~0.15 m across it is also the entire clipped-white budget
     // — which is exactly the seed the bloom prefilter wants and nothing more.
-    sprite: 'flare', blend: 'fire', count: 1, life: [0.09, 0.15], size: [0.17, 0.026],
+    sprite: 'flare', blend: 'fire', count: 1, life: [0.09, 0.15], size: [0.14, 0.022],
     speed: [1.8, 3.6], spread: 0.10, jitter: 0.22, drag: 6.0, grav: 0.4, turb: [0.02, 3.0],
-    alpha: 0.90, colorA: [1.0, 0.96, 0.84], colorB: [1.0, 0.58, 0.16], fadeIn: 0.02,
+    alpha: 0.82, colorA: [1.0, 0.91, 0.62], colorB: [1.0, 0.50, 0.12], fadeIn: 0.02,
   },
   /**
    * The charge-tier tongue — MK8's blue / orange / purple mini-turbo colour, riding just
@@ -147,9 +147,9 @@ const FX_EXTRA = {
   },
   /** Rooster tail: the long, low plume a kart drags across loose ground at speed. */
   rooster: {
-    sprite: 'dust', blend: 'alpha', count: 1, life: [0.9, 2.0], size: [0.5, 3.6],
-    speed: [2.5, 6.5], spread: 0.35, jitter: 1.1, drag: 1.5, grav: 0.55, turb: [0.55, 0.45],
-    alpha: 0.46, colorA: [0.90, 0.84, 0.72], colorB: [0.52, 0.47, 0.42], fadeIn: 0.12, spin: 0.8,
+    sprite: 'dust', blend: 'alpha', count: 1, life: [0.85, 1.8], size: [0.45, 2.8],
+    speed: [2.5, 6.5], spread: 0.35, jitter: 1.1, drag: 1.5, grav: 0.7, turb: [0.55, 0.45],
+    alpha: 0.74, colorA: [0.90, 0.84, 0.72], colorB: [0.52, 0.47, 0.42], fadeIn: 0.12, spin: 0.8,
   },
 };
 
@@ -268,6 +268,7 @@ uniform float uAdditive;
 uniform float uBrightness;
 uniform float uAlphaPow;
 uniform vec2  uNearFar;
+uniform float uNearFade;
 #ifdef SOFT
 uniform sampler2D uDepth;
 uniform vec2 uResolution;
@@ -290,8 +291,11 @@ void main() {
 
   float dist = -vViewZ;
 
-  // never let a particle slice through the near plane
-  a *= smoothstep(uNearFar.x * 1.5, uNearFar.x * 8.0, dist);
+  // Never let a particle slice through the near plane — and, for the big alpha-blended
+  // layers, keep the last few metres in front of the lens clear as well. A chase camera
+  // flies through its own dust trail continuously; without this the plume stops reading as
+  // a plume behind the kart and becomes a flat tan veil over the whole hero.
+  a *= smoothstep(uNearFar.x * 1.5, max(uNearFar.x * 8.0, uNearFade), dist);
 
 #ifdef SOFT
   vec2 suv = gl_FragCoord.xy / uResolution;
@@ -322,7 +326,7 @@ void main() {
 export class ParticleBatch {
   constructor(atlas, {
     capacity = 2000, blend = 'alpha', name = 'particles', renderOrder = 10,
-    soft = false, brightness = 1, alphaPow = 1,
+    soft = false, brightness = 1, alphaPow = 1, nearFade = 1.2,
   } = {}) {
     this.blend = blend;
     this.capacity = capacity;
@@ -365,6 +369,7 @@ export class ParticleBatch {
         uBrightness: { value: brightness },
         uAlphaPow: { value: alphaPow },
         uNearFar: { value: new THREE.Vector2(0.25, 8000) },
+        uNearFade: { value: nearFade },
         uDepth: { value: null },
         uResolution: { value: new THREE.Vector2(1280, 720) },
         uSoftness: { value: 0.55 },
@@ -919,7 +924,7 @@ export function createVFX(engine, world, opts = {}) {
   // Keeping fire in its own batch is what guarantees a puff of tyre smoke emitted a frame
   // later cannot paint over the flame: within one batch there is no sort, only push order.
   const batches = {
-    alpha: new ParticleBatch(atlas, { capacity: capAlpha, blend: 'alpha', name: 'vfx.alpha', renderOrder: 10, soft, brightness: 1.0 }),
+    alpha: new ParticleBatch(atlas, { capacity: capAlpha, blend: 'alpha', name: 'vfx.alpha', renderOrder: 10, soft, brightness: 1.0, nearFade: 2.2 }),
     // No soft-fade on the fire batch. The exhaust plume is emitted flush against the kart's
     // own bodywork, so a depth fade against the scene depth buffer erases exactly the part
     // that matters — the base of the flame — and leaves only the tip poking past the
@@ -1380,19 +1385,21 @@ function createKartRig(vfx, world, target, o = {}) {
       // metre-wide puffs around the kart at once and they merged into one fog bank that hid
       // the wheels. A pair of readable plumes needs ~8 concurrent, not 30.
       const smokeRate = onWater ? 22 * fast
-        : (fx.decal === 'tyre' ? fx.rate * heat * 0.78 : loose * 0.62 + fx.rate * heat * 0.35);
+        : (fx.decal === 'tyre' ? fx.rate * heat * 0.72 : loose * 0.85 + fx.rate * heat * 0.35);
       const n = rate('smoke', smokeRate * (o.rate ?? 1) * vfx.emitScale, dt);
       for (let i = 0; i < n; i++) {
         const w = wheels[i % wheels.length];
         local(w, wp);
         wp.y += 0.06;
-        const back = -0.25 - rand() * 0.4;
-        wp.addScaledVector(fwd, back);
-        dirv.set(0, fx.rise, 0).addScaledVector(fwd, -0.55 - rand() * 0.5).addScaledVector(right, (rand() * 2 - 1) * 0.6);
+        wp.addScaledVector(fwd, -0.7 - rand() * 0.7);
+        // push the spawn point outboard of the bodywork so the plume frames the kart
+        if (fx.decal !== 'tyre') wp.addScaledVector(right, (w[0] < 0 ? -1 : 1) * (0.15 + rand() * 0.3));
+        dirv.set(0, fx.rise * 1.5, 0).addScaledVector(fwd, -0.5 - rand() * 0.5)
+          .addScaledVector(right, (rand() < 0.5 ? -1 : 1) * (0.40 + rand() * 0.5));
         // Surface dust used to be emitted dead in world space, so at 80 km/h it swept past
         // the chase lens inside 0.3 s and only ~10 puffs were ever in frame. Carrying a
         // third of the kart's velocity keeps the plume behind the kart where it reads.
-        const inh = onWater ? 0 : 0.35;
+        const inh = onWater ? 0 : 0.46;
         vfx.emit(onWater ? 'splashMist' : (fx.decal === 'tyre' ? 'driftSmoke' : 'dust'), {
           pos: wp, dir: dirv, count: 1, raw: true,
           vx: vel.x * inh, vy: vel.y * inh, vz: vel.z * inh,
@@ -1408,16 +1415,16 @@ function createKartRig(vfx, world, target, o = {}) {
       // the rear wheels drag across loose ground, and it is the single strongest speed cue
       // available on a pale sand surface where nothing else has any value contrast.
       if (!onWater && fx.chips !== undefined && fx.decal !== 'tyre' && fast > 0.25) {
-        const rn = rate('rooster', fx.rate * 0.40 * fast * (0.55 + 0.7 * slip) * (o.rate ?? 1) * vfx.emitScale, dt);
+        const rn = rate('rooster', fx.rate * 0.50 * fast * (0.55 + 0.7 * slip) * (o.rate ?? 1) * vfx.emitScale, dt);
         for (let i = 0; i < rn; i++) {
           const w = wheels[i % wheels.length];
           local(w, wp);
-          wp.y += 0.02; wp.addScaledVector(fwd, -0.55 - rand() * 0.35);
+          wp.y += 0.02; wp.addScaledVector(fwd, -0.85 - rand() * 0.55);
           dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.42 + rand() * 0.35)
             .addScaledVector(right, (rand() * 2 - 1) * 0.45);
           vfx.emit('rooster', {
             pos: wp, dir: dirv, count: 1, raw: true,
-            vx: vel.x * 0.58, vy: vel.y * 0.58, vz: vel.z * 0.58,
+            vx: vel.x * 0.62, vy: vel.y * 0.62, vz: vel.z * 0.62,
             colorA: fx.a, colorB: fx.b,
             scale: 0.85 + rand() * 0.6, speedScale: 0.55 + fast * 0.85,
             opacity: clamp(0.55 + 0.5 * fast, 0, 1.1),
@@ -1453,7 +1460,7 @@ function createKartRig(vfx, world, target, o = {}) {
       }
 
       // mud thrown up onto the kart itself
-      if (fx.wet === 0 && fx.chips > 0.4 && spd > 6) {
+      if ((fx.mud || 0) > 0 && spd > 6) {
         const mn = rate('mud', 5 * fast * vfx.emitScale, dt);
         mudLevel = clamp(mudLevel + mn * 0.05, 0, 1);
         for (let i = 0; i < mn; i++) {

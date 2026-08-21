@@ -75,6 +75,17 @@ function coefficients(p) {
     sunE: sunE(p.sunElevationCos),
   };
 }
+/** three's ACESFilmicToneMapping, on the CPU, so the palette can be display-referred. */
+const _ACES_IN = [[0.59719, 0.35458, 0.04823], [0.07600, 0.90834, 0.01566], [0.02840, 0.13383, 0.83777]];
+const _ACES_OUT = [[1.60475, -0.53108, -0.07367], [-0.10208, 1.10813, -0.00605], [-0.00327, -0.07276, 1.07602]];
+const _mul3 = (m, v) => m.map(r => r[0] * v[0] + r[1] * v[1] + r[2] * v[2]);
+export function acesFilmic(rgb, exposure = 1) {
+  let v = _mul3(_ACES_IN, rgb.map(x => Math.max(x, 0) * exposure / 0.6));
+  v = v.map(x => (x * (x + 0.0245786) - 0.000090537) / (x * (0.983729 * x + 0.4329510) + 0.238081));
+  return _mul3(_ACES_OUT, v).map(x => clamp(x, 0, 1));
+}
+const linToSrgb = v => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(Math.max(v, 0), 1 / 2.4) - 0.055);
+
 /** Linear radiance of the sky in `dir` (matches the fragment shader, pre-tonemap). */
 function skyRadiance(dir, sunDir, p) {
   const { betaR, betaM, sunE: E } = coefficients(p);
@@ -209,8 +220,11 @@ uniform vec3  uAureole;
 uniform vec3  uGroundHaze;
 uniform vec3  uEnvGround;
 uniform float uHorizonHaze;
-uniform vec3  uHazeTint;
+uniform vec3  uHazeTint;          // unit-luminance dust *hue*, not an absolute colour
+uniform float uHazeGain;
+uniform float uSkySat;
 uniform float uExposure;
+uniform float uToneExposure;      // renderer.toneMappingExposure, mirrored in here
 
 uniform sampler2D uCloudTex;
 uniform float uCoverage, uCloudScale, uCloudOpacity, uShine, uCirrus, uAbsorb, uShadeStep;
@@ -226,6 +240,25 @@ const float ONE_OVER_FOURPI = 0.07957747154594767;
 float hg( float c, float g ) {
   float g2 = g * g;
   return ONE_OVER_FOURPI * ( ( 1.0 - g2 ) / pow( 1.0 - 2.0 * g * c + g2, 1.5 ) );
+}
+
+// ACES filmic, byte-identical to three's ACESFilmicToneMapping. The dome is drawn with
+// \`toneMapped: false\` (three would otherwise re-encode the un-exposed radiance we hand it),
+// so the include of <tonemapping_fragment> below compiles to nothing and the curve has to be
+// applied here. Without it the sky is the only thing in frame that never sees a highlight
+// shoulder: every value over 1.0 goes straight through linear-to-sRGB and the whole upper
+// half of the image sits on flat paper white. This is what the reviewers saw.
+vec3 katACES( vec3 x ) {
+  const mat3 mIn = mat3( 0.59719, 0.07600, 0.02840,
+                         0.35458, 0.90834, 0.13383,
+                         0.04823, 0.01566, 0.83777 );
+  const mat3 mOut = mat3(  1.60475, -0.10208, -0.00327,
+                          -0.53108,  1.10813, -0.07276,
+                          -0.07367, -0.00605,  1.07602 );
+  vec3 v = mIn * max( x, vec3( 0.0 ) );
+  vec3 a = v * ( v + 0.0245786 ) - 0.000090537;
+  vec3 b = v * ( 0.983729 * v + 0.4329510 ) + 0.238081;
+  return clamp( mOut * ( a / b ), 0.0, 1.0 );
 }
 
 // Raw density of the cumulus deck at a cloud-plane uv. Two decorrelated taps of the same
@@ -293,14 +326,19 @@ void main() {
 
   vec3 sky = Lin * 0.04 + vec3( 0.0, 0.0006, 0.0016 );
 
-  // --- dry Mediterranean horizon haze: whiten and desaturate the bottom of the dome ------
-  float hz = 1.0 - smoothstep( -0.012, 0.135, direction.y );
-  vec3 hazeCol = mix( sky, uHazeTint * ( 0.35 + 0.65 * dot( sky, vec3( 0.33 ) ) ), 0.75 );
-  hazeCol = mix( hazeCol, uHazeTint * 1.2, pow( max( cosTheta, 0.0 ), 6.0 ) * 0.35 );
+  // --- dry Mediterranean horizon haze: desaturate the bottom of the dome ------------------
+  // The haze is expressed as a *relative* term — the sky's own luminance re-tinted with the
+  // dust hue — so it can never add energy. The previous form multiplied an absolute palette
+  // colour (already in exposed display units) into pre-exposure radiance, which brightened
+  // the horizon band by ~40% and is why the bottom third of the dome clipped to paper.
+  float hz = 1.0 - smoothstep( -0.015, 0.115, direction.y );
+  float skyL = max( dot( sky, vec3( 0.2126, 0.7152, 0.0722 ) ), 0.0 );
+  vec3 hazeCol = uHazeTint * skyL * uHazeGain;
+  hazeCol *= mix( 1.0, 1.10, pow( max( cosTheta, 0.0 ), 6.0 ) );
   sky = mix( sky, hazeCol, hz * uHorizonHaze );
 
   // --- clouds ----------------------------------------------------------------------------
-  float above = smoothstep( 0.012, 0.10, direction.y );
+  float above = smoothstep( 0.004, 0.045, direction.y );
   if ( above > 0.001 ) {
     vec2 pl = direction.xz / max( direction.y, 0.055 );
 
@@ -317,9 +355,12 @@ void main() {
 
     vec4 cl = cumulus( pl * uCloudScale + uDrift, cosTheta );
     if ( cl.a > 0.001 ) {
-      // distant clouds sink into the same haze the far hills do
-      float far = 1.0 - smoothstep( 0.03, 0.40, direction.y );
-      cl.rgb = mix( cl.rgb, mix( sky, uHazeTint * 0.95, 0.45 ), far * 0.85 );
+      // Distant clouds sink into the same haze the far hills do — but only in the last few
+      // degrees above the skyline. The old fade ran to 0.40 (≈24 deg), and a chase camera
+      // never looks higher than about 20 deg, so it dissolved 85% of every cumulus the
+      // player could actually see. That is why four of seven review frames had no cloud.
+      float far = 1.0 - smoothstep( 0.010, 0.115, direction.y );
+      cl.rgb = mix( cl.rgb, mix( sky, uHazeTint * skyL * uHazeGain, 0.45 ), far * 0.70 );
       sky = mix( sky, cl.rgb, cl.a * uCloudOpacity * above );
     }
   }
@@ -328,11 +369,14 @@ void main() {
   // highlight so a quarter of the frame does not clip to flat paper.
   float aur = pow( max( cosTheta, 0.0 ), 7.0 );
   sky *= mix( vec3( 1.0 ), uAureole, aur * 0.55 );
+#ifdef ENV_PASS
+  // The IBL wants linear radiance, so the only limiter it gets is the old luminance knee.
   {
     float L = dot( sky, vec3( 0.2126, 0.7152, 0.0722 ) );
     float Lc = L <= 1.0 ? L : 1.0 + ( L - 1.0 ) / ( 1.0 + ( L - 1.0 ) * uKnee );
     sky *= Lc / max( L, 1e-4 );
   }
+#endif
 
   // --- solar disc with limb darkening + glow ---------------------------------------------
   float ang = acos( clamp( cosTheta, -1.0, 1.0 ) );
@@ -365,10 +409,22 @@ void main() {
 
   sky *= uExposure;
 
+#ifndef ENV_PASS
+  // Chroma push *before* the curve. ACES desaturates as it compresses, and a Preetham sky
+  // only carries a 1:3:7 channel ratio to begin with; pushing here (rather than in the
+  // grade, which would drag the whole frame with it) is what turns a pale cyan wash into
+  // the deep Israeli-summer blue the reference frames have.
+  {
+    float sl = dot( sky, vec3( 0.2126, 0.7152, 0.0722 ) );
+    sky = max( mix( vec3( sl ), sky, uSkySat ), 0.0 );
+  }
+  // Same curve, same exposure knob, same order as every lit surface in the scene.
+  sky = katACES( sky * uToneExposure / 0.6 );
+#endif
+
   gl_FragColor = vec4( max( sky, 0.0 ), 1.0 );
 
 #ifndef ENV_PASS
-  #include <tonemapping_fragment>
   #include <colorspace_fragment>
 #endif
 }`;
@@ -388,10 +444,19 @@ export const TIME_PRESETS = {
 const DEFAULTS = {
   lat: 32.5636, lon: 35.0208, tz: 3, dayOfYear: 196,   // mid-July, Israel summer time
   hour: 17.15,
-  turbidity: 2.7, rayleigh: 2.9, mie: 0.0022, mieG: 0.72,
-  coverage: 0.45, cloudScale: 0.22, cloudOpacity: 1.0, cirrus: 0.055,
+  // A dry Israeli summer sky is genuinely clean: low turbidity, high Rayleigh. The old
+  // 2.7/2.9 pair plus an un-tone-mapped dome put the whole sky above display white.
+  turbidity: 2.05, rayleigh: 3.5, mie: 0.0019, mieG: 0.72,
+  // Fair-weather cumulus: lower coverage threshold = more deck. `cloudField` peaks near
+  // 1.4, so 0.375 gives scattered-to-broken cloud rather than the odd wisp.
+  coverage: 0.375, cloudScale: 0.22, cloudOpacity: 1.0, cirrus: 0.05,
   cloudSeed: 20250815, cloudSpeed: 0.0022,
-  exposure: 0.34,
+  // Pre-tonemap radiance scale for the dome. Read together with `uToneExposure`: the dome
+  // now goes through the same ACES curve as everything else, so this sets where the zenith
+  // sits on that curve. 0.23 lands the zenith around RGB 122,176,219 before the grade,
+  // which the LUT's saturation push turns into a proper Mediterranean blue.
+  exposure: 0.215,
+  skySaturation: 1.36,
 };
 
 /**
@@ -405,6 +470,20 @@ const DEFAULTS = {
 export function createSky(engine, world, opts = {}) {
   const o = { ...DEFAULTS, ...opts };
 
+  // ---- global exposure -------------------------------------------------------------------
+  // The renderer's ACES curve is the only stage that can still *shape* a highlight; once a
+  // pixel has clipped there, no amount of grading in the composer brings it back. So the
+  // image's exposure belongs to the atmosphere module, next to the light levels it has to
+  // balance against. Review round 1 measured 7–11% clipped pixels and a mean luminance of
+  // 178 on driftCorner at 0.72; 0.71 with half the ambient fill puts the sunlit limestone back under the shoulder and
+  // is what lets the sky keep a gradient at all. An explicit `?exposure=` always wins.
+  {
+    const q = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null;
+    if (!(q && q.has('exposure')) && opts.toneExposure !== false) {
+      engine.renderer.toneMappingExposure = opts.toneExposure ?? 0.71;
+    }
+  }
+
   const cloudTex = makeCloudTexture(opts.cloudRes ?? 768, o.cloudSeed);
 
   const uniforms = {
@@ -417,9 +496,12 @@ export function createSky(engine, world, opts = {}) {
     uAureole:     { value: new THREE.Color(1.14, 0.98, 0.78) },
     uGroundHaze:  { value: new THREE.Color(0.34, 0.30, 0.25) },
     uEnvGround:   { value: new THREE.Color(0.30, 0.22, 0.15) },
-    uHorizonHaze: { value: 0.30 },
-    uHazeTint:    { value: new THREE.Color(0.72, 0.74, 0.76) },
+    uHorizonHaze: { value: 0.15 },
+    uHazeTint:    { value: new THREE.Color(1.03, 1.0, 0.95) },   // unit-luminance dust hue
+    uHazeGain:    { value: 1.0 },
+    uSkySat:      { value: o.skySaturation },
     uExposure:    { value: o.exposure },
+    uToneExposure:{ value: engine.renderer.toneMappingExposure || 1 },
     uCloudTex:    { value: cloudTex },
     uCoverage:    { value: o.coverage },
     uCloudScale:  { value: o.cloudScale },
@@ -505,25 +587,37 @@ export function createSky(engine, world, opts = {}) {
       _warm.b * lerp(1, phys[2], w),
       THREE.LinearSRGBColorSpace);
     const up = clamp(Math.sin(Math.max(elev, 0) * D2R), 0, 1);
-    palette.sunIntensity = (opts.sunIntensity ?? 4.9) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
+    palette.sunIntensity = (opts.sunIntensity ?? 5.2) * lerp(0.55, 1.0, smoothstep(0, 30, elev)) * lerp(0.85, 1, up);
 
     // Sky colours straight out of the same scattering model the dome renders.
+    //
+    // Two different spaces come out of this block and mixing them up is what bleached the
+    // distance in review round 1:
+    //
+    //  * `rad*`  — pre-exposure linear radiance, the units the dome shader works in. The
+    //    in-dome uniforms (`uGroundHaze`, `uEnvGround`, cloud colours) must be given these.
+    //  * `palette.horizon/zenith/hazeSun` — **display-referred sRGB**, because three runs
+    //    `fog_fragment` *after* `tonemapping_fragment` and `colorspace_fragment`, so the
+    //    aerial-perspective mix in lighting.js happens on an already-encoded pixel. These
+    //    used to be raw exposed radiance, which for the horizon was 1.4–1.75 — well over
+    //    white. Every hill past ~300 m was therefore being mixed toward a colour brighter
+    //    than paper, which is exactly the "far ridge dissolves into the sky" finding.
     const ex = uniforms.uExposure.value;
-    const knee = uniforms.uKnee.value;
-    const expose = a => {
-      const v = a.map(x => x * ex);
-      const L = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
-      if (L <= 1) return v;
-      const k = (1 + (L - 1) / (1 + (L - 1) * knee)) / L;
-      return v.map(x => x * k);
+    const toneEx = uniforms.uToneExposure.value || 1;
+    const skySat = uniforms.uSkySat.value;
+    const display = a => {
+      const L = 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+      const sat = a.map(x => Math.max(L + (x - L) * skySat, 0));
+      return acesFilmic(sat.map(x => x * ex), toneEx).map(linToSrgb);
     };
-    const zen = expose(skyRadiance(_d.set(0, 1, 0), state.sunDir, p));
+    const radZen = skyRadiance(_d.set(0, 1, 0), state.sunDir, p);
     // Airlight away from the sun is the dim end of the range; the shader interpolates
     // toward `hazeSun` as the view swings back into the beam.
     const side = sunDirection(3, (state.azimuth + 155) % 360, _d);
-    const hor = expose(skyRadiance(side, state.sunDir, p));
+    const radHor = skyRadiance(side, state.sunDir, p);
     const towardSun = sunDirection(5, state.azimuth, _d);
-    const hsun = expose(skyRadiance(towardSun, state.sunDir, p));
+    const radSun = skyRadiance(towardSun, state.sunDir, p);
+    const zen = display(radZen), hor = display(radHor), hsun = display(radSun);
 
     const clampCol = (c, arr, boost = 1) => c.setRGB(
       clamp(arr[0] * boost, 0, 4), clamp(arr[1] * boost, 0, 4), clamp(arr[2] * boost, 0, 4),
@@ -531,23 +625,40 @@ export function createSky(engine, world, opts = {}) {
 
     clampCol(palette.zenith, zen, 1.0);
     clampCol(palette.horizon, hor, 1.0);
-    clampCol(palette.hazeSun, hsun, 1.05);
+    clampCol(palette.hazeSun, hsun, 1.02);
     // Dust over the Menashe plateau: desaturate the horizon toward its own luminance and
     // warm it slightly, without adding energy (that is what washed the frame out before).
     {
       const hl = 0.2126 * palette.horizon.r + 0.7152 * palette.horizon.g + 0.0722 * palette.horizon.b;
-      _dust.setRGB(hl * 1.06, hl * 1.0, hl * 0.90, THREE.LinearSRGBColorSpace);
-      palette.horizon.lerp(_dust, 0.40);
+      _dust.setRGB(hl * 1.05, hl * 1.0, hl * 0.92, THREE.LinearSRGBColorSpace);
+      palette.horizon.lerp(_dust, 0.30);
     }
-    uniforms.uHazeTint.value.copy(palette.horizon).multiplyScalar(1.05);
-    uniforms.uGroundHaze.value.copy(palette.horizon).lerp(new THREE.Color(0.42, 0.34, 0.25), 0.20);
+    // The in-dome haze tint is a *hue*, normalised to unit luminance (see the shader).
+    {
+      const hueL = Math.max(0.2126 * radHor[0] + 0.7152 * radHor[1] + 0.0722 * radHor[2], 1e-5);
+      uniforms.uHazeTint.value.setRGB(
+        lerp(radHor[0] / hueL, 1.02, 0.6),
+        lerp(radHor[1] / hueL, 1.00, 0.6),
+        lerp(radHor[2] / hueL, 0.97, 0.6),
+        THREE.LinearSRGBColorSpace);
+    }
+    // Below the skyline the dome shows dusty ground, in the dome's own radiance units.
+    uniforms.uGroundHaze.value.setRGB(radHor[0], radHor[1], radHor[2], THREE.LinearSRGBColorSpace)
+      .multiplyScalar(0.62)
+      .lerp(new THREE.Color(0.42, 0.34, 0.25).multiplyScalar(1 / Math.max(ex, 1e-3)), 0.30);
 
-    // Ambient: sky dome above, warm terra-rossa / dry-stubble bounce below.
-    palette.skyAmbient.copy(palette.zenith).lerp(palette.horizon, 0.35);
+    // Ambient: sky dome above, warm terra-rossa / dry-stubble bounce below. Hue comes from
+    // the raw radiance so the fill light keeps the sky's real blue, not its encoded pastel.
+    palette.skyAmbient.setRGB(radZen[0], radZen[1], radZen[2], THREE.LinearSRGBColorSpace)
+      .lerp(new THREE.Color().setRGB(radHor[0], radHor[1], radHor[2], THREE.LinearSRGBColorSpace), 0.35);
     const skyLum = 0.2126 * palette.skyAmbient.r + 0.7152 * palette.skyAmbient.g + 0.0722 * palette.skyAmbient.b;
     palette.skyAmbient.multiplyScalar(1 / Math.max(skyLum, 1e-3));
     palette.groundAmbient.setRGB(0.42, 0.30, 0.20, THREE.LinearSRGBColorSpace);
-    palette.hemiIntensity = (opts.hemiIntensity ?? 0.16) * lerp(0.55, 1, smoothstep(-2, 18, elev));
+    // Ambient fill is the single biggest reason review round 1 had no readable shadows: with
+    // the old numbers the shaded side of a kart still received about half the light of the
+    // sunlit side, so a cast shadow was worth only a fifth of a stop. Mario Kart's shadows
+    // are dark. Fill is now roughly 40% of what it was, and the sun makes up the difference.
+    palette.hemiIntensity = (opts.hemiIntensity ?? 0.125) * lerp(0.55, 1, smoothstep(-2, 18, elev));
 
     // Radiance of the sunlit terra-rossa / dry-stubble ground, in the dome's pre-exposure
     // units, used as the lower hemisphere of the environment map.
@@ -556,23 +667,32 @@ export function createSky(engine, world, opts = {}) {
 
     palette.bounceColor.setRGB(0.55, 0.34, 0.22, THREE.LinearSRGBColorSpace)
       .lerp(palette.sunColor, 0.25);
-    palette.bounceIntensity = (opts.bounceIntensity ?? 0.22) * lerp(0.3, 1, smoothstep(0, 25, elev));
+    palette.bounceIntensity = (opts.bounceIntensity ?? 0.16) * lerp(0.3, 1, smoothstep(0, 25, elev));
 
-    palette.hazeDensity = opts.hazeDensity ?? 0.00105;
+    // Aerial perspective now mixes toward a *correct* display colour, so it no longer has to
+    // be weak to avoid bleaching — but 1.5 km of course does not need a kilometre of murk
+    // either. This lands the far ridge visibly behind the near hills instead of erasing it.
+    palette.hazeDensity = opts.hazeDensity ?? 0.00072;
     palette.hazeSunAmount = 0.55 + 0.30 * smoothstep(30, 4, elev);
 
     // Cloud lighting tracks the sun so the deck never looks pasted on. Values are given in
-    // pre-exposure radiance (the dome multiplies by uExposure at the end), so a sunlit top
-    // lands well above 1.0 after tonemapping — cumulus must read as white, not putty.
+    // pre-exposure radiance; `gain` converts an *exposed* target back into those units, so
+    // the numbers below read directly as positions on the ACES curve. A sunlit top at 1.15
+    // exposed lands around RGB 236 — bright white with the shading still legible — while
+    // the old 3.3 put every cumulus at a flat clipped 255 with no form at all.
     const gain = 1 / Math.max(ex, 1e-3);
     uniforms.uCloudLit.value.copy(palette.sunColor)
-      .lerp(new THREE.Color(1, 1, 1), 0.70)
-      .multiplyScalar(gain * lerp(1.7, 3.3, smoothstep(2, 30, elev)));
-    uniforms.uCloudDark.value.copy(palette.zenith).lerp(palette.horizon, 0.40)
-      .multiplyScalar(gain * 0.34)
-      .lerp(palette.sunColor.clone().multiplyScalar(gain * 0.26), 0.14 + 0.25 * smoothstep(20, 0, elev));
+      .lerp(new THREE.Color(1, 1, 1), 0.72)
+      .multiplyScalar(gain * lerp(0.80, 1.15, smoothstep(2, 30, elev)));
+    uniforms.uCloudDark.value.setRGB(radZen[0], radZen[1], radZen[2], THREE.LinearSRGBColorSpace);
+    {
+      const dl = Math.max(0.2126 * radZen[0] + 0.7152 * radZen[1] + 0.0722 * radZen[2], 1e-5);
+      uniforms.uCloudDark.value.multiplyScalar(1 / dl)          // hue only
+        .multiplyScalar(gain * lerp(0.24, 0.34, smoothstep(2, 30, elev)))
+        .lerp(palette.sunColor.clone().multiplyScalar(gain * 0.22), 0.14 + 0.25 * smoothstep(20, 0, elev));
+    }
     uniforms.uShine.value = lerp(0.35, 0.8, smoothstep(25, 3, elev));
-    uniforms.uHorizonHaze.value = 0.26 + 0.22 * smoothstep(25, 3, elev);
+    uniforms.uHorizonHaze.value = 0.13 + 0.20 * smoothstep(22, 2, elev);
   }
 
   /** @param {number|string} h local decimal hour, or a key of TIME_PRESETS. */
@@ -650,6 +770,14 @@ export function createSky(engine, world, opts = {}) {
     update(dt) {
       drift.x += o.cloudSpeed * dt;
       drift.y += o.cloudSpeed * 0.35 * dt;
+      // The dome tone-maps itself (see SKY_FRAG), so it has to track the renderer's exposure
+      // if anything else changes it at runtime — otherwise the sky and the ground drift apart.
+      const te = engine.renderer.toneMappingExposure || 1;
+      if (Math.abs(te - uniforms.uToneExposure.value) > 1e-4) {
+        uniforms.uToneExposure.value = te;
+        computePalette();
+        lighting.refresh(false);
+      }
     },
   };
   engine.add({ update: dt => api.update(dt) });
