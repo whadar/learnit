@@ -20,7 +20,7 @@
  * when a value actually changed.
  */
 import { clamp, lerp, damp } from '../core/mathx.js';
-import { createMinimap } from './minimap.js';
+import { createMinimap, RIVAL_TINTS } from './minimap.js';
 
 /* =============================================================== formatting */
 
@@ -717,34 +717,74 @@ function ensureStyle(doc) {
   doc.head.appendChild(st);
 }
 
-/** A 236-unit arc gauge with tick marks and a chunky needle. */
+/* ------------------------------------------------------------- speedometer */
+/*
+ * One semicircular dial, drawn entirely inside its own viewBox so nothing escapes the widget
+ * and nothing is clipped by the frame edge. Geometry is derived from a single pivot, so the
+ * ticks, the arc and the marker can never disagree the way a hand-typed arc path did.
+ *
+ * There is no needle: the value rides the arc as a chunky knob. A needle pivoted at the dial
+ * centre would sweep straight through the digits at every speed - the knob keeps the readout
+ * permanently clear. The plate's drop shadow is a second copy of the PLATE path only, never a
+ * CSS filter on the whole SVG (that duplicated every tick as a ghost below the dial).
+ */
+export const DIAL_X = 100, DIAL_Y = 106;      // pivot, in viewBox units
+export const GAUGE_A0 = -84, GAUGE_A1 = 84;   // sweep, degrees from straight up
+const GAUGE_R = 78;
+export const GAUGE_LEN = GAUGE_R * (GAUGE_A1 - GAUGE_A0) * Math.PI / 180;
+
+const polar = (deg, r) => {
+  const a = deg * Math.PI / 180;
+  return [DIAL_X + Math.sin(a) * r, DIAL_Y - Math.cos(a) * r];
+};
+
 function speedoSVG() {
   const ticks = [];
   for (let i = 0; i <= 10; i++) {
-    const a = lerp(-118, 118, i / 10) * Math.PI / 180;
+    const deg = lerp(GAUGE_A0, GAUGE_A1, i / 10);
     const major = i % 5 === 0;
-    const r0 = major ? 54 : 60, r1 = 69;
-    ticks.push(`<line x1="${(100 + Math.sin(a) * r0).toFixed(1)}" y1="${(92 - Math.cos(a) * r0).toFixed(1)}"`
-      + ` x2="${(100 + Math.sin(a) * r1).toFixed(1)}" y2="${(92 - Math.cos(a) * r1).toFixed(1)}"`
-      + ` stroke="#5B5039" stroke-width="${major ? 3.6 : 2}" stroke-linecap="round" opacity="${major ? 0.95 : 0.55}"/>`);
+    const [x0, y0] = polar(deg, major ? 86.5 : 88.5);
+    const [x1, y1] = polar(deg, 93);
+    ticks.push(`<line x1="${x0.toFixed(2)}" y1="${y0.toFixed(2)}" x2="${x1.toFixed(2)}" y2="${y1.toFixed(2)}"`
+      + ` stroke="#5B5039" stroke-width="${major ? 3.4 : 2.2}" stroke-linecap="round" opacity="${major ? 0.9 : 0.5}"/>`);
   }
-  return `<svg viewBox="0 0 200 116" preserveAspectRatio="xMidYMax meet">
+  const [ax, ay] = polar(GAUGE_A0, GAUGE_R);
+  const [bx, by] = polar(GAUGE_A1, GAUGE_R);
+  const arc = `M ${ax.toFixed(2)} ${ay.toFixed(2)} A ${GAUGE_R} ${GAUGE_R} 0 0 1 ${bx.toFixed(2)} ${by.toFixed(2)}`;
+  const plate = `M ${DIAL_X - 96} ${DIAL_Y} A 96 96 0 0 1 ${DIAL_X + 96} ${DIAL_Y} Z`;
+  return `<svg viewBox="0 0 200 120" preserveAspectRatio="xMidYMax meet">
     <defs>
       <linearGradient id="krPlate" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#FFFCF0"/><stop offset="1" stop-color="#EBDCBB"/></linearGradient>
       <linearGradient id="krGauge" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0" stop-color="#9CC85F"/><stop offset=".55" stop-color="#E9B84A"/><stop offset="1" stop-color="#D8452A"/></linearGradient>
+        <stop offset="0" stop-color="#8FBE52"/><stop offset=".5" stop-color="#E9B84A"/><stop offset="1" stop-color="#D8452A"/></linearGradient>
     </defs>
-    <path d="M6 112 A 94 94 0 0 1 194 112 Z" fill="url(#krPlate)" stroke="#241F16" stroke-width="6" stroke-linejoin="round"/>
-    <path d="M 33.3 25.0 A 78 78 0 0 1 166.7 25.0" fill="none" stroke="rgba(60,52,36,.20)" stroke-width="11" stroke-linecap="round"/>
-    <path data-gauge d="M 33.3 25.0 A 78 78 0 0 1 166.7 25.0" fill="none" stroke="url(#krGauge)" stroke-width="11"
-      stroke-linecap="round" stroke-dasharray="236" stroke-dashoffset="236"/>
+    <path d="${plate}" fill="rgba(0,0,0,.34)" transform="translate(0 6)"/>
+    <path d="${plate}" fill="url(#krPlate)" stroke="#241F16" stroke-width="6" stroke-linejoin="round"/>
+    <path d="${plate}" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="2.4" transform="translate(0 -2.6)"
+      clip-path="none" opacity=".55"/>
+    <path d="${arc}" fill="none" stroke="rgba(60,52,36,.17)" stroke-width="13" stroke-linecap="round"/>
+    <path data-gauge d="${arc}" fill="none" stroke="url(#krGauge)" stroke-width="13" stroke-linecap="round"
+      stroke-dasharray="${GAUGE_LEN.toFixed(2)}" stroke-dashoffset="${GAUGE_LEN.toFixed(2)}"/>
     ${ticks.join('')}
-    <g data-needle transform="rotate(-118 100 92)">
-      <path d="M100 24 L104.4 90 L95.6 90 Z" fill="#C9552F" stroke="#241F16" stroke-width="3.2" stroke-linejoin="round"/>
+    <text class="val" data-el="kmh" x="${DIAL_X}" y="88" text-anchor="middle" font-size="42">0</text>
+    <text class="unit" x="${DIAL_X}" y="101" text-anchor="middle" font-size="10.5">KM/H</text>
+    <g data-knob transform="rotate(${GAUGE_A0} ${DIAL_X} ${DIAL_Y})">
+      <circle cx="${DIAL_X}" cy="${DIAL_Y - GAUGE_R}" r="9.6" fill="#FFF8E7" stroke="#241F16" stroke-width="3.4"/>
+      <circle data-knobdot cx="${DIAL_X}" cy="${DIAL_Y - GAUGE_R}" r="4.4" fill="#C9552F"/>
     </g>
-    <circle cx="100" cy="92" r="9" fill="#FFF8E7" stroke="#241F16" stroke-width="4.6"/>
   </svg>`;
+}
+
+/* -------------------------------------------------------- standings livery */
+
+/** A stable kart colour per driver name, so the board agrees with itself between frames. */
+export function liveryFor(row) {
+  if (row && row.color != null) return hexColor(row.color);
+  const n = String((row && row.name) || '');
+  let h = 2166136261;
+  for (let i = 0; i < n.length; i++) { h ^= n.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return RIVAL_TINTS[(h >>> 0) % RIVAL_TINTS.length];
 }
 
 function stubHUD() {

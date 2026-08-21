@@ -189,7 +189,11 @@ export function buildTrack(world, opts = {}) {
     rawBlend: 0.20,       // how much of the raw drape to keep, so the hill still reads
     maxBank: 0.185,       // radians (~10.6 deg)
     jump: true,
-    grid: 12,
+    // Kat Racing runs an EIGHT-kart field (src/main.js), and trackMesh paints one numbered
+    // box per published slot. Publishing twelve painted '9'..'12' boxes in front of an
+    // eight-kart grid — which is what the grid camera was looking at — is simply wrong.
+    // race.js extends the grid backwards itself if a larger field is ever requested.
+    grid: 8,
   }, opts);
 
   ctrlCount = CONTROL.length;
