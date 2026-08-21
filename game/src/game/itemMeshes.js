@@ -227,9 +227,9 @@ const stripeFeather = () => tex('feather-stripe', 128, (c, S) => {
 /** Gold-on-clear Israeli motif for the item box faces: pomegranate, citrus, olive branch. */
 const boxMotif = () => tex('box-motif', 256, (c, S) => {
   c.clearRect(0, 0, S, S);
-  const gold = '#ffd979';
-  c.strokeStyle = gold; c.fillStyle = gold; c.lineWidth = 7; c.lineJoin = 'round';
-  const cx = S / 2, cy = S * 0.56, R = S * 0.24;
+  const gold = '#fff0c0';
+  c.strokeStyle = gold; c.fillStyle = gold; c.lineWidth = 12; c.lineJoin = 'round';
+  const cx = S / 2, cy = S * 0.56, R = S * 0.30;
   // pomegranate body
   c.beginPath(); c.arc(cx, cy, R, 0, TAU); c.stroke();
   // crown
@@ -326,7 +326,10 @@ function leaf(len = 0.20, w = 0.11, color = 0x3f7a35) {
   s.quadraticCurveTo(-w, len * 0.42, 0, 0);
   const g = new THREE.ExtrudeGeometry(s, { depth: 0.012, bevelEnabled: false, curveSegments: 6 });
   g.translate(0, 0, -0.006);
-  return mesh(g, std('leaf' + color, { color, roughness: 0.55, side: THREE.DoubleSide }));
+  return mesh(g, std('leaf' + color, {
+    color, roughness: 0.44, side: THREE.DoubleSide,
+    emissive: new THREE.Color(color).multiplyScalar(0.22), emissiveIntensity: 1,
+  }));
 }
 
 /** Sabra — prickly pear: green-to-blush oval, crown, and a coat of pale spines. */
@@ -375,19 +378,33 @@ export function makeSabra() {
   return g;
 }
 
-/** Jaffa orange — dimpled peel, stalk and leaf. */
+/**
+ * Jaffa orange — waxed, dimpled peel with a clearcoat highlight and a warm rim shell.
+ * The rim is a back-faced additive sphere a hair larger than the fruit: it fringes the
+ * silhouette in orange light, which is the only thing that separates an orange projectile
+ * from sunlit sand at 30 m (review R1 — "three matte spheres, no rim light").
+ */
 export function makeJaffa(scale = 1) {
   const g = new THREE.Group(); g.name = 'item:jaffa';
-  g.add(mesh(new THREE.SphereGeometry(0.28, 20, 16), std('jaffa-skin', {
-    color: 0xef8b1f, roughness: 0.54, bumpMap: citrusPeel(), bumpScale: 0.42,
-    emissive: 0x50210a, emissiveIntensity: 0.35,
+  g.add(mesh(new THREE.SphereGeometry(0.28, 22, 18), phys('jaffa-skin', {
+    color: 0xff8a10, roughness: 0.38, metalness: 0.0,
+    clearcoat: 0.85, clearcoatRoughness: 0.22,
+    bumpMap: citrusPeel(), bumpScale: 0.75,
+    emissive: 0xc24a05, emissiveIntensity: 0.42,
+    envMapIntensity: 1.6,
   })));
+  const rim = mesh(new THREE.SphereGeometry(0.28, 20, 14), mat('jaffa-rim', () => new THREE.MeshBasicMaterial({
+    color: 0xff9f2e, transparent: true, opacity: 0.42, side: THREE.BackSide,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  })), { scale: 1.13, shadow: false });
+  rim.renderOrder = 2;
+  g.add(rim);
   g.add(mesh(new THREE.CylinderGeometry(0.022, 0.03, 0.07, 8),
-    std('jaffa-stem', { color: 0x6b5230, roughness: 0.85 }), { pos: [0, 0.29, 0] }));
-  const lf = leaf(0.22, 0.12);
+    std('jaffa-stem', { color: 0x7d6135, roughness: 0.8 }), { pos: [0, 0.29, 0] }));
+  const lf = leaf(0.22, 0.12, 0x58a63f);
   lf.position.set(0.02, 0.30, 0.01); lf.rotation.set(-1.15, 0.4, 0.25);
   g.add(lf);
-  const lf2 = leaf(0.17, 0.09, 0x4e8c3d);
+  const lf2 = leaf(0.17, 0.09, 0x6cbb4c);
   lf2.position.set(-0.03, 0.29, -0.02); lf2.rotation.set(-1.3, 2.4, -0.3);
   g.add(lf2);
   g.scale.setScalar(scale);
@@ -397,10 +414,11 @@ export function makeJaffa(scale = 1) {
 
 export function makeJaffaTriple() {
   const g = new THREE.Group(); g.name = 'item:jaffa3';
+  // one flat ring at one scale: three fruit at three heights read as clutter, not an orbit
   for (let i = 0; i < 3; i++) {
     const o = makeJaffa(0.72);
     const a = i / 3 * TAU;
-    o.position.set(Math.cos(a) * 0.26, (i === 2 ? 0.22 : -0.04), Math.sin(a) * 0.26);
+    o.position.set(Math.cos(a) * 0.30, 0, Math.sin(a) * 0.30);
     g.add(o);
   }
   g.userData = { id: 'jaffa3', radius: 0.5, spin: [0, 2.0, 0] };
@@ -938,25 +956,28 @@ export function createItemBoxMesh(opts = {}) {
   g.name = 'itembox';
 
   // One material set for every box on the course: 12 boxes cost 12 x 6 draws, not 12 x 22.
+  // items.js drives `emissiveIntensity` every frame (0.30 +/- 0.10), so the glow has to live
+  // in the emissive COLOUR, not the intensity: a hot cyan-white emissive at that intensity is
+  // what turns the box from a pale glass cube into a lantern against the sky (review R1).
   const shellMat = mat('box-shell', () => new THREE.MeshPhysicalMaterial({
-    color: 0xbfe8ff, map: iridescentSheen(), roughness: 0.05, metalness: 0.0,
-    transparent: true, opacity: 0.60, side: THREE.DoubleSide,
-    iridescence: 1.0, iridescenceIOR: 1.9, iridescenceThicknessRange: [140, 640],
-    clearcoat: 1.0, clearcoatRoughness: 0.04, envMapIntensity: 1.6,
-    emissive: 0x1d4b74, emissiveIntensity: 0.30, depthWrite: false,
+    color: 0xa8ecff, map: iridescentSheen(), roughness: 0.04, metalness: 0.0,
+    transparent: true, opacity: 0.74, side: THREE.DoubleSide,
+    iridescence: 1.0, iridescenceIOR: 2.2, iridescenceThicknessRange: [140, 640],
+    clearcoat: 1.0, clearcoatRoughness: 0.03, envMapIntensity: 2.4,
+    emissive: 0x63d8ff, emissiveIntensity: 0.30, depthWrite: false,
   }));
   const shell = mesh(mat('box-shell-geo', () => roundedBoxGeometry(size, 0.20, 4)), shellMat, { shadow: false });
   g.add(shell);
 
   const innerMat = mat('box-inner', () => new THREE.MeshBasicMaterial({
-    color: 0xffcf7a, transparent: true, opacity: 0.08, blending: THREE.AdditiveBlending, depthWrite: false,
+    color: 0xffd48a, transparent: true, opacity: 0.30, blending: THREE.AdditiveBlending, depthWrite: false,
   }));
   g.add(mesh(mat('box-inner-geo', () => roundedBoxGeometry(size * 0.80, 0.24, 3)), innerMat, { shadow: false }));
 
   // gold edge frame + corner studs, merged into a single draw
-  const gold = std('box-gold', { color: 0xf3cb6c, roughness: 0.20, metalness: 0.92, emissive: 0x5a4408, emissiveIntensity: 0.7 });
+  const gold = std('box-gold', { color: 0xffd97a, roughness: 0.16, metalness: 0.95, emissive: 0xa07a10, emissiveIntensity: 1.0, envMapIntensity: 2.0 });
   const frameGeo = mat('box-frame-geo', () => {
-    const t = size * 0.080, h = size * 0.5 - t * 0.5;
+    const t = size * 0.105, h = size * 0.5 - t * 0.5;
     const bar = new THREE.BoxGeometry(size - t * 1.5, t, t);
     const stud = new THREE.SphereGeometry(t * 0.92, 8, 6);
     const parts = [], m4 = new THREE.Matrix4(), e = new THREE.Euler();
@@ -976,7 +997,7 @@ export function createItemBoxMesh(opts = {}) {
   // etched pomegranate motif on all six faces, one draw
   const motifMat = mat('box-motif-mat', () => new THREE.MeshBasicMaterial({
     map: boxMotif(), transparent: true, opacity: 1.0, depthWrite: false,
-    color: 0xd8891f, side: THREE.DoubleSide,
+    color: 0xffb43a, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
   }));
   const motifGeo = mat('box-motif-geo', () => {
     const plane = new THREE.PlaneGeometry(size * 0.62, size * 0.62);
@@ -994,15 +1015,15 @@ export function createItemBoxMesh(opts = {}) {
   // glowing seed in the middle
   const core = mesh(mat('box-core-geo', () => new THREE.OctahedronGeometry(size * 0.13, 0)),
     mat('box-core', () => new THREE.MeshBasicMaterial({
-      color: 0xffc860, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false,
+      color: 0xffd684, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
     })), { shadow: false });
   g.add(core);
 
   const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowSprite(), color: 0xffc978, transparent: true, opacity: 0.24,
+    map: glowSprite(), color: 0xffd08a, transparent: true, opacity: 0.24,
     blending: THREE.AdditiveBlending, depthWrite: false,
   }));
-  halo.scale.setScalar(size * 1.9);
+  halo.scale.setScalar(size * 2.7);
   g.add(halo);
 
   g.userData = { shell, shellMat, core, halo, innerMat, motifMat, size };

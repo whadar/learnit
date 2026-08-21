@@ -7,6 +7,12 @@
  * Every element is a plate with a dark outline and a soft drop shadow so it stays legible over
  * a bright sunlit village.
  *
+ * Two rules the layout depends on:
+ *   - every widget is inset far enough from its corner that its stroke, shadow and glyph
+ *     overshoot stay inside the frame;
+ *   - nothing that carries a value (the speed digits, the place numeral) is ever crossed by
+ *     another moving element.
+ *
  *   import { createHUD } from './ui/hud.js';
  *   const hud = createHUD({ mount: container, track, world, field: 12 });
  *   hud.update(dt, {
@@ -137,7 +143,7 @@ const CSS = `
 .kr-hud .kr-tl{position:absolute;left:2.2cqmin;top:2.2cqmin;display:flex;gap:1.4cqmin;align-items:flex-start}
 .kr-hud .kr-tr{position:absolute;right:2.2cqmin;top:2.2cqmin;display:flex;flex-direction:column;align-items:flex-end;gap:1.4cqmin}
 .kr-hud .kr-bl{position:absolute;left:2.6cqmin;bottom:3.4cqmin;display:flex;flex-direction:column;align-items:flex-start;gap:1.2cqmin}
-.kr-hud .kr-br{position:absolute;right:2.6cqmin;bottom:2.8cqmin;display:flex;flex-direction:column;align-items:flex-end;gap:1.1cqmin}
+.kr-hud .kr-br{position:absolute;right:2.6cqmin;bottom:1.6cqmin;display:flex;flex-direction:column;align-items:flex-end;gap:1.1cqmin}
 .kr-hud .kr-mid{position:absolute;inset:0;display:grid;place-items:center}
 
 /* ---- item slot ---- */
@@ -149,11 +155,12 @@ const CSS = `
   box-shadow:inset 0 2px 5px rgba(255,255,255,.95),inset 0 -7px 13px rgba(120,100,70,.24)}
 .kr-hud .kr-slot .kr-itemart{position:relative;width:74%;height:74%;display:block;
   filter:drop-shadow(0 3px 3px rgba(0,0,0,.38))}
-.kr-hud .kr-slot > div{position:relative;width:100%;height:100%;display:grid;place-items:center}
-.kr-hud .kr-slot.empty{background:linear-gradient(180deg,rgba(247,241,226,.80),rgba(224,210,182,.78))}
+.kr-hud .kr-slot > div:not(.kr-count){position:relative;width:100%;height:100%;display:grid;place-items:center}
+.kr-hud .kr-slot.empty{background:linear-gradient(180deg,rgba(246,239,222,.86),rgba(219,204,175,.84));
+  transform:scale(.93)}
 .kr-hud .kr-slot.empty .kr-itemart{display:none}
-.kr-hud .kr-slot.empty::after{content:'';position:absolute;inset:24%;border-radius:26%;
-  border:.42cqmin dashed rgba(96,82,56,.42)}
+.kr-hud .kr-slot.empty::before{background:radial-gradient(circle at 50% 30%,rgba(206,192,164,.85),rgba(160,143,111,.72));
+  box-shadow:inset 0 3px 7px rgba(84,68,44,.42),inset 0 -3px 0 rgba(255,255,255,.35)}
 .kr-hud .kr-slot.spin{animation:kr-slotspin .42s linear infinite}
 .kr-hud .kr-slot.got{animation:kr-got .5s var(--pop)}
 @keyframes kr-slotspin{0%,100%{transform:rotate(-2deg) scale(1)}50%{transform:rotate(2deg) scale(1.04)}}
@@ -197,6 +204,7 @@ const CSS = `
 .kr-hud .kr-clock .k{font-size:1.8cqmin;letter-spacing:.16em;opacity:.7;text-transform:uppercase}
 .kr-hud .kr-clock .v{font-size:3.0cqmin;line-height:1.05;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .kr-hud .kr-clock .v.big{font-size:3.8cqmin;color:var(--wheat)}
+.kr-hud .kr-clock .v.none{opacity:.45;letter-spacing:.1em}
 .kr-hud .kr-split{font-size:2.1cqmin;letter-spacing:.02em;padding:.1cqmin .9cqmin;border-radius:999px;
   background:rgba(255,255,255,.10);opacity:0;transition:opacity .25s var(--ease)}
 .kr-hud .kr-split.on{opacity:1}
@@ -204,7 +212,7 @@ const CSS = `
 .kr-hud .kr-split.down{background:rgba(99,200,160,.34);color:#CCF7E6}
 
 /* ---- position badge ---- */
-/* NOTE: every [data-p] override below must use `background-image`, never the `background`
+/* NOTE: every [data-p] override below must use background-image, never the background
    shorthand - the shorthand resets background-clip to border-box and the gradient then paints
    as an opaque plate behind the glyphs instead of inside them. */
 .kr-hud .kr-pos{position:relative;display:flex;align-items:flex-start;
@@ -245,13 +253,14 @@ const CSS = `
 /* ---- speedometer ---- */
 /* The dial is one self-contained SVG: no CSS drop-shadow (that duplicated every tick as a
    ghost), no needle over the digits - the value rides the arc as a knob instead. */
-.kr-hud .kr-speedo{position:relative;width:24cqmin;height:14.2cqmin;min-width:170px;min-height:100px}
+.kr-hud .kr-speedo{position:relative;width:24cqmin;height:15.4cqmin;min-width:170px;min-height:109px}
 .kr-hud .kr-speedo svg{position:absolute;inset:0;width:100%;height:100%;overflow:hidden;display:block}
 .kr-hud .kr-speedo text{font-family:inherit;font-weight:700}
 .kr-hud .kr-speedo .val{fill:var(--ink);transition:fill .18s var(--ease)}
 .kr-hud .kr-speedo .unit{fill:#7A6E4C;letter-spacing:.22em}
 .kr-hud .kr-speedo.boost .val{fill:#B34A12}
 .kr-hud .kr-speedo.boost [data-knobdot]{fill:#FF8A2F}
+.kr-hud .kr-speedo [data-knobdot]{transition:fill .18s var(--ease)}
 
 /* ---- mini-turbo charge ---- */
 .kr-hud .kr-mt{display:flex;flex-direction:column;align-items:flex-end;gap:.55cqmin;
@@ -345,13 +354,13 @@ const CSS = `
 .kr-hud.hidden{opacity:0;transition:opacity .25s var(--ease)}
 
 /* ---- cinematic: the pre-race flythrough is a plate, not a gameplay frame ---- */
-.kr-hud .kr-title{position:absolute;left:3.4cqmin;bottom:4.2cqmin;display:flex;flex-direction:column;
+.kr-hud .kr-title{position:absolute;left:5cqmin;bottom:7.5cqmin;display:flex;flex-direction:column;
   align-items:flex-start;gap:.8cqmin;opacity:0;transform:translateY(10px);
   transition:opacity .45s var(--ease),transform .45s var(--ease);pointer-events:none}
 .kr-hud .kr-title .k{padding:.45cqmin 1.5cqmin;border-radius:999px;font-size:1.9cqmin;letter-spacing:.24em;
   text-transform:uppercase;background:var(--plateDark);color:var(--cream);
   box-shadow:0 0 0 2.6px var(--ink),0 3px 0 rgba(0,0,0,.26)}
-.kr-hud .kr-title .t{font-size:6.4cqmin;line-height:1;letter-spacing:-.01em;
+.kr-hud .kr-title .t{font-size:7.4cqmin;line-height:1;letter-spacing:-.01em;
   -webkit-text-stroke:.62cqmin var(--ink);paint-order:stroke fill;
   background-image:linear-gradient(180deg,#FFFDF4 6%,#FFD24A 52%,#C4862099 96%);
   -webkit-background-clip:text;background-clip:text;color:transparent;
@@ -402,7 +411,7 @@ export function createHUD(opts = {}) {
     <div class="kr-clock">
       <div class="row"><span class="k">Total</span><span class="v big" data-el="total">0${QUOTE}00${DQUOTE}000</span></div>
       <div class="row"><span class="k">Lap</span><span class="v" data-el="laptime">0${QUOTE}00${DQUOTE}000</span><span class="kr-split" data-el="split"></span></div>
-      <div class="row"><span class="k">Best</span><span class="v" data-el="best">--${QUOTE}--${DQUOTE}---</span></div>
+      <div class="row"><span class="k">Best</span><span class="v none" data-el="best">&mdash;</span></div>
     </div>
   </div>
 
@@ -457,17 +466,18 @@ export function createHUD(opts = {}) {
 
   /* ----------------------------------------------------------------- state */
   const prev = {
-    place: 0, field: -1, lap: 0, laps: -1, item: ' ', count: -1, coins: -1, kmh: -1,
+    place: 0, field: -1, lap: 0, laps: -1, item: '\u0000', count: -1, coins: -1, kmh: -1, cine: null,
     phase: '', wrong: null, tier: -1, drift: null, spinning: null, shield: null,
     total: '', laptime: '', best: '', split: '', banner: '', rocket: '', strip: '',
     name: '', final: null,
   };
-  let speedShown = 0, needleShown = 0, mtShown = 0;
+  let speedShown = 0, gaugeShown = 0, mtShown = 0;
   let flash = 0, lines = 0, hurt = 0, pulse = 0;
   let lastLapNumber = 0, refLap = Infinity, splitHold = 0, splitText = '', splitCls = '';
   let count3Shown = null;
   const knob = el.speedo.querySelector('[data-knob]');
   const gaugeFill = el.speedo.querySelector('[data-gauge]');
+  const gaugeGloss = el.speedo.querySelector('[data-gauge2]');
   el.kmh = el.speedo.querySelector('[data-el="kmh"]');
   el.title.style.display = O.trackName ? '' : 'none';
   el.titlename.textContent = O.trackName || 'Circuit';
@@ -481,6 +491,13 @@ export function createHUD(opts = {}) {
 
     const phase = s.phase || 'racing';
     if (phase !== prev.phase) { root.dataset.phase = phase; prev.phase = phase; }
+
+    /* ---- cinematic plate ----
+       A flythrough is a plate, not a gameplay frame: the whole gameplay HUD and the input
+       prompt step aside for a course title card. Driven by `s.cinematic` when the caller sets
+       it, otherwise inferred from the race phase or from the camera rig being in 'intro'. */
+    const cine = s.cinematic != null ? !!s.cinematic : (phase === 'intro' || cameraCinematic());
+    if (cine !== prev.cine) { root.classList.toggle('cine', cine); prev.cine = cine; }
 
     /* ---- position ---- */
     const place = ordinalNumber(s.place);
@@ -515,8 +532,13 @@ export function createHUD(opts = {}) {
     if (total !== prev.total) { el.total.textContent = total; prev.total = total; }
     const lapT = fmtTime(s.lapTime);
     if (lapT !== prev.laptime) { el.laptime.textContent = lapT; prev.laptime = lapT; }
-    const best = fmtTime(s.bestLap);
-    if (best !== prev.best) { el.best.textContent = best; prev.best = best; }
+    // an unset best lap is an empty state, not a row of placeholder dashes
+    const best = Number.isFinite(s.bestLap) && s.bestLap >= 0 ? fmtTime(s.bestLap) : null;
+    if (best !== prev.best) {
+      el.best.textContent = best || '—';
+      el.best.classList.toggle('none', !best);
+      prev.best = best;
+    }
 
     if (Number.isFinite(s.lastLap) && (s.lapCount == null ? lap : s.lapCount) !== lastLapNumber) {
       lastLapNumber = s.lapCount == null ? lap : s.lapCount;
@@ -581,10 +603,11 @@ export function createHUD(opts = {}) {
     const shown = Math.round(speedShown);
     if (shown !== prev.kmh) { el.kmh.textContent = shown; prev.kmh = shown; }
     const top = s.topSpeedKmh || O.topSpeedKmh;
-    needleShown = damp(needleShown, clamp(speedShown / top, 0, 1.06), 16, dt);
-    const gt = clamp(needleShown, 0, 1);
+    gaugeShown = damp(gaugeShown, clamp(speedShown / top, 0, 1.06), 16, dt);
+    const gt = clamp(gaugeShown, 0, 1);
     if (knob) knob.setAttribute('transform', `rotate(${lerp(GAUGE_A0, GAUGE_A1, gt).toFixed(2)} ${DIAL_X} ${DIAL_Y})`);
     if (gaugeFill) gaugeFill.setAttribute('stroke-dashoffset', (GAUGE_LEN * (1 - gt)).toFixed(2));
+    if (gaugeGloss) gaugeGloss.setAttribute('stroke-dashoffset', (GAUGE_LEN * (1 - gt)).toFixed(2));
     const boosting = !!(s.boost && (s.boost === true || s.boost.time > 0));
     el.speedo.classList.toggle('boost', boosting);
 
@@ -671,7 +694,7 @@ export function createHUD(opts = {}) {
     lines = Math.max(0, lines - dt * 2.0);
     hurt = Math.max(0, hurt - dt * 1.4);
     el.flash.style.opacity = (flash * 0.9).toFixed(3);
-    el.lines.style.opacity = (lines * clamp(needleShown - 0.3, 0, 1) * 1.2).toFixed(3);
+    el.lines.style.opacity = (lines * clamp(gaugeShown - 0.3, 0, 1) * 1.2).toFixed(3);
     el.hurt.style.opacity = (hurt * 0.85).toFixed(3);
 
     /* ---- minimap ---- */
@@ -693,6 +716,7 @@ export function createHUD(opts = {}) {
     setMinimapMode(m) { if (map) map.setMode(m); return api; },
     toggleMinimapMode() { return map ? map.toggleMode() : null; },
     show(v = true) { root.classList.toggle('hidden', !v); return api; },
+    setCinematic(v = true) { root.classList.toggle('cine', !!v); prev.cine = !!v; return api; },
     hide() { return api.show(false); },
     flashBoost(a = 1) { flash = Math.max(flash, a); lines = Math.max(lines, a); return api; },
     shakeHit(a = 1) { hurt = Math.max(hurt, a); return api; },
@@ -703,6 +727,19 @@ export function createHUD(opts = {}) {
 }
 
 /* ------------------------------------------------------------------ helpers */
+
+/**
+ * The pre-race flythrough runs with the race still in 'countdown', so the phase alone cannot
+ * tell us the camera is on a cinematic rail. Read the rig's mode when it is reachable; this is
+ * a read-only, fully guarded peek and the HUD behaves exactly as before without it.
+ */
+function cameraCinematic() {
+  try {
+    const g = typeof window !== 'undefined' ? window.__game : null;
+    const m = g && g.systems && g.systems.camera && g.systems.camera.mode;
+    return m === 'intro';
+  } catch (e) { return false; }
+}
 
 function escapeHTML(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -730,7 +767,7 @@ function ensureStyle(doc) {
  */
 export const DIAL_X = 100, DIAL_Y = 106;      // pivot, in viewBox units
 export const GAUGE_A0 = -84, GAUGE_A1 = 84;   // sweep, degrees from straight up
-const GAUGE_R = 78;
+const GAUGE_R = 74;
 export const GAUGE_LEN = GAUGE_R * (GAUGE_A1 - GAUGE_A0) * Math.PI / 180;
 
 const polar = (deg, r) => {
@@ -743,8 +780,8 @@ function speedoSVG() {
   for (let i = 0; i <= 10; i++) {
     const deg = lerp(GAUGE_A0, GAUGE_A1, i / 10);
     const major = i % 5 === 0;
-    const [x0, y0] = polar(deg, major ? 86.5 : 88.5);
-    const [x1, y1] = polar(deg, 93);
+    const [x0, y0] = polar(deg, major ? 84 : 86.5);
+    const [x1, y1] = polar(deg, 92.5);
     ticks.push(`<line x1="${x0.toFixed(2)}" y1="${y0.toFixed(2)}" x2="${x1.toFixed(2)}" y2="${y1.toFixed(2)}"`
       + ` stroke="#5B5039" stroke-width="${major ? 3.4 : 2.2}" stroke-linecap="round" opacity="${major ? 0.9 : 0.5}"/>`);
   }
@@ -752,26 +789,33 @@ function speedoSVG() {
   const [bx, by] = polar(GAUGE_A1, GAUGE_R);
   const arc = `M ${ax.toFixed(2)} ${ay.toFixed(2)} A ${GAUGE_R} ${GAUGE_R} 0 0 1 ${bx.toFixed(2)} ${by.toFixed(2)}`;
   const plate = `M ${DIAL_X - 96} ${DIAL_Y} A 96 96 0 0 1 ${DIAL_X + 96} ${DIAL_Y} Z`;
-  return `<svg viewBox="0 0 200 120" preserveAspectRatio="xMidYMax meet">
+  return `<svg viewBox="0 0 200 128" preserveAspectRatio="xMidYMax meet">
     <defs>
+      <filter id="krDrop" x="-25%" y="-25%" width="150%" height="170%">
+        <feDropShadow dx="0" dy="6" stdDeviation="4.5" flood-color="#000" flood-opacity=".45"/>
+      </filter>
       <linearGradient id="krPlate" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#FFFCF0"/><stop offset="1" stop-color="#EBDCBB"/></linearGradient>
       <linearGradient id="krGauge" x1="0" y1="0" x2="1" y2="0">
         <stop offset="0" stop-color="#8FBE52"/><stop offset=".5" stop-color="#E9B84A"/><stop offset="1" stop-color="#D8452A"/></linearGradient>
     </defs>
-    <path d="${plate}" fill="rgba(0,0,0,.34)" transform="translate(0 6)"/>
-    <path d="${plate}" fill="url(#krPlate)" stroke="#241F16" stroke-width="6" stroke-linejoin="round"/>
-    <path d="${plate}" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="2.4" transform="translate(0 -2.6)"
-      clip-path="none" opacity=".55"/>
-    <path d="${arc}" fill="none" stroke="rgba(60,52,36,.17)" stroke-width="13" stroke-linecap="round"/>
-    <path data-gauge d="${arc}" fill="none" stroke="url(#krGauge)" stroke-width="13" stroke-linecap="round"
+    <path d="${plate}" fill="url(#krPlate)" stroke="#241F16" stroke-width="6" stroke-linejoin="round"
+      filter="url(#krDrop)"/>
+    <path d="${arc}" fill="none" stroke="#241F16" stroke-width="15" stroke-linecap="round" opacity=".94"/>
+    <path d="${arc}" fill="none" stroke="#9C9179" stroke-width="10.4" stroke-linecap="round"/>
+    <path data-gauge d="${arc}" fill="none" stroke="url(#krGauge)" stroke-width="10.4" stroke-linecap="round"
       stroke-dasharray="${GAUGE_LEN.toFixed(2)}" stroke-dashoffset="${GAUGE_LEN.toFixed(2)}"/>
+    <path data-gauge2 d="${arc}" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="2.8" stroke-linecap="round"
+      transform="translate(0 -2.6)" stroke-dasharray="${GAUGE_LEN.toFixed(2)}" stroke-dashoffset="${GAUGE_LEN.toFixed(2)}"/>
     ${ticks.join('')}
-    <text class="val" data-el="kmh" x="${DIAL_X}" y="88" text-anchor="middle" font-size="42">0</text>
+    <text class="val" data-el="kmh" x="${DIAL_X}" y="88" text-anchor="middle" font-size="40">0</text>
     <text class="unit" x="${DIAL_X}" y="101" text-anchor="middle" font-size="10.5">KM/H</text>
     <g data-knob transform="rotate(${GAUGE_A0} ${DIAL_X} ${DIAL_Y})">
-      <circle cx="${DIAL_X}" cy="${DIAL_Y - GAUGE_R}" r="9.6" fill="#FFF8E7" stroke="#241F16" stroke-width="3.4"/>
-      <circle data-knobdot cx="${DIAL_X}" cy="${DIAL_Y - GAUGE_R}" r="4.4" fill="#C9552F"/>
+      <path d="M ${DIAL_X} ${DIAL_Y - GAUGE_R - 9.5} L ${DIAL_X + 6.6} ${DIAL_Y - GAUGE_R + 1}
+               L ${DIAL_X} ${DIAL_Y - GAUGE_R + 9.5} L ${DIAL_X - 6.6} ${DIAL_Y - GAUGE_R + 1} Z"
+        data-knobdot fill="#C9552F" stroke="#241F16" stroke-width="3" stroke-linejoin="round"/>
+      <path d="M ${DIAL_X} ${DIAL_Y - GAUGE_R - 6} L ${DIAL_X + 3} ${DIAL_Y - GAUGE_R} L ${DIAL_X} ${DIAL_Y - GAUGE_R + 2} Z"
+        fill="rgba(255,255,255,.6)"/>
     </g>
   </svg>`;
 }

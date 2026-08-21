@@ -250,22 +250,48 @@ function buildFlagTexture() {
   return { tex: texFrom(c), cols: 4 };
 }
 
-/** Triangular bunting pennants, alternating colours. */
+/**
+ * Triangular bunting pennants.
+ *
+ * Clean primaries, not the muddy maroon/olive/navy the review found: the old palette read
+ * dull because the strings were also lit with a hard-coded normal, so every pennant that did
+ * not happen to face +Z came back near-black. Colours here are authored bright and the mesh
+ * supplies real per-string normals.
+ */
 function buildBuntingTexture() {
-  const { c, x } = makeCanvas(256, 128);
-  x.clearRect(0, 0, 256, 128);
-  const cols = ['#d9432f', '#e9b53a', '#2a6fb0', '#e8e2d2', '#3d8b4a', '#c8642a'];
+  const { c, x } = makeCanvas(384, 128);
+  x.clearRect(0, 0, 384, 128);
+  const cols = ['#ee3b26', '#ffc21f', '#2f8fe0', '#fbf4e4', '#3fb256', '#ff7a1c'];
+  const cw = 384 / 6;
   for (let i = 0; i < 6; i++) {
     x.fillStyle = cols[i];
     x.beginPath();
-    x.moveTo(i * 42.6, 0); x.lineTo((i + 1) * 42.6, 0); x.lineTo(i * 42.6 + 21.3, 118);
+    x.moveTo(i * cw + 1.5, 6); x.lineTo((i + 1) * cw - 1.5, 6); x.lineTo(i * cw + cw * 0.5, 118);
     x.closePath(); x.fill();
+    // a soft crease down the middle of each pennant so the cloth is not one flat fill
+    const sh = x.createLinearGradient(i * cw, 0, (i + 1) * cw, 0);
+    sh.addColorStop(0, 'rgba(0,0,0,0.28)');
+    sh.addColorStop(0.40, 'rgba(255,255,255,0.18)');
+    sh.addColorStop(0.56, 'rgba(255,255,255,0.08)');
+    sh.addColorStop(1, 'rgba(0,0,0,0.32)');
+    x.save();
+    x.beginPath();
+    x.moveTo(i * cw + 1.5, 6); x.lineTo((i + 1) * cw - 1.5, 6); x.lineTo(i * cw + cw * 0.5, 118);
+    x.closePath(); x.clip();
+    x.fillStyle = sh; x.fillRect(i * cw, 0, cw, 128);
+    x.restore();
   }
-  x.fillStyle = '#4a4238'; x.fillRect(0, 0, 256, 6);
+  x.fillStyle = '#3b332a'; x.fillRect(0, 0, 384, 7);
   const t = texFrom(c, { repeat: true });
   t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.ClampToEdgeWrapping;
   return t;
 }
+
+/** Clean primaries for the crowd's hand flags — they are the brightest specks in the stands. */
+const CROWD_FLAGS = [
+  [0.90, 0.20, 0.13], [1.00, 0.74, 0.10], [0.16, 0.50, 0.84],
+  [0.22, 0.68, 0.32], [0.94, 0.92, 0.86], [0.94, 0.45, 0.10],
+];
 
 /* ============================================================ primitives ==== */
 
@@ -362,7 +388,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       for (let i = 0; i <= n; i++) {
         if (i < n && need[k][i]) {
           const sm = at(i * step), hw = sm.width * 0.5;
-          const p = side(sm, sgn * (hw + 1.35));
+          const p = side(sm, sgn * (hw + 1.85));
           run.push({ x: p.x, y: Math.max(p.y, world.heightAt(p.x, p.z) - 0.2), z: p.z,
             nx: sm.normal.x, nz: sm.normal.z, s: sm.s });
         } else flush();
@@ -387,7 +413,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       for (let d = -spread; d <= spread; d += 2.0) {
         const sm = at(c.s + d);
         const hw = sm.width * 0.5;
-        const p = side(sm, sgn * (hw + 1.5 + (Math.abs(d) > spread * 0.7 ? 0.5 : 0)));
+        const p = side(sm, sgn * (hw + 1.95 + (Math.abs(d) > spread * 0.7 ? 0.5 : 0)));
         const gy = world.heightAt(p.x, p.z);
         const tint = ((d / 2) | 0) % 2 ? [0.62, 0.10, 0.09] : [0.80, 0.78, 0.74];
         tyreStack(p.x, Math.min(p.y, gy + 0.1), p.z, 3, tint);
@@ -419,7 +445,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       if (Math.abs(c.angle) < 1.0 || Math.abs(c.angle) > 1.5) continue;
       const sgn = c.angle > 0 ? 1 : -1;                    // inside kerb of the corner
       const sm = at(c.s), hw = sm.width * 0.5;
-      baleRow(c.s - 7, c.s + 7, sgn * (hw + 1.9), 5);
+      baleRow(c.s - 7, c.s + 7, sgn * (hw + 2.3), 5);
     }
   }
   if (o.crates) {
@@ -431,7 +457,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       for (let r2 = 0; r2 < 4; r2++) {
         const sm = at(spots[si] + r2 * 0.72);
         const hw = sm.width * 0.5;
-        const p = side(sm, sgn * (hw + 2.1));
+        const p = side(sm, sgn * (hw + 2.45));
         const gy = world.heightAt(p.x, p.z);
         const ry = Math.atan2(sm.tangent.x, sm.tangent.z);
         for (let h = 0; h < 3; h++) {
@@ -456,7 +482,9 @@ export function createFurniture(engine, world, track, opts = {}) {
    * `ry` is the yaw of the front face; both faces read the right way round regardless.
    */
   function panel(x, y, z, ry, w, h, rowIdx, rx = 0, opts = {}) {
-    const t = opts.thickness === undefined ? 0.035 : opts.thickness;
+    // Boards are real objects: 12 cm of frame behind the artwork, so every sign shows an
+    // edge and a cast shadow instead of reading as a sticker floating on a pole.
+    const t = opts.thickness === undefined ? 0.062 : opts.thickness;
     const face = back => {
       const g = new THREE.PlaneGeometry(w, h);
       if (back) g.rotateY(Math.PI);
@@ -470,7 +498,7 @@ export function createFurniture(engine, world, track, opts = {}) {
     if (opts.oneSided !== true) face(true);
     if (opts.frame !== false) {
       metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
-        trs(x, y, z, ry, w * 1.02, h * 1.06, t * 1.7, rx), opts.frameCol || [0.14, 0.15, 0.17]);
+        trs(x, y, z, ry, w * 1.025, h * 1.08, t * 1.9, rx), opts.frameCol || [0.14, 0.15, 0.17]);
     }
   }
   /** Vertical feather flag on a pole; `col` picks one of four designs. */
@@ -572,13 +600,18 @@ export function createFurniture(engine, world, track, opts = {}) {
         // light capping rail along the top of the hoarding
         metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
           trs(p.x, g2 + 1.70, p.z, rw, 9.0, 0.10, 0.20), [0.78, 0.78, 0.79]);
-        // a few cats leaning over the hoarding to watch
-        for (let k = 0; k < 3; k++) {
-          if (R() > 0.7) continue;
-          const d = (k - 1) * 2.6 + (R() - 0.5);
-          const bx = p.x + s3.tangent.x * d + s3.normal.x * sgn * 0.8;
-          const bz = p.z + s3.tangent.z * d + s3.normal.z * sgn * 0.8;
-          catAt(fur, bx, Math.min(g2, world.heightAt(bx, bz)) + 0.75, bz, rw + Math.PI, 1.0, R);
+        // A packed row of cats leaning over the hoarding. They stand on a real timber viewing
+        // step behind the board — the old version parked them in mid-air with nothing under
+        // them, which is what made the crowd read as floating pawns.
+        const stepX = p.x + s3.normal.x * sgn * 0.95, stepZ = p.z + s3.normal.z * sgn * 0.95;
+        const stepY = Math.min(g2, world.heightAt(stepX, stepZ));
+        wood.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+          trs(stepX, stepY + 0.36, stepZ, rw, 8.6, 0.72, 0.9), [0.54, 0.45, 0.33]);
+        for (let k = 0; k < 10; k++) {
+          if (R() > 0.86) continue;
+          const d = (k - 4.5) * 0.90 + (R() - 0.5) * 0.22;
+          const bx = stepX + s3.tangent.x * d, bz = stepZ + s3.tangent.z * d;
+          catAt(fur, bx, stepY + 0.72, bz, rw + Math.PI + (R() - 0.5) * 0.4, 0.92 + R() * 0.22, R);
         }
       }
     }
@@ -590,7 +623,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       const s = track.startS + f * len, sm = at(s), hw = sm.width * 0.5;
       const ry = Math.atan2(sm.tangent.x, sm.tangent.z);
       for (const sgn of [-1, 1]) {
-        const p = side(sm, sgn * (hw + 1.4));
+        const p = side(sm, sgn * (hw + 1.9));
         const gy = Math.min(p.y, world.heightAt(p.x, p.z));
         metal.add(geo('archleg', () => new THREE.CylinderGeometry(0.34, 0.42, 6.0, 8)),
           trs(p.x, gy + 3.0, p.z, ry), [0.78, 0.30, 0.24]);
@@ -763,25 +796,36 @@ export function createFurniture(engine, world, track, opts = {}) {
   }
 
   /* ------------------------------------------------------------ bunting --- */
-  let buntingMesh = null;
+  let buntingMat = null;
   if (o.bunting) {
     const tex = buildBuntingTexture();
     const gs = [];
+    // Alternating heights: two strings seen down the straight used to superimpose into one
+    // muddy band. Staggering them by 0.9 m separates them at every camera angle.
     for (let k = 0; k < 6; k++) {
       const s = track.startS - 46 + k * 17;
       const sm = at(s), hw = sm.width * 0.5;
       const a = side(sm, -(hw + 2.6)), b = side(sm, hw + 2.6);
-      const ay = Math.min(a.y, world.heightAt(a.x, a.z)) + 5.4;
-      const by = Math.min(b.y, world.heightAt(b.x, b.z)) + 5.4;
-      const segs = 14, sag = 1.5;
+      const top = 5.3 + (k & 1) * 0.9;
+      const ay = Math.min(a.y, world.heightAt(a.x, a.z)) + top;
+      const by = Math.min(b.y, world.heightAt(b.x, b.z)) + top;
+      const spanLen = Math.hypot(b.x - a.x, b.z - a.z);
+      // real string normal: horizontal, perpendicular to the run (i.e. along the road)
+      const nx = (b.z - a.z) / (spanLen || 1), nz = -(b.x - a.x) / (spanLen || 1);
+      const reps = Math.max(2, Math.round(spanLen / (0.58 * 6)));
+      const segs = 20, sag = 1.35, drop = 0.62;
       const pos = [], uv = [], idx = [], nor = [];
       for (let i = 0; i <= segs; i++) {
         const t = i / segs;
         const x = lerp(a.x, b.x, t), z = lerp(a.z, b.z, t);
         const y = lerp(ay, by, t) - Math.sin(t * Math.PI) * sag;
-        pos.push(x, y, z, x, y - 0.85, z);
-        uv.push(t * 3.2, 1, t * 3.2, 0);
-        nor.push(0, 0.3, 0.95, 0, 0.3, 0.95);
+        // gentle twist along the string so the pennants catch the light differently
+        const tw = Math.sin(t * Math.PI * 3.1 + k) * 0.30;
+        const cy = Math.cos(tw), cs = Math.sin(tw);
+        const n = new THREE.Vector3(nx * cy, cs, nz * cy).normalize();
+        pos.push(x, y, z, x, y - drop, z);
+        uv.push(t * reps, 1, t * reps, 0);
+        nor.push(n.x, n.y, n.z, n.x, n.y, n.z);
       }
       for (let i = 0; i < segs; i++) {
         const q = i * 2;
@@ -802,10 +846,28 @@ export function createFurniture(engine, world, track, opts = {}) {
     }
     const merged = mergeSimple(gs);
     if (merged) {
-      buntingMesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({
-        map: tex, transparent: true, alphaTest: 0.35, side: THREE.DoubleSide, roughness: 0.85, metalness: 0,
-      }));
+      // A touch of self-illumination keeps the primaries clean when a string is backlit, and
+      // a vertex-shader wind term gives the cloth motion instead of dead flat triangles.
+      buntingMat = new THREE.MeshStandardMaterial({
+        map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.30,
+        transparent: true, alphaTest: 0.35, side: THREE.DoubleSide, roughness: 0.88, metalness: 0,
+      });
+      buntingMat.userData.time = { value: 0 };
+      buntingMat.onBeforeCompile = (sh) => {
+        sh.uniforms.uWind = buntingMat.userData.time;
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', '#include <common>\nuniform float uWind;')
+          .replace('#include <begin_vertex>', `#include <begin_vertex>
+{ vec3 wp = (modelMatrix * vec4(transformed, 1.0)).xyz;
+  float hang = 1.0 - uv.y;
+  float w = sin(uWind * 2.3 + wp.x * 0.55 + wp.z * 0.42) * 0.5
+          + sin(uWind * 3.7 + wp.x * 1.30) * 0.22;
+  transformed += normal * w * hang * 0.26;
+  transformed.y -= abs(w) * hang * 0.05; }`);
+      };
+      const buntingMesh = new THREE.Mesh(merged, buntingMat);
       buntingMesh.name = 'furniture:bunting';
+      buntingMesh.frustumCulled = false;
       group.add(buntingMesh);
     }
   }
@@ -831,15 +893,28 @@ export function createFurniture(engine, world, track, opts = {}) {
           trs(cx, gy + h * 0.5, cz, ry, 1.25, h, sp.w), [0.60, 0.53, 0.42]);
         wood.add(geo('bench', () => new THREE.BoxGeometry(1, 1, 1)),
           trs(cx, gy + h + 0.06, cz, ry, 1.15, 0.12, sp.w * 0.97), [0.42, 0.30, 0.20]);
-        // cats in the crowd
-        const nCats = Math.max(2, Math.round(sp.w / 2.6));
+        // Cats in the crowd. The old spacing put one cat every 2.6 m and then skipped a
+        // third of them, which is why the stands photographed as bare benches. A packed
+        // bench is ~0.8 m per spectator, so every row now actually fills up.
+        const nCats = Math.max(3, Math.round(sp.w / 0.95));
         for (let i = 0; i < nCats; i++) {
-          if (R() > 0.72) continue;
-          const t = (i + 0.5) / nCats - 0.5;
-          const ox = -Math.sin(ry + Math.PI / 2) * 0, oz = 0;
-          const tx = cx + sm.tangent.x * t * sp.w, tz = cz + sm.tangent.z * t * sp.w;
-          catAt(fur, tx, gy + h + 0.1, tz, ry + Math.PI, 0.85 + R() * 0.3, R);
-          void ox; void oz;
+          if (R() > 0.90) continue;                       // the odd gap on the bench
+          const t = (i + 0.5) / nCats - 0.5 + (R() - 0.5) * 0.012;
+          const jitter = (R() - 0.5) * 0.30;
+          const tx = cx + sm.tangent.x * t * sp.w + outward.x * jitter;
+          const tz = cz + sm.tangent.z * t * sp.w + outward.z * jitter;
+          const face = ry + Math.PI + (R() - 0.5) * 0.5;
+          catAt(fur, tx, gy + h + 0.1, tz, face, 0.82 + R() * 0.34, R);
+          // one in five is waving a bright pennant on a stick
+          if (R() < 0.20) {
+            const fx = tx - Math.sin(face) * 0.22, fz = tz - Math.cos(face) * 0.22;
+            wood.add(geo('wavestick', () => new THREE.BoxGeometry(0.035, 0.62, 0.035)),
+              trs(fx, gy + h + 0.72, fz, face, 1, 1, 1, 0, (R() - 0.5) * 0.7), [0.52, 0.42, 0.30]);
+            const fc = CROWD_FLAGS[(R() * CROWD_FLAGS.length) | 0];
+            fur.add(geo('waveflag', () => new THREE.BoxGeometry(0.30, 0.22, 0.02)),
+              trs(fx + Math.cos(face) * 0.16, gy + h + 1.02, fz - Math.sin(face) * 0.16,
+                face, 1, 1, 1, 0, (R() - 0.5) * 0.9), fc);
+          }
         }
       }
       // canopy
@@ -873,7 +948,7 @@ export function createFurniture(engine, world, track, opts = {}) {
     // chevron boards on the lip
     const sm = at(j.lipS), hw = sm.width * 0.5;
     for (const sgn of [-1, 1]) {
-      const p = side(sm, sgn * (hw + 1.5));
+      const p = side(sm, sgn * (hw + 1.95));
       const gy = world.heightAt(p.x, p.z);
       panel(p.x, gy + 1.5, p.z, Math.atan2(sm.tangent.x, sm.tangent.z) + Math.PI, 2.2, 0.5, 6);
       metal.add(geo('signpost', () => new THREE.CylinderGeometry(0.07, 0.07, 2.6, 6)), trs(p.x, gy + 0.9, p.z, 0), [0.55, 0.56, 0.58]);
@@ -925,7 +1000,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       map: atlas.tex, vertexColors: true, roughness: 0.72, metalness: 0.0, side: THREE.FrontSide,
     }));
     mesh.name = 'furniture:signs';
-    mesh.castShadow = false; mesh.receiveShadow = o.shadows;
+    mesh.castShadow = o.shadows; mesh.receiveShadow = o.shadows;
     group.add(mesh);
     for (const p of panels) p.g.dispose();
   }
@@ -938,14 +1013,16 @@ export function createFurniture(engine, world, track, opts = {}) {
       map: flagTex.tex, vertexColors: true, roughness: 0.8, metalness: 0.0, side: THREE.FrontSide,
     }));
     mesh.name = 'furniture:flags';
-    mesh.castShadow = false; mesh.receiveShadow = o.shadows;
+    mesh.castShadow = o.shadows; mesh.receiveShadow = o.shadows;
     group.add(mesh);
     for (const p of flagPanels) p.g.dispose();
   }
 
   const api = {
     group,
-    update() {},
+    update(dt, elapsed) {
+      if (buntingMat) buntingMat.userData.time.value = elapsed ?? (buntingMat.userData.time.value + (dt || 0));
+    },
     dispose() { group.traverse(n => n.geometry?.dispose?.()); },
   };
   return api;
@@ -953,19 +1030,43 @@ export function createFurniture(engine, world, track, opts = {}) {
 
 /* ============================================================== props ======= */
 
-/** A very low-poly sitting cat: body, head, ears, tail. Reads at 20 m, costs 90 tris. */
+/**
+ * A very low-poly sitting cat: body, head, ears, muzzle, tail and a bright supporter scarf.
+ *
+ * The scarf and the wider coat range exist because the old five-coat, scarfless version
+ * photographed as a row of identical pale capsules — "chess pawns" in the review. A dab of
+ * saturated colour per spectator is what makes a stand read as a crowd from 40 m.
+ */
 function catAt(b, x, y, z, ry, sc, R) {
-  const coats = [[0.72, 0.62, 0.48], [0.30, 0.28, 0.27], [0.85, 0.82, 0.78], [0.55, 0.36, 0.20], [0.62, 0.60, 0.58]];
-  const c = coats[(R() * coats.length) | 0];
-  const body = geo('catbody', () => new THREE.SphereGeometry(0.24, 6, 5).scale(0.85, 1.15, 0.75));
-  const head = geo('cathead', () => new THREE.SphereGeometry(0.15, 6, 5));
+  const coats = [
+    [0.86, 0.62, 0.34], [0.26, 0.24, 0.24], [0.90, 0.87, 0.82], [0.58, 0.36, 0.19],
+    [0.60, 0.58, 0.57], [0.78, 0.70, 0.55], [0.42, 0.32, 0.26], [0.94, 0.80, 0.55],
+  ];
+  const scarves = [
+    [0.86, 0.16, 0.11], [0.98, 0.68, 0.08], [0.12, 0.42, 0.78],
+    [0.16, 0.60, 0.27], [0.92, 0.90, 0.84], [0.90, 0.38, 0.07], [0.55, 0.22, 0.66],
+  ];
+  const base = coats[(R() * coats.length) | 0];
+  const shade = 0.86 + R() * 0.30;
+  const c = [clamp(base[0] * shade, 0, 1), clamp(base[1] * shade, 0, 1), clamp(base[2] * shade, 0, 1)];
+  const dark = [c[0] * 0.62, c[1] * 0.60, c[2] * 0.58];
+  const sk = scarves[(R() * scarves.length) | 0];
+  // Kept deliberately cheap — there are several hundred of these in one merged mesh.
+  const body = geo('catbody', () => new THREE.SphereGeometry(0.24, 5, 4).scale(0.85, 1.15, 0.75));
+  const head = geo('cathead', () => new THREE.SphereGeometry(0.15, 5, 4));
   const ear = geo('catear', () => new THREE.ConeGeometry(0.06, 0.13, 4));
   const tail = geo('cattail', () => new THREE.CylinderGeometry(0.03, 0.045, 0.42, 4));
+  const muzzle = geo('catmuzzle', () => new THREE.SphereGeometry(0.075, 4, 3).scale(1, 0.8, 0.9));
+  const scarf = geo('catscarf', () => new THREE.CylinderGeometry(0.155, 0.155, 0.085, 6));
+  const fx = -Math.sin(ry), fz = -Math.cos(ry);
   b.add(body, trs(x, y + 0.26 * sc, z, ry, sc, sc, sc), c);
-  b.add(head, trs(x - Math.sin(ry) * 0.05 * sc, y + 0.52 * sc, z - Math.cos(ry) * 0.05 * sc, ry, sc, sc, sc), c);
+  b.add(scarf, trs(x, y + 0.415 * sc, z, ry, sc, sc, sc), sk);
+  b.add(head, trs(x + fx * 0.05 * sc, y + 0.52 * sc, z + fz * 0.05 * sc, ry, sc, sc, sc), c);
+  b.add(muzzle, trs(x + fx * 0.16 * sc, y + 0.50 * sc, z + fz * 0.16 * sc, ry, sc, sc, sc),
+    [0.94 * shade, 0.90 * shade, 0.84 * shade]);
   for (const s of [-1, 1])
-    b.add(ear, trs(x + Math.cos(ry) * 0.08 * s * sc, y + 0.63 * sc, z - Math.sin(ry) * 0.08 * s * sc, ry, sc, sc, sc), c);
-  b.add(tail, trs(x + Math.sin(ry) * 0.22 * sc, y + 0.22 * sc, z + Math.cos(ry) * 0.22 * sc, ry, sc, sc, sc, 0.7), c);
+    b.add(ear, trs(x + Math.cos(ry) * 0.08 * s * sc, y + 0.63 * sc, z - Math.sin(ry) * 0.08 * s * sc, ry, sc, sc, sc), dark);
+  b.add(tail, trs(x - fx * 0.22 * sc, y + 0.22 * sc, z - fz * 0.22 * sc, ry, sc, sc, sc, 0.7), dark);
 }
 
 /** Low-poly olive tree: gnarled trunk plus two silvery crowns. */

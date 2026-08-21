@@ -405,18 +405,29 @@ function numberTexture(n, fg = '#1b1b20', bg = '#f4f1e6') {
 }
 
 /* --------------------------------------------------------------- materials */
+/**
+ * Value lift for dark coats. A black cat under ACES in a seat that is also dark reads as a
+ * hole; multiplying the albedo up (Color components may exceed 1 — it is a linear multiplier)
+ * keeps Layla and Shuki black *looking* while giving them enough separation to be seen.
+ */
+function furLift(spec) {
+  const [r, g, b] = hex2rgb(spec.base);
+  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return clamp(1 + (0.46 - lum) * 1.5, 1, 1.85);
+}
 function furMaterial(spec, part, size, extra = {}) {
   const { nrep = [5, 5], ...rest } = extra;
   const map = furTexture(spec, part, size);
   const base = furNormal();
   let nrm = null;
   if (base) { nrm = base.clone(); nrm.needsUpdate = true; nrm.wrapS = nrm.wrapT = THREE.RepeatWrapping; nrm.repeat.set(nrep[0], nrep[1]); }
+  const k = furLift(spec);
   return new THREE.MeshPhysicalMaterial({
-    color: map ? 0xffffff : new THREE.Color(spec.base),
+    color: map ? new THREE.Color(k, k, k) : new THREE.Color(spec.base).multiplyScalar(k),
     map, normalMap: nrm,
     normalScale: new THREE.Vector2(0.5, 0.5),
-    roughness: 0.86, metalness: 0.0,
-    sheen: 1.0, sheenRoughness: 0.42,
+    roughness: 0.80, metalness: 0.0,
+    sheen: 1.0, sheenRoughness: 0.30,
     sheenColor: new THREE.Color(0xfff0dc),
     ...rest,
   });
@@ -447,7 +458,7 @@ function shellMesh(geo, spec, part, texSize, count, gap, rep) {
     if (am) { am.needsUpdate = true; am.wrapS = am.wrapT = THREE.RepeatWrapping; am.repeat.set(rep[0], rep[1]); }
     const m = new THREE.MeshStandardMaterial({
       map, alphaMap: am, alphaTest: 0.10 + t * 0.72,
-      color: new THREE.Color().setScalar(0.93 + 0.13 * t),
+      color: new THREE.Color().setScalar((0.93 + 0.13 * t) * furLift(spec)),
       roughness: 0.95, metalness: 0, side: THREE.FrontSide, depthWrite: true,
     });
     const mesh = new THREE.Mesh(g, m);
@@ -469,6 +480,10 @@ export function createCat(id, opts = {}) {
   const R = rng(spec.seed | 0);
 
   const root = new THREE.Group(); root.name = 'cat:' + spec.id;
+  // Nintendo proportions: the driver has to clear the seat back and the roll hoop or the kart
+  // reads as driverless from the chase camera (review R1 — the grid looked like empty chassis).
+  // Scaling the whole rig also scales the arms, so the IK still reaches the steering rim.
+  root.scale.setScalar(opts.scale ?? 1.26);
   const rig = new THREE.Group(); rig.name = 'rig'; root.add(rig);
 
   /* ---- bones */

@@ -53,10 +53,29 @@ export function kartEnv() {
 
 /* --------------------------------------------------------------- liveries */
 export const LIVERIES = {
-  citrus:  { paint: 0xdda85a, trim: 0xc94a1c, accent: 0x2f6d35, seat: 0x5a3c22, name: 'Citrus Crate' },
-  olive:   { paint: 0x4c6a30, trim: 0xd9a441, accent: 0x2c3a20, seat: 0x3a4426, name: 'Olive Tin' },
-  sabra:   { paint: 0x2f6b48, trim: 0xc7276b, accent: 0x8fbf5a, seat: 0x243d2c, name: 'Sabra' },
-  bauhaus: { paint: 0xe9e2d2, trim: 0x27333c, accent: 0xd8d2c4, seat: 0x2b3540, name: 'Bauhaus TLV' },
+  citrus:  { paint: 0xf2a026, trim: 0xd8401a, accent: 0x3f8f45, seat: 0x6b4526, name: 'Citrus Crate' },
+  olive:   { paint: 0x8bbd33, trim: 0xf0c04a, accent: 0x36502a, seat: 0x44502c, name: 'Olive Tin' },
+  sabra:   { paint: 0x18b07a, trim: 0xe0357c, accent: 0xa8e05f, seat: 0x2c4a38, name: 'Sabra' },
+  bauhaus: { paint: 0xf1ece0, trim: 0x2b3b48, accent: 0xe2dccd, seat: 0x33404c, name: 'Bauhaus TLV' },
+};
+
+/**
+ * Per-racing-number bodywork colour. Eight karts share four liveries, so the livery alone
+ * cannot tell them apart at 40 m; the number is unique per roster entry, so it is what the
+ * paint hue keys off. Every entry is a high-chroma, mid-to-light value that separates from
+ * the sand, the olive canopy and the sky. Unknown numbers fall back to the livery paint.
+ */
+export const NUMBER_PAINT = {
+  1: 0x2ec4d6,   // Shelly  — cyan
+  3: 0xf1ece0,   // Shuki   — Bauhaus cream
+  4: 0xe0357c,   // Tamar   — magenta
+  5: 0xf5901c,   // Kobi    — orange
+  6: 0xf2556e,   // Nofar   — coral
+  7: 0xf3b820,   // Mitzi   — golden yellow
+  8: 0x8bd23a,   // Dror    — lime
+  9: 0x3a74e8,   // Layla   — royal blue
+  12: 0x18b07a,  // Yaffa   — jade
+  22: 0x9a5ae0,  // Boaz    — violet
 };
 
 function cvs(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
@@ -175,18 +194,18 @@ function plateTexture(num) {
 function treadTextures() {
   const W = 128, H = 128, cv = cvs(W, H), c = cv.getContext('2d');
   const hm = cvs(W, H), hc = hm.getContext('2d');
-  c.fillStyle = '#1b1b1e'; c.fillRect(0, 0, W, H);
+  c.fillStyle = '#3e3e46'; c.fillRect(0, 0, W, H);
   hc.fillStyle = '#808080'; hc.fillRect(0, 0, W, H);
   // sidewalls (v 0..0.26 and 0.74..1)
-  c.fillStyle = '#232327'; c.fillRect(0, 0, W, 34); c.fillRect(0, H - 34, W, 34);
+  c.fillStyle = '#4c4c56'; c.fillRect(0, 0, W, 34); c.fillRect(0, H - 34, W, 34);
   hc.fillStyle = '#6a6a6a'; hc.fillRect(0, 0, W, 34); hc.fillRect(0, H - 34, W, 34);
-  c.fillStyle = '#3a3a40'; c.font = 'bold 11px Helvetica, Arial, sans-serif'; c.textAlign = 'center';
+  c.fillStyle = '#b9b5a8'; c.font = 'bold 12px Helvetica, Arial, sans-serif'; c.textAlign = 'center';
   c.fillText('KAT SLICK', W * 0.5, 22); c.fillText('KAT SLICK', W * 0.5, H - 14);
   // tread blocks
   for (let r = 0; r < 4; r++) {
     for (let i = 0; i < 4; i++) {
       const x = i * 32 + (r % 2 ? 8 : 0), y = 36 + r * 14;
-      c.fillStyle = '#2c2c31'; c.fillRect(x + 2, y, 24, 11);
+      c.fillStyle = '#2f2f37'; c.fillRect(x + 2, y, 24, 11);
       hc.fillStyle = '#f0f0f0'; hc.fillRect(x + 2, y, 24, 11);
     }
   }
@@ -277,7 +296,7 @@ function makeWheel(radius, width, M, seg) {
   rim.castShadow = false;
   g.add(rim);
   for (const s of [-1, 1]) {
-    const cap = new THREE.Mesh(xf(new THREE.CylinderGeometry(radius * 0.17, radius * 0.13, width * 0.10, 10), { pos: [s * hw * 0.9, 0, 0], rot: [0, 0, Math.PI / 2] }), M.chrome);
+    const cap = new THREE.Mesh(xf(new THREE.CylinderGeometry(radius * 0.19, radius * 0.14, width * 0.11, 10), { pos: [s * hw * 0.9, 0, 0], rot: [0, 0, Math.PI / 2] }), M.hub || M.chrome);
     g.add(cap);
   }
   return g;
@@ -476,15 +495,39 @@ export function createKart(id, opts = {}) {
   const env = opts.env !== undefined ? opts.env : kartEnv();
   const R = rng((opts.seed | 0) || 1234);
 
+  // Automotive paint: a candy base under a hard clearcoat lobe. `envMapIntensity` above 1
+  // is what puts a moving specular on the panel — without it the body is matte clay, and
+  // eight karts read as one dark blob (review R1). `emissive` at a few percent of the base
+  // hue keeps the shaded side of the body its own colour instead of black.
+  const paintCol = new THREE.Color(NUMBER_PAINT[num] ?? liv.paint);
   const M = {
-    paint: new THREE.MeshPhysicalMaterial({ color: liv.paint, roughness: 0.34, metalness: 0.10, clearcoat: 1.0, clearcoatRoughness: 0.07, envMap: env, envMapIntensity: 0.65 }),
-    trim: new THREE.MeshPhysicalMaterial({ color: liv.trim, roughness: 0.36, metalness: 0.08, clearcoat: 0.9, clearcoatRoughness: 0.10, envMap: env, envMapIntensity: 0.6 }),
-    dark: new THREE.MeshStandardMaterial({ color: 0x25262b, roughness: 0.55, metalness: 0.35, envMap: env, envMapIntensity: 0.5 }),
-    chrome: new THREE.MeshStandardMaterial({ color: 0xb6bdc4, roughness: 0.16, metalness: 1.0, envMap: env, envMapIntensity: 1.0 }),
-    rubber: new THREE.MeshStandardMaterial({ color: 0x35353a, roughness: 0.92, metalness: 0.0 }),
-    rim: new THREE.MeshStandardMaterial({ color: liv.trim, roughness: 0.26, metalness: 0.75, envMap: env, envMapIntensity: 0.8 }),
-    seat: new THREE.MeshPhysicalMaterial({ color: liv.seat, roughness: 0.62, metalness: 0.0, sheen: 0.5, sheenColor: new THREE.Color(0xffffff), envMap: env, envMapIntensity: 0.4 }),
-    lamp: new THREE.MeshPhysicalMaterial({ color: 0xfff3d0, emissive: 0xffe6a8, emissiveIntensity: 0.55, roughness: 0.05, metalness: 0, clearcoat: 1, envMap: env }),
+    paint: new THREE.MeshPhysicalMaterial({
+      color: paintCol, roughness: 0.22, metalness: 0.06,
+      clearcoat: 1.0, clearcoatRoughness: 0.035, envMap: env, envMapIntensity: 1.9,
+      emissive: paintCol.clone().multiplyScalar(0.16), emissiveIntensity: 1.0,
+      specularIntensity: 1.0, specularColor: new THREE.Color(0xffffff),
+    }),
+    trim: new THREE.MeshPhysicalMaterial({
+      color: liv.trim, roughness: 0.26, metalness: 0.06, clearcoat: 1.0, clearcoatRoughness: 0.06,
+      envMap: env, envMapIntensity: 1.6, emissive: new THREE.Color(liv.trim).multiplyScalar(0.14),
+    }),
+    // Floorpan, engine and underbody: a deep tint of the body colour rather than neutral
+    // charcoal, so the parts of the kart that face away from the sun still say "this is the
+    // blue one" instead of dropping to a black mass.
+    dark: new THREE.MeshStandardMaterial({
+      color: paintCol.clone().multiplyScalar(0.30).addScalar(0.10),
+      roughness: 0.40, metalness: 0.45, envMap: env, envMapIntensity: 1.4,
+    }),
+    chrome: new THREE.MeshStandardMaterial({ color: 0xd6dce2, roughness: 0.11, metalness: 1.0, envMap: env, envMapIntensity: 2.0 }),
+    rubber: new THREE.MeshStandardMaterial({ color: 0x54545e, roughness: 0.82, metalness: 0.0, envMap: env, envMapIntensity: 0.6 }),
+    rim: new THREE.MeshStandardMaterial({ color: 0xe6ebef, roughness: 0.18, metalness: 0.95, envMap: env, envMapIntensity: 1.8 }),
+    seat: new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(liv.seat).lerp(new THREE.Color(0xffffff), 0.22),
+      roughness: 0.55, metalness: 0.0, sheen: 1.0, sheenRoughness: 0.35,
+      sheenColor: new THREE.Color(0xffffff), envMap: env, envMapIntensity: 1.0,
+    }),
+    lamp: new THREE.MeshPhysicalMaterial({ color: 0xfff3d0, emissive: 0xffe6a8, emissiveIntensity: 1.1, roughness: 0.05, metalness: 0, clearcoat: 1, envMap: env }),
+    hub: new THREE.MeshStandardMaterial({ color: liv.trim, roughness: 0.24, metalness: 0.6, envMap: env, envMapIntensity: 1.4 }),
     spring: new THREE.MeshStandardMaterial({ color: 0xc8352f, roughness: 0.4, metalness: 0.5, envMap: env }),
     glass: new THREE.MeshPhysicalMaterial({ color: 0x25313d, roughness: 0.05, metalness: 0, clearcoat: 1, transparent: true, opacity: 0.5, envMap: env }),
   };

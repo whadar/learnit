@@ -2,9 +2,10 @@
  * Kat Racing — the minimap.
  *
  * A real top-down plan of the circuit, traced from the track spline (not a picture): tarmac
- * ribbon with a cream casing, the start/finish chequer, item-box pips, and one blip per kart
- * with the player highlighted. The static layers are baked once into an offscreen canvas and
- * blitted each frame, so per-frame cost is a blit plus a dozen small shapes.
+ * ribbon with a cream casing, the start/finish chequer and flag, direction-of-travel chevrons,
+ * item-box diamonds, and one livery-coloured blip per kart with the player as a gold arrow.
+ * The static layers are baked once into an offscreen canvas and blitted each frame, so
+ * per-frame cost is a blit plus a couple of dozen small shapes.
  *
  *   import { createMinimap } from './ui/minimap.js';
  *   const map = createMinimap({ track, world, size: 210, mode: 'heading' });
@@ -216,33 +217,44 @@ export function createMinimap(opts = {}) {
       let ox = x1 - x0, oy = y1 - y0;
       const om = Math.hypot(ox, oy) || 1;
       ox /= om; oy /= om;
-      const off = px * 0.55 + 8;
+      const off = px * 0.55 + 19;
       let fx = mx + ox * off, fy = my + oy * off;
       // keep it on the map even if the line sits near an edge
-      if (fx < 14 || fx > S - 14 || fy < 14 || fy > S - 14) { fx = mx - ox * off; fy = my - oy * off; }
-      startFlag(c, clamp(fx, 12, S - 12), clamp(fy, 12, S - 12));
+      if (fx < 16 || fx > S - 16 || fy < 16 || fy > S - 16) { fx = mx - ox * off; fy = my - oy * off; }
+      flagAt.x = clamp(fx, 14, S - 14); flagAt.y = clamp(fy, 12, S - 12); flagAt.ok = true;
     }
     baked = c2;
   }
 
-  /** Little chequered flag on a pole - the map's "you start here, you finish here". */
+  /** Where the start/finish flag goes; drawn each frame on top so karts never bury it. */
+  const flagAt = { x: 0, y: 0, ok: false };
+
+  /**
+   * Little chequered flag on a pole - the map's "you start here, you finish here".
+   * Kept light (cream body, six big squares) so it reads as a flag and not as a dark blob at
+   * 12 px, and haloed so it separates from the tarmac ribbon underneath.
+   */
   function startFlag(c, x, y) {
+    const W = 12.6, H = 8.4, X = 1.0, Y = -11.2;
     c.save();
     c.translate(x, y);
-    c.lineJoin = 'round';
+    c.lineJoin = 'round'; c.lineCap = 'round';
+    // halo
+    c.fillStyle = 'rgba(255,248,231,.55)';
+    c.beginPath(); c.ellipse(X + W * 0.4, Y + H * 0.5 + 1, W * 0.95, H * 1.5, 0, 0, TAU); c.fill();
     // pole
-    c.strokeStyle = C.ink; c.lineWidth = 2.6; c.lineCap = 'round';
-    c.beginPath(); c.moveTo(0, 7); c.lineTo(0, -9); c.stroke();
+    c.strokeStyle = C.ink; c.lineWidth = 2.8;
+    c.beginPath(); c.moveTo(0, 6.5); c.lineTo(0, Y - 0.6); c.stroke();
     // flag body, cased then chequered
     c.fillStyle = '#FFF8E7';
-    c.strokeStyle = C.ink; c.lineWidth = 2.2;
-    c.beginPath(); c.rect(0.6, -9.4, 11, 7.6); c.fill(); c.stroke();
+    c.strokeStyle = C.ink; c.lineWidth = 2.4;
+    c.beginPath(); c.rect(X, Y, W, H); c.fill(); c.stroke();
     c.save();
-    c.beginPath(); c.rect(0.6, -9.4, 11, 7.6); c.clip();
+    c.beginPath(); c.rect(X, Y, W, H); c.clip();
     c.fillStyle = '#22201A';
-    for (let i = 0; i < 4; i++) for (let j = 0; j < 3; j++) {
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) {
       if ((i + j) % 2) continue;
-      c.fillRect(0.6 + i * 2.75, -9.4 + j * 2.53, 2.75, 2.53);
+      c.fillRect(X + i * (W / 3), Y + j * (H / 2), W / 3, H / 2);
     }
     c.restore();
     c.restore();
@@ -251,12 +263,12 @@ export function createMinimap(opts = {}) {
   /** Arrowheads along the centre-line so the lap direction is never ambiguous. */
   function drawDirectionChevrons(c, px) {
     if (pts.length < 8) return;
-    const n = 5, size = Math.max(2.8, px * 0.42);
+    const n = 6, size = Math.max(4.8, px * 0.72);
     c.save();
     c.lineJoin = 'round'; c.lineCap = 'round';
     for (let k = 0; k < n; k++) {
       const i = Math.round((k + 0.5) / n * pts.length) % pts.length;
-      const a = pts[i], b = pts[(i + 3) % pts.length];
+      const a = pts[i], b = pts[(i + 4) % pts.length];
       proj.to(a.x, a.z, tmp); const ax = tmp.x, ay = tmp.y;
       proj.to(b.x, b.z, tmp); const bx = tmp.x, by = tmp.y;
       const dx = bx - ax, dy = by - ay, m = Math.hypot(dx, dy);
@@ -265,11 +277,13 @@ export function createMinimap(opts = {}) {
       c.translate(ax, ay);
       c.rotate(Math.atan2(dy, dx));
       c.beginPath();
-      c.moveTo(-size * 0.75, -size * 0.85);
-      c.lineTo(size * 0.85, 0);
-      c.lineTo(-size * 0.75, size * 0.85);
-      c.lineWidth = size * 0.7; c.strokeStyle = 'rgba(28,25,18,.75)'; c.stroke();
-      c.lineWidth = size * 0.34; c.strokeStyle = 'rgba(255,248,231,.95)'; c.stroke();
+      c.moveTo(size * 0.95, 0);
+      c.lineTo(-size * 0.62, -size * 0.72);
+      c.lineTo(-size * 0.28, 0);
+      c.lineTo(-size * 0.62, size * 0.72);
+      c.closePath();
+      c.fillStyle = '#FFF8E7'; c.fill();
+      c.lineWidth = 1.5; c.strokeStyle = 'rgba(24,21,15,.9)'; c.stroke();
       c.restore();
     }
     c.restore();
@@ -437,11 +451,13 @@ export function createMinimap(opts = {}) {
       for (const b of data.items) {
         const p = b.pos || b;
         proj.to(p.x, p.z, tmp);
+        // a diamond, not a dot - item boxes must never be mistaken for a kart blip
         c.save();
-        c.globalAlpha = b.active === false ? 0.28 : 1;
-        c.beginPath(); c.arc(tmp.x, tmp.y, 2.9, 0, TAU);
+        c.globalAlpha = b.active === false ? 0.26 : 1;
+        c.translate(tmp.x, tmp.y); c.rotate(Math.PI / 4);
+        c.beginPath(); c.rect(-2.6, -2.6, 5.2, 5.2);
         c.fillStyle = C.item; c.fill();
-        c.lineWidth = 1.1; c.strokeStyle = 'rgba(255,248,231,.9)'; c.stroke();
+        c.lineWidth = 1.4; c.strokeStyle = 'rgba(24,22,16,.85)'; c.stroke();
         c.restore();
       }
     }
@@ -471,6 +487,7 @@ export function createMinimap(opts = {}) {
       // north-up: the arrow carries the kart's heading; heading-up: the map already turned
       arrow(c, x, y, Math.PI - (player.yaw || 0), O.blip * 1.2, C.player);
     }
+    if (flagAt.ok) startFlag(c, flagAt.x, flagAt.y);
     c.restore();
 
     // compass rose (rotates with the map)
@@ -509,7 +526,7 @@ export function createMinimap(opts = {}) {
       O.track = t;
       pts = trackCenterline(t, O.samples);
       proj = buildMinimapProjection(pts, S, O.pad);
-      baked = null;
+      baked = null; flagAt.ok = false;
       return this;
     },
     /** World point -> normalised 0..1 map coordinates (for external overlays). */

@@ -31,15 +31,19 @@ function kerbAtlasTexture(cw = 48, h = 128) {
   const rnd = rng(5150);
   const noise = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) noise[i] = rnd();
+  // Authored to survive a hot sun and ACES. The scene's key light plus the filmic curve lifts
+  // a mid albedo a long way: a 0.9-linear red came back pale salmon and even 0.40 was orange,
+  // so the corner rumble is authored down at ~0.15 to land on a real pillar-box red, and the
+  // whites sit near 0.7 so the rumble top does not clip.
   const cols = [
-    [[0.86, 0.075, 0.055], [0.97, 0.955, 0.915], 0.17],   // corner: red / white
-    [[0.94, 0.925, 0.875], [0.76, 0.735, 0.665], 0.26],   // straight: limestone kerbstone
+    [[0.155, 0.018, 0.014], [0.72, 0.705, 0.665], 0.15],  // corner: red / white
+    [[0.62, 0.605, 0.565], [0.35, 0.335, 0.295], 0.22],   // straight: limestone kerbstone
   ];
   for (let y = 0; y < h; y++) {
     const block = Math.floor(y / (h / 2)) % 2;
     // a dark mortar joint between blocks, so the kerb reads as laid stones up close
     const dy = Math.min(y % (h / 2), (h / 2) - 1 - (y % (h / 2)));
-    const joint = clamp(1 - dy / 2.2, 0, 1);
+    const joint = clamp(1 - dy / 3.4, 0, 1);
     for (let x = 0; x < w; x++) {
       const set = x < cw ? 0 : 1;
       const [a, b, grime] = cols[set];
@@ -50,7 +54,7 @@ function kerbAtlasTexture(cw = 48, h = 128) {
       const dirt = grime * (0.55 + 0.45 * noise[k]) * (0.20 + 0.80 * Math.abs(t * 2 - 1) ** 1.4);
       const scuff = (noise[(k * 7919) % (w * h)] - 0.5) * 0.06;
       const v = i => clamp((col[i] * (1 - dirt) + 0.30 * dirt * [1.0, 0.93, 0.80][i]) + scuff
-        - joint * 0.28 * col[i], 0, 1);
+        - joint * 0.45 * col[i], 0, 1);
       d[k * 4] = Math.round(Math.pow(v(0), 1 / 2.2) * 255);
       d[k * 4 + 1] = Math.round(Math.pow(v(1), 1 / 2.2) * 255);
       d[k * 4 + 2] = Math.round(Math.pow(v(2), 1 / 2.2) * 255);
@@ -107,10 +111,14 @@ function startLineTexture(across = 16, rows = 4, cellPx = 64) {
 }
 
 /**
- * 4 x 4 atlas of numbered starting boxes (positions 1..12 plus spares).
+ * 4 x 4 atlas of numbered starting boxes (the field is eight, so rows 0-1 carry 1..8).
  *
- * Each cell is a worn white outline, a big grid number and a forward chevron. Drawn mirrored
- * in x because the decal UV's u axis runs right-to-left as the driver sees it.
+ * Painted as a CONSTANT-COLOUR, varying-alpha texture: the artwork is drawn as a white mask,
+ * wear is erased out of the alpha channel, and the whole canvas is then flooded with the paint
+ * colour through `source-in`. A conventional coloured-on-transparent atlas mips towards
+ * transparent black, which is why the numbers turned into faint grey dashes at grid distance.
+ *
+ * Drawn mirrored in x because the decal UV's u axis runs right-to-left as the driver sees it.
  */
 function gridBoxTexture(px = 256) {
   const c = document.createElement('canvas'); c.width = c.height = px * 4;
@@ -118,30 +126,40 @@ function gridBoxTexture(px = 256) {
   const font = '"DejaVu Sans","Liberation Sans","FreeSans",sans-serif';
   const rnd = rng(1717);
   ctx.clearRect(0, 0, px * 4, px * 4);
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff';
   for (let k = 0; k < 16; k++) {
     const cx = (k % 4) * px, cy = ((k / 4) | 0) * px;
     ctx.save();
     // mirror in x within this cell so painted text reads correctly on the road
     ctx.translate(cx + px, cy); ctx.scale(-1, 1);
-    const pad = px * 0.085, lw = px * 0.055;
-    ctx.strokeStyle = 'rgba(243,240,229,0.94)'; ctx.lineWidth = lw;
-    ctx.strokeRect(pad, pad, px - pad * 2, px - pad * 2);
+    const pad = px * 0.075, lw = px * 0.085;
+    ctx.lineWidth = lw;
+    ctx.strokeRect(pad + lw * 0.5, pad + lw * 0.5, px - pad * 2 - lw, px - pad * 2 - lw);
     // forward chevron (canvas top = down-track)
-    ctx.fillStyle = 'rgba(243,240,229,0.88)';
     ctx.beginPath();
-    ctx.moveTo(px * 0.5, px * 0.17); ctx.lineTo(px * 0.72, px * 0.36); ctx.lineTo(px * 0.62, px * 0.36);
-    ctx.lineTo(px * 0.5, px * 0.26); ctx.lineTo(px * 0.38, px * 0.36); ctx.lineTo(px * 0.28, px * 0.36);
+    ctx.moveTo(px * 0.5, px * 0.15); ctx.lineTo(px * 0.76, px * 0.38); ctx.lineTo(px * 0.63, px * 0.38);
+    ctx.lineTo(px * 0.5, px * 0.26); ctx.lineTo(px * 0.37, px * 0.38); ctx.lineTo(px * 0.24, px * 0.38);
     ctx.closePath(); ctx.fill();
     // grid number, upright for a driver sitting in the box
-    ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(243,240,229,0.92)';
-    ctx.font = `800 ${Math.round(px * 0.40)}px ${font}`;
-    ctx.fillText(String(k + 1), px * 0.5, px * 0.78);
-    // wear
-    ctx.globalAlpha = 0.35; ctx.fillStyle = 'rgba(30,28,26,1)';
-    for (let i = 0; i < 90; i++) ctx.fillRect(rnd() * px, rnd() * px, 2 + rnd() * 10, 1 + rnd() * 4);
-    ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
+    ctx.font = `800 ${Math.round(px * 0.50)}px ${font}`;
+    ctx.fillText(String(k + 1), px * 0.5, px * 0.86);
     ctx.restore();
   }
+  // scrub the paint away in patches (alpha only — never darken the colour)
+  ctx.save();
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillStyle = 'rgba(0,0,0,0.42)';
+  for (let i = 0; i < 2600; i++) {
+    ctx.fillRect(rnd() * px * 4, rnd() * px * 4, 3 + rnd() * 16, 2 + rnd() * 7);
+  }
+  ctx.restore();
+  // flood the surviving alpha with a single paint colour so every mip level stays this colour
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-in';
+  ctx.fillStyle = '#f6f2e4';
+  ctx.fillRect(0, 0, px * 4, px * 4);
+  ctx.restore();
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
   return t;
@@ -278,9 +296,9 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   const o = Object.assign({
     ds: 2.2,               // longitudinal tessellation
     runoff: 6.5,           // gravel/verge each side
-    kerbWidth: 1.35,
-    kerbRise: 0.20,
-    kerbDrop: 0.34,        // height of the outer face below the kerb top
+    kerbWidth: 1.18,
+    kerbRise: 0.205,
+    kerbDrop: 0.30,        // height of the outer face below the kerb top
     kerbCurv: 0.0055,      // curvature above which a corner earns *red/white* kerbing
     shadows: true,
     itemBoxes: false,      // items.js owns these in the real game
@@ -311,11 +329,14 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   const gravelTex = buildRoadTextures({
     total: NOMW + MARGIN * 2, road: NOMW, vMetres: 19, kind: 'gravel', centre: null, edge: true,
     seed: 883, normalStrength: 1.35, W: 224, H: 1024,
-    base: [0.400, 0.360, 0.292], shoulder: [0.300, 0.268, 0.200],
+    base: [0.288, 0.272, 0.246], shoulder: [0.232, 0.214, 0.178],
     paintCol: [0.90, 0.885, 0.845],
     polish: [{ at: 0, w: 2.5, k: 0.85 }, { at: 3.5, w: 1.05 }],
   });
-  const matTarmac = createRoadMaterial(tarmacTex, { normalScale: 0.95, offsetFactor: -4, offsetUnits: -10 });
+  // Tarmac and gravel strips overlap by a few stations where a sector changes surface. They
+  // used to carry the SAME polygon offset, so the pair z-fought over an 11 m band and the same
+  // stretch of road came back a different colour from shot to shot. Tarmac now always wins.
+  const matTarmac = createRoadMaterial(tarmacTex, { normalScale: 0.95, offsetFactor: -5, offsetUnits: -14 });
   const matGravel = createRoadMaterial(gravelTex, { normalScale: 1.35, offsetFactor: -4, offsetUnits: -10 });
   const vergeTex = vergeTextures();
   const matVerge = createRoadMaterial(vergeTex, { normalScale: 1.15, offsetFactor: -1, offsetUnits: -2 });
@@ -427,12 +448,14 @@ export function createTrackMesh(engine, world, track, opts = {}) {
     const inner = hw + o.kerbWidth - 0.12;
     const fr = [0.0, 0.06, 0.22, 0.55, 1.0];
     const tint = f => {
-      const t = clamp((f - 0.28) / 0.72, 0, 1) ** 1.35;
+      const t = clamp((f - 0.50) / 0.50, 0, 1) ** 1.25;
       return [lerp(1.0, 1.72, t), lerp(1.0, 1.70, t), lerp(1.0, 1.62, t)];
     };
     return fr.map(f => {
       const off = side * (inner + f * R);
-      const up = -o.kerbDrop * 0.72 - f * 0.16;
+      // Sit 5 cm ABOVE the bottom edge of the kerb's drop face, so the face buries into the
+      // verge instead of stopping short of it and leaving a sliver of daylight underneath.
+      const up = (o.kerbRise - o.kerbDrop) + 0.05 - f * 0.20;
       return [off, up, side * (inner + f * R) / 3.2, f < 0.02 ? 0 : f * f * (3 - 2 * f), tint(f)];
     }).concat([[side * (inner + R + 1.6), -1.0, side * (inner + R + 1.6) / 3.2, 1, tint(1.35)]]);
   };
@@ -466,7 +489,7 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   // the straights to red/white through every corner without ever breaking the run.
   const kerbTex = kerbAtlasTexture();
   const matKerb = new THREE.MeshStandardMaterial({
-    map: kerbTex, roughness: 0.62, metalness: 0, side: THREE.DoubleSide,
+    map: kerbTex, roughness: 0.80, metalness: 0, side: THREE.DoubleSide,
   });
 
   const kerbL = new Float32Array(N + 1), kerbR = new Float32Array(N + 1);
@@ -656,8 +679,8 @@ function kerbStrip(samples, side, mask, o, colOf) {
   if (cur.length > 2) runs.push(cur);
   if (!runs.length) return null;
   const geoms = [];
-  //          inner ramp | front chamfer | top in | top out | outer chamfer | drop face
-  const uAcross = [0.02, 0.13, 0.30, 0.78, 0.93, 0.99];
+  //          road lip | front chamfer | top in | top out | outer chamfer | drop face
+  const uAcross = [0.03, 0.10, 0.22, 0.82, 0.94, 0.99];
   for (const run of runs) {
     const M = run.length, L = 6;
     const closed = M === N + 1;         // the whole lap: never taper, the ends meet
@@ -669,8 +692,10 @@ function kerbStrip(samples, side, mask, o, colOf) {
       // taper an isolated kerb in and out; a closed lap stays full height throughout
       const fade = closed ? 1 : clamp(Math.min(r, M - 1 - r) / 4, 0, 1);
       const rise = o.kerbRise * fade, drop = o.kerbDrop * fade;
-      const offs = [hw - 0.26, hw + 0.03, hw + 0.30, hw + kw - 0.18, hw + kw, hw + kw];
-      const ups = [0.004, rise * 0.55, rise, rise * 0.97, rise * 0.66, rise - drop];
+      // A ~45 degree front chamfer over 0.22 m, then a flat rumble top. The first version
+      // spread the rise over 0.56 m, which read as a gentle bank rather than a kerb.
+      const offs = [hw - 0.07, hw + 0.05, hw + 0.16, hw + kw - 0.15, hw + kw, hw + kw];
+      const ups = [0.004, rise * 0.52, rise, rise * 0.97, rise * 0.64, rise - drop];
       const cshift = colOf ? colOf(i) * 0.5 : 0;
       for (let k = 0; k < L; k++) {
         const off = side * offs[k];
