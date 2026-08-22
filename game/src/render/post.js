@@ -291,7 +291,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // 1.0 and the frames only looked saturated because a wrongly-binary boost flag was
     // multiplying it by 1.22 nearly all the time — when that bug went, so did the punch.
     contrast:        opts.contrast ?? 1.0,
-    saturation:      opts.saturation ?? 1.24,
+    saturation:      opts.saturation ?? 1.50,
     lutMix:          opts.lutMix ?? 1.0,
     // Neutral chroma. A saturation control multiplies the chroma a pixel already has, and
     // the wide grey asphalt ribbon that fills half of `villageStreet` has none — which is
@@ -300,7 +300,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // direction instead: cool sky-fill in the shade, warm key where the sun reaches, which
     // is both what really lights a road and the complementary accent the tan-and-green
     // palette was missing. Shaped in the composite; see `uShadeTint` / `uSunTint`.
-    neutral:         opts.neutral ?? 1.40,
+    neutral:         opts.neutral ?? 1.65,
     // The tonal anchor. One black and one white for the whole game, applied after the
     // vignette so nothing downstream can move them.
     black:           opts.black ?? 0.062,
@@ -567,7 +567,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // owns real exposure, so other systems' tuning keeps working. This is only the small
     // brightness kick that comes with a boost.
     cu.uExposure.value = params.exposure * (1 + 0.05 * punch);
-    cu.uSaturation.value = params.saturation * (1 + 0.22 * punch + 0.05 * speedN);
+    // The boost/speed trims are small now that the base sits at 1.50: multiplying an
+    // already-strong grade by another 27% during a mini-turbo tears the liveries.
+    cu.uSaturation.value = params.saturation * (1 + 0.10 * punch + 0.03 * speedN);
     cu.uContrast.value = params.contrast * (1 + 0.10 * punch);
     cu.uLutMix.value = gradeOn ? params.lutMix : 0;
     cu.uLift.value = 0.02 * punch;

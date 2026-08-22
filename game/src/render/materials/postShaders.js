@@ -458,19 +458,15 @@ export function makeCompositeShader() {
         }
         #endif
 
-        // ---- grade ---------------------------------------------------------------------------
-        // Roll the over-range top end into white instead of clamping it. Bloom and additive
-        // VFX both hand this pass values above 1.0; a hard clamp fuses them into one flat
-        // white shape with a hard edge, which is exactly how a boost flame ends up erasing
-        // the kart. Below uShoulder (0.86) this is the identity, so the graded midtones and
-        // shadows every other module tuned come through untouched.
         // ---- auto-key ---------------------------------------------------------------------
         // A shipped racer holds one key across a lap: the player's eye must not re-adapt
-        // between a pine tunnel and an open vista. The probe chain measures the mean luma
-        // of the finished frame and this pulls it back toward uKeyTarget — bounded hard,
-        // so it is a stabiliser rather than a light meter. uKeyStrength 0 disables it,
-        // and an unwritten probe (first frame, or the probe pass off) reads 0 and is
-        // ignored, so the stack always degrades to a fixed exposure.
+        // between a pine tunnel and an open vista. Round-4 review measured mean luma running
+        // 0.318 to 0.466 across the canonical set — the same course at the same hour. The
+        // probe chain (KeyDownShader / KeyReduceShader) measures the mean luma of the frame
+        // this pass produced last time round and this pulls it back toward uKeyTarget,
+        // bounded hard by uKeyRange so it is a stabiliser rather than a light meter.
+        // uKeyStrength 0 disables it, and an unwritten probe (first frame, or the probe pass
+        // off) reads 0 and is ignored, so the stack always degrades to a fixed exposure.
         float keyMeasured = texture2D( tKey, vec2( 0.5 ) ).r;
         float keyGain = 1.0;
         if ( uKeyStrength > 0.001 && keyMeasured > 0.002 ) {
@@ -478,6 +474,12 @@ export function makeCompositeShader() {
                            uKeyRange.x, uKeyRange.y );
         }
 
+        // ---- grade ---------------------------------------------------------------------------
+        // Roll the over-range top end into white instead of clamping it. Bloom and additive
+        // VFX both hand this pass values above 1.0; a hard clamp fuses them into one flat
+        // white shape with a hard edge, which is exactly how a boost flame ends up erasing
+        // the kart. Below uShoulder (0.86) this is the identity, so the graded midtones and
+        // shadows every other module tuned come through untouched.
         vec3 g = clamp( katSoftClip( col * ( uExposure * keyGain ), uShoulder ), 0.0, 1.0 );
 
         #if USE_LUT == 1
@@ -491,21 +493,24 @@ export function makeCompositeShader() {
         // the frame has none. So give the achromatic mass a *direction* — the cool sky-fill
         // that actually lights a shaded road, and the warm key on the parts the sun reaches.
         // Weighted by how neutral the pixel is, so nothing that already carries a hue (the
-        // kerbs, the roofs, the foliage, a livery) is touched, and faded out at the very
-        // bottom of the range so deep shadow does not turn into blue ink.
+        // kerbs, the roofs, the foliage, a livery) is touched.
         //
-        // The luma ramp is deliberately wide (0.30 to 0.85). A narrow one flips between the
-        // cool and the warm tint across the asphalt's own noise and turns a grain pattern
-        // into blue-and-tan speckle.
+        // The shade-to-sun ramp is deliberately wide (0.30 to 0.85). A narrow one flips
+        // between the cool and the warm tint across the asphalt's own grain and turns a noise
+        // pattern into blue-and-tan speckle.
         {
           float nmx = max( g.r, max( g.g, g.b ) );
           float nmn = min( g.r, min( g.g, g.b ) );
           float nchroma = nmx > 1e-4 ? ( nmx - nmn ) / nmx : 0.0;
           float neutral = 1.0 - smoothstep( 0.06, 0.26, nchroma );
           float nl = katLuma( g );
-          float floorFade = smoothstep( 0.02, 0.16, nl );
+          // Scale with the light level. A fixed offset is a *stronger* cast the darker the
+          // pixel is, which turned shadowed asphalt into blue ink at 0.51 chroma while the
+          // sunlit lane next to it barely moved; a cast that scales with luma is both what
+          // a real fill light does and what keeps the shadow end believable.
+          float lit = smoothstep( 0.015, 0.45, nl );
           float key = smoothstep( 0.30, 0.85, nl );
-          g += uNeutral * neutral * floorFade * mix( uShadeTint, uSunTint, key );
+          g += uNeutral * neutral * lit * mix( uShadeTint, uSunTint, key );
         }
 
         float l = katLuma( g );

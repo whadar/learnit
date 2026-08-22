@@ -85,8 +85,8 @@ const FX_TUNE = {
     // stretch is a *multiplier on screen-space velocity*, so raising it and the base size
     // together turned a 0.26 m spark into a 3 m streak and the shower into a firework that
     // bloomed to white over the kart. Short and dense reads as a mini-turbo; long does not.
-    size: [0.28, 0.055], life: [0.18, 0.34], alpha: 1.0, stretch: 0.40,
-    speed: [3.0, 7.0], spread: 0.30, jitter: 0.5, drag: 5.6, grav: -2.4,
+    size: [0.30, 0.10], life: [0.20, 0.36], alpha: 1.0, stretch: 0.40,
+    speed: [3.0, 7.0], spread: 0.30, jitter: 0.5, drag: 5.6, grav: -1.3,
     turb: [0.02, 3.0], spin: 0, fadeIn: 0.02,
   },
   /* the soft bloom that sits under a spark shower — small and dim, it is not the star */
@@ -137,7 +137,7 @@ const FX_TUNE = {
     size: [0.26, 1.30], life: [0.38, 0.80], alpha: 0.54,
     speed: [1.1, 2.9], spread: 0.5, jitter: 0.6, drag: 2.0, grav: 0.85,
     turb: [0.30, 0.75], fadeIn: 0.05, spin: 1.3,
-    colorA: [0.95, 0.93, 0.91], colorB: [0.40, 0.39, 0.41],
+    colorA: [0.95, 0.93, 0.91], colorB: [0.62, 0.60, 0.60],
   },
   /**
    * Surface dust.
@@ -1857,19 +1857,32 @@ function createKartRig(vfx, world, target, o = {}) {
     if (vfx.decals && st.contact > 0.35 && spd > 3) {
       const heat = clamp(Math.max(slip * 2.0, st.slide * 1.15), 0, 1) * st.contact;
       const strength = (fx.decalAlpha || 0) * heat * (1 + 0.45 * st.slide) * (st.boosting ? 1.15 : 1);
-      // a crossed-up kart scrubs its fronts as hard as its rears
-      // Two lines, not four. A crossed-up kart does scrub its fronts, but four parallel
-      // ladders read as clutter from a chase lens; the rears are the mark of a drift.
-      const marks = wheels;
+      /**
+       * Two lines normally, four when the kart is genuinely crossed up.
+       *
+       * Round 3 laid rears only, on the argument that four parallel ladders read as clutter.
+       * The measured cost of that is worse than the clutter: the rear contact patches are
+       * about a metre behind the kart, and a chase lens 7 m back projects a metre of road
+       * behind the kart into the bottom tenth of the frame — so in the canonical drift plate
+       * every mark this rig laid was real, black, full-alpha, correctly on the road, and
+       * cropped off the bottom edge. The front marks land *beside* the kart, which is where
+       * a viewer actually looks for them, and a 39-degree slip angle scrubs the fronts just
+       * as hard. So the fronts join in once the slide is unambiguous.
+       */
+      const crossed = st.slide > 0.5;
+      const marks = crossed ? [wheels[0], wheels[1], front[0], front[1]] : wheels;
       const pw = physWheels();
-      const pIdx = [2, 3];
-      if (fx.decal && strength > 0.04) {
+      const pIdx = crossed ? [2, 3, 0, 1] : [2, 3];
+      // A mark laid at 0.07 alpha is not a mark — it is a stamp that costs buffer and
+      // changes no pixels. Either the tyre is scrubbing hard enough to leave something the
+      // camera can see, or it leaves nothing.
+      if (fx.decal && strength > 0.12) {
         const opts = {
           kind: fx.decal,
           // A stamp is drawn at half the axes it is handed, so ask for twice the rubber a
           // tyre actually lays and the mark comes out tyre-width on screen.
           width: (o.markWidth ?? 0.52) * (1.0 + 0.30 * st.slide),
-          alpha: clamp(strength, 0, 0.86),
+          alpha: clamp(0.26 + strength * 0.50, 0, 0.74),
           /**
            * The mark has to be darker than the road, not the same value as it.
            *
@@ -1881,7 +1894,7 @@ function createKartRig(vfx, world, target, o = {}) {
            * called it. Hot rubber laid on asphalt is near-black with a warm cast; giving the
            * trail an explicit colour is what makes the mark exist.
            */
-          color: fx.decal === 'tyre' ? [0.052, 0.046, 0.050] : [0.30, 0.26, 0.20],
+          color: fx.decal === 'tyre' ? [0.085, 0.076, 0.080] : [0.32, 0.28, 0.22],
           life: fx.decal === 'tyre' ? 11 : 7,
           // A stamp is only laid once the wheel has travelled `segment`, and it covers half
           // of what it was given. Leaving that at the 0.42 m default meant a kart moving
@@ -1943,7 +1956,7 @@ function createKartRig(vfx, world, target, o = {}) {
 
       // sparks come off the loaded, outboard rear wheel — the one being dragged sideways
       const sgn = vel.dot(right) < 0 ? -1 : 1;
-      const n = rate('spark', T.rate * 3.6 * (0.55 + 0.55 * fast) * (0.35 + 0.75 * st.slide) * vfx.emitScale, dt);
+      const n = rate('spark', T.rate * 4.6 * (0.55 + 0.55 * fast) * (0.35 + 0.75 * st.slide) * vfx.emitScale, dt);
       const pwS = physWheels();
       for (let i = 0; i < n; i++) {
         /**
