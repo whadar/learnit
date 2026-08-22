@@ -746,7 +746,14 @@ export function createLighting(engine, world, sky, opts = {}) {
       const tex = new THREE.CanvasTexture(cv);
       tex.colorSpace = THREE.NoColorSpace;
       tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-      tex.minFilter = THREE.LinearMipmapLinearFilter; tex.generateMipmaps = true;
+      // NO MIPMAPS. The alpha above is windowed to exactly zero at the quad's border so the
+      // pool cannot read as a printed rectangle — but a mip chain averages that ramp away:
+      // by level 4 the border and the centre are within a few percent of each other, so a
+      // chase camera, which sees this quad at a grazing angle and therefore selects a coarse
+      // mip, gets a flat translucent square with four straight edges. That is exactly the
+      // "hard-edged slab behind the kart" that keeps coming back. A 128 px texture stretched
+      // over 3 m has nothing worth prefiltering anyway.
+      tex.minFilter = tex.magFilter = THREE.LinearFilter; tex.generateMipmaps = false;
 
       const geo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
       const mat = new THREE.MeshBasicMaterial({

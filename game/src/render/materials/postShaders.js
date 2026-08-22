@@ -366,9 +366,20 @@ export function makeCompositeShader() {
       // Neutral chroma: the asphalt, plaster and dust that make up most of this course
       // carry almost no hue, and no saturation control can multiply zero. These two tints
       // give the achromatic mass a direction instead — cool in shade, warm in the sun.
+      // Round-6 review measured the asphalt at rgb(65,76,113) in `oliveGrove` shade and
+      // rgb(78,84,111) in `driftCorner` — blue 60-75% over red, i.e. a saturated indigo, not
+      // tarmac. The road arrives at this pass *already* cool (trackMesh's own `uTint` is
+      // (0.94, 1.00, 1.135) on the lit result), so a shade tint of this size was not giving
+      // a grey surface a direction, it was compounding a cast that already existed. Halved,
+      // and rebalanced off the red-blue axis onto a genuine skylight azure — G now sits
+      // between R and B instead of below both, which is the difference between "cool grey"
+      // and "violet". `uNeutralCap` below is the hard stop that keeps the compounding
+      // bounded however blue the surface was when it got here.
       uNeutral:      { value: 0.0 },
-      uShadeTint:    { value: new THREE.Vector3(-0.040, -0.005, 0.058) },
-      uSunTint:      { value: new THREE.Vector3(0.026, 0.010, -0.024) },
+      uShadeTint:    { value: new THREE.Vector3(-0.020, 0.000, 0.028) },
+      uSunTint:      { value: new THREE.Vector3(0.024, 0.009, -0.020) },
+      // The most chroma this block is allowed to leave on a pixel that came in achromatic.
+      uNeutralCap:   { value: 0.11 },
       // The fixed tonal anchor. Every frame ends on the same floor and the same ceiling —
       // and both ends are *reachable*: uBlackPt/uWhitePt are the display levels that map to
       // 0 and 1, so the grade owns a real black and a real white instead of living in the
@@ -402,6 +413,7 @@ export function makeCompositeShader() {
       uniform vec2  uKeyRange;
       uniform float uNeutral;
       uniform vec3  uShadeTint, uSunTint;
+      uniform float uNeutralCap;
       uniform float uBlackPt, uWhitePt, uBlack, uToePivot, uToeGamma, uWhiteKnee;
       varying vec2 vUv;
 
@@ -555,9 +567,14 @@ export function makeCompositeShader() {
         // Weighted by how neutral the pixel is, so nothing that already carries a hue (the
         // kerbs, the roofs, the foliage, a livery) is touched.
         //
-        // The shade-to-sun ramp is deliberately wide (0.30 to 0.85). A narrow one flips
+        // The shade-to-sun ramp is deliberately wide (0.22 to 1.02). A narrow one flips
         // between the cool and the warm tint across the asphalt's own grain and turns a noise
-        // pattern into blue-and-tan speckle.
+        // pattern into blue-and-tan speckle. Round 6 measured exactly that: inside a 120x60
+        // road patch the luma runs 39 to 121, and the old 0.30-0.85 ramp put a third of that
+        // swing straight into the cool/warm mix, so neighbouring chippings landed on
+        // different sides of the decision. The key is a *lighting* question - is this
+        // surface in sun or in shade - and lighting does not change from one pixel to the
+        // next, so the ramp is now wide enough that a grain-sized luma wobble barely moves it.
         {
           float nmx = max( g.r, max( g.g, g.b ) );
           float nmn = min( g.r, min( g.g, g.b ) );
@@ -569,8 +586,24 @@ export function makeCompositeShader() {
           // sunlit lane next to it barely moved; a cast that scales with luma is both what
           // a real fill light does and what keeps the shadow end believable.
           float lit = smoothstep( 0.015, 0.45, nl );
-          float key = smoothstep( 0.30, 0.85, nl );
-          g += uNeutral * neutral * lit * mix( uShadeTint, uSunTint, key );
+          float key = smoothstep( 0.22, 1.02, nl );
+          vec3 tinted = g + uNeutral * neutral * lit * mix( uShadeTint, uSunTint, key );
+
+          // A ceiling on what this block may manufacture. Giving a grey surface a direction
+          // is the point; past ~0.11 chroma it stops reading as tinted grey and starts
+          // reading as a coloured surface, which is how the asphalt became navy. The road
+          // reaches this pass already carrying a cool cast from its own material, so an
+          // additive tint on top compounds without bound unless something bounds it — this
+          // is that bound, and it is what makes the block safe to leave switched on.
+          //
+          // Weighted by the neutral term, so it only touches pixels this block itself tinted:
+          // a livery, a kerb or a pantile roof arrives with chroma of its own, gets no tint,
+          // and must not be desaturated on its way through.
+          float cmx = max( tinted.r, max( tinted.g, tinted.b ) );
+          float cmn = min( tinted.r, min( tinted.g, tinted.b ) );
+          float cch = cmx > 1e-4 ? ( cmx - cmn ) / cmx : 0.0;
+          float capk = cch > uNeutralCap ? uNeutralCap / cch : 1.0;
+          g = mix( tinted, vec3( katLuma( tinted ) ), ( 1.0 - capk ) * neutral );
         }
 
         float l = katLuma( g );
