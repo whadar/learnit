@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><body>
+<script type="module">
+import { createInput } from '/src/core/input.js';
+const input = createInput({ target: window });
+let out = { steer: 0 };
+window.__pump = (seconds) => {
+  const dt = 1 / 120;
+  for (let t = 0; t < seconds; t += dt) out = input.poll(dt);
+};
+window.__steer = () => out.steer;
+window.__probeReady = true;
+</script></body>

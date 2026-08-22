@@ -273,7 +273,15 @@ export function createInput(opts = {}) {
 
     out.throttle = clamp(throttle, 0, 1);
     out.brake = clamp(brake, 0, 1);
-    out.steer = clamp(steerSmoothed, -1, 1);
+    // Steering sign. The vehicle model and the AI both use a convention where a POSITIVE steer
+    // produces a positive yaw rate, and with `yaw = atan2(fwd.x, fwd.z)` over a +X-east/+Z-south
+    // world that is a turn to the driver's LEFT. Measured, not assumed: tools/sim/_steersign.mjs
+    // drives the real vehicle and reports +79.6 deg of yaw for steer +1.
+    //
+    // So the player's "right" is negative here. Only this mapping was wrong — flipping the
+    // physics instead would inverse the AI, which computes its own steer in the same convention
+    // and currently drives the circuit correctly.
+    out.steer = clamp(-steerSmoothed, -1, 1);
     out.drift = drift > 0.5 ? 1 : 0;
     out.item = item > 0.5 ? 1 : 0;
     out.look = look > 0.5 ? 1 : 0;

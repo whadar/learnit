@@ -90,7 +90,11 @@ export function createAudio(opts = {}) {
 
   /* ------------------------------------------------------------------ graph ---- */
   function buildGraph() {
-    master = gainNode(ctx, O.master);
+    // Start silent and ramp up the first time the context actually runs. A WebAudio context is
+    // suspended until a user gesture, so without this every voice — music, ambience and the
+    // engine idle — arrives at full level on the same frame the context resumes, which lands as
+    // an abrupt burst at the moment the player clicks into the game.
+    master = gainNode(ctx, O.offline ? O.master : 0.0001);
     /**
      * Master chain. Chrome's DynamicsCompressor ducks short transients hard (measured: a
      * 0.24-peak 200 ms thump comes out 12 dB down even below threshold), so the compressor
@@ -210,8 +214,23 @@ export function createAudio(opts = {}) {
     }
     if (!O.offline) armGesture();
     if (listener) setListener(listener);
+    if (ctx.state === 'running') raiseMaster();
     if (o.music !== false && (ctx.state === 'running' || O.offline)) music.start(now());
     return api;
+  }
+
+  /** Ease the master bus up the first time the context reaches 'running'. Idempotent. */
+  let masterRaised = false;
+  function raiseMaster() {
+    if (masterRaised || !master || !ctx || ctx.state !== 'running') return;
+    masterRaised = true;
+    const t = now();
+    const target = Math.max(O.master, 0.0002);
+    try {
+      master.gain.cancelScheduledValues(t);
+      master.gain.setValueAtTime(0.0001, t);
+      master.gain.exponentialRampToValueAtTime(target, t + 0.7);
+    } catch (e) { master.gain.value = target; }
   }
 
   function armGesture() {
@@ -220,7 +239,7 @@ export function createAudio(opts = {}) {
     const kick = () => {
       if (!ctx || disposed) return;
       try {
-        ctx.resume().then(() => { if (music && !music.playing) music.start(now()); }).catch(() => {});
+        ctx.resume().then(() => { raiseMaster(); if (music && !music.playing) music.start(now()); }).catch(() => {});
       } catch (e) { /* */ }
       if (ctx.state === 'running' || ++resumeTries > 6) {
         for (const ev of ['pointerdown', 'keydown', 'touchstart', 'mousedown']) window.removeEventListener(ev, kick, true);
@@ -568,7 +587,7 @@ export function createAudio(opts = {}) {
   /* ---------------------------------------------------------------- volume/api ---- */
   function setMasterVolume(v) {
     O.master = clamp(v, 0, 1.5);
-    if (master) follow(master.gain, O.master, now(), 0.05);
+    if (master && masterRaised) follow(master.gain, O.master, now(), 0.05);
     return api;
   }
   function setVolume(name, v) {
@@ -600,8 +619,8 @@ export function createAudio(opts = {}) {
     if (!ctx || blocked) return api;
     try {
       const p = ctx.resume();
-      if (p && p.then) p.then(() => { if (music && !music.playing) music.start(now()); }).catch(() => {});
-      else if (music && !music.playing) music.start(now());
+      if (p && p.then) p.then(() => { raiseMaster(); if (music && !music.playing) music.start(now()); }).catch(() => {});
+      else { raiseMaster(); if (music && !music.playing) music.start(now()); }
     } catch (e) { /* */ }
     return api;
   }
