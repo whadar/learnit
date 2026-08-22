@@ -177,48 +177,99 @@ function cellPine(ctx, S, seed, sparse) {
   }
 }
 
+/**
+ * Italian cypress: a flat fan of scale-leaf sprigs.
+ *
+ * Cypress foliage is not leaves on twigs, it is *cord* — square, scaly, branching cordage that
+ * reads as a dense blue-green mass with a fine, slightly furry edge. Three things have to
+ * survive here or the tree flattens into a painted cone:
+ *   1. a soft under-mass, so mip-mapping cannot eat the card's coverage;
+ *   2. real internal value range — deep shadow between the cords, sunlit tips on top of them —
+ *      because a card with one value is a block of colour however good its silhouette is;
+ *   3. a broken, furry outer contour with sprigs crossing it, so an alpha-tested edge is never
+ *      a straight line.
+ */
 function cellCypress(ctx, S, seed) {
   const r = rng(seed);
   const bx = S * 0.5, by = S * 0.99;
-  const dark = [34, 58, 34], mid = [52, 84, 46], lit = [104, 134, 74];
-  // Italian cypress foliage is a flat fan of scale-leaf sprigs. Draw the sprig mass first as
-  // a soft dark spindle so the card keeps its coverage under mipping, then the sprigs on top.
+  const deep = [22, 40, 34], dark = [34, 58, 46], mid = [52, 86, 64];
+  const lit = [92, 132, 90], hot = [134, 168, 112];
+  // The spray outline: blunt-topped and widest a third of the way up, not a spindle.
+  const prof = t => S * 0.33 * Math.pow(Math.sin(Math.PI * Math.pow(clamp(t, 0.001, 1), 0.46)), 0.46);
+  // 1. under-mass, drawn with a lumpy margin so even the base coverage has a broken outline
   ctx.beginPath();
-  const N0 = 30;
-  const prof = t => S * 0.30 * Math.pow(Math.sin(Math.PI * Math.pow(t, 0.62)), 0.62);
-  for (let i = 0; i <= N0; i++) { const t = i / N0; ctx.lineTo(bx - prof(t) * 0.80, by - S * 0.95 * t); }
-  for (let i = N0; i >= 0; i--) { const t = i / N0; ctx.lineTo(bx + prof(t) * 0.80, by - S * 0.95 * t); }
-  ctx.closePath(); ctx.fillStyle = jit(dark, r, 0.10); ctx.fill();
-  twig(ctx, bx, by, bx + (r() - 0.5) * S * 0.05, by - S * 0.92, 0.02, S * 0.022, css(76, 58, 42));
-  for (let b2 = 0; b2 < 40; b2++) {
-    const t = 0.03 + b2 / 40 * 0.95;
-    const y = by - S * 0.93 * t;
-    const side = b2 % 2 ? 1 : -1;
-    const spread = prof(t) * (0.55 + r() * 0.75);
-    const ex = bx + side * spread, ey = y - S * 0.11 * (0.4 + r() * 0.9);
-    twig(ctx, bx, y, ex, ey, side * 0.14, S * 0.016, jit(mid, r, 0.18));
-    const n = 12 + ((r() * 7) | 0);
+  const N0 = 40;
+  const lump = t => 1 + 0.16 * Math.sin(t * 9.3 + seed) + 0.10 * Math.sin(t * 21.7 + seed * 2.1);
+  for (let i = 0; i <= N0; i++) { const t = i / N0; ctx.lineTo(bx - prof(t) * 0.86 * lump(t), by - S * 0.95 * t); }
+  for (let i = N0; i >= 0; i--) { const t = i / N0; ctx.lineTo(bx + prof(t) * 0.86 * lump(t + 3.1), by - S * 0.95 * t); }
+  ctx.closePath(); ctx.fillStyle = jit(deep, r, 0.10); ctx.fill();
+  // 2. the main stem
+  twig(ctx, bx, by, bx + (r() - 0.5) * S * 0.05, by - S * 0.92, 0.02, S * 0.020, css(74, 58, 44));
+
+  /** One cord: a chain of overlapping scale segments that gets brighter toward its tip. */
+  const cord = (x0, y0, ang, len, wid, shade) => {
+    const n = 7 + ((r() * 5) | 0);
+    let x = x0, y = y0, a = ang;
     for (let i = 0; i < n; i++) {
-      const t2 = i / n;
-      const px = bx + (ex - bx) * t2, py = y + (ey - y) * t2;
-      const rr = S * (0.024 + 0.016 * r()) * (1 - t2 * 0.30);
-      ctx.beginPath();
-      ctx.ellipse(px + (r() - 0.5) * S * 0.02, py + (r() - 0.5) * S * 0.02, rr, rr * 0.60,
-        side * 0.5 + (r() - 0.5), 0, Math.PI * 2);
-      const g = r();
-      ctx.fillStyle = jit(g > 0.80 ? lit : (g > 0.34 ? mid : dark), r, 0.20);
-      ctx.fill();
+      const t = i / n;
+      a += (r() - 0.5) * 0.22;
+      const step = len / n;
+      const nx = x + Math.cos(a) * step, ny = y + Math.sin(a) * step;
+      const w = wid * (1 - t * 0.55);
+      // the scale pairs: two little wedges either side of the cord axis
+      for (const sgn of [-1, 1]) {
+        ctx.beginPath();
+        ctx.ellipse((x + nx) * 0.5 + Math.cos(a + sgn * 1.57) * w * 0.55,
+          (y + ny) * 0.5 + Math.sin(a + sgn * 1.57) * w * 0.55,
+          w * 0.95, w * 0.52, a, 0, Math.PI * 2);
+        const g = r();
+        const base = g > 0.86 ? hot : g > 0.58 ? lit : g > 0.26 ? mid : dark;
+        ctx.fillStyle = jit([base[0] * shade, base[1] * shade, base[2] * shade], r, 0.20);
+        ctx.fill();
+      }
+      x = nx; y = ny;
     }
+    return [x, y];
+  };
+
+  // 3. the sprays. Lower ones sit deeper in the mass and are drawn darker; the ones nearer the
+  //    lit face of the card get the bright scales, which is where the internal value range
+  //    comes from.
+  for (let b = 0; b < 34; b++) {
+    const t = 0.02 + (b / 34) * 0.95 + (r() - 0.5) * 0.02;
+    const y = by - S * 0.93 * t;
+    const side = b % 2 ? 1 : -1;
+    const reach = prof(t) * (0.70 + r() * 0.80);
+    const ang = side > 0 ? -0.95 - r() * 0.55 : -Math.PI + 0.95 + r() * 0.55;
+    // depth: sprays alternate between the shaded back of the spray and its sunlit front
+    const shade = 0.55 + 0.62 * ((b * 7 % 5) / 4) * (0.7 + 0.3 * r());
+    twig(ctx, bx, y, bx + side * reach * 0.7, y - S * 0.05, side * 0.12, S * 0.013, jit(dark, r, 0.2));
+    cord(bx + side * reach * 0.18, y - S * 0.01, ang, reach * 1.15 + S * 0.03, S * (0.020 + 0.010 * r()), shade);
   }
-  // ragged sprigs poking past the spindle so the silhouette is never a clean cone edge
-  for (let i = 0; i < 26; i++) {
-    const t = 0.10 + r() * 0.86;
+  // 4. sunlit crest along the upper-left of the spray — a card needs a light side or the
+  //    canopy has no form at all
+  for (let i = 0; i < 12; i++) {
+    const t = 0.18 + r() * 0.74;
+    const y = by - S * 0.93 * t;
+    cord(bx - prof(t) * (0.15 + r() * 0.35), y, -1.25 - r() * 0.5, prof(t) * (0.7 + r() * 0.6) + S * 0.02,
+      S * (0.018 + 0.008 * r()), 1.28);
+  }
+  // 5. the furry margin: fine sprigs crossing the contour, so the alpha edge is never straight
+  for (let i = 0; i < 30; i++) {
+    const t = 0.06 + r() * 0.90;
     const y = by - S * 0.93 * t;
     const side = r() > 0.5 ? 1 : -1;
-    const L = prof(t) * (1.0 + r() * 0.55) + S * 0.02;
-    const ex = bx + side * L, ey = y - S * (0.02 + r() * 0.10);
-    twig(ctx, bx + side * prof(t) * 0.4, y, ex, ey, side * 0.2, S * (0.012 + r() * 0.008),
-      jit(r() > 0.6 ? lit : mid, r, 0.2));
+    const L = prof(t) * (0.9 + r() * 0.5) + S * 0.02;
+    cord(bx + side * prof(t) * 0.5, y, side > 0 ? -0.7 - r() * 0.7 : -Math.PI + 0.7 + r() * 0.7,
+      L, S * (0.011 + 0.007 * r()), 0.8 + r() * 0.7);
+  }
+  // 6. two small cones on the older sprays — pure silhouette interest at close range
+  for (let i = 0; i < 3; i++) {
+    const t = 0.25 + r() * 0.5;
+    ctx.save(); ctx.translate(bx + (r() - 0.5) * prof(t) * 1.2, by - S * 0.93 * t); ctx.rotate((r() - 0.5) * 1.2);
+    ctx.beginPath(); ctx.ellipse(0, 0, S * 0.024, S * 0.028, 0, 0, Math.PI * 2);
+    ctx.fillStyle = jit([120, 106, 66], r, 0.14); ctx.fill();
+    ctx.restore();
   }
 }
 
@@ -630,7 +681,7 @@ function drawAtlasCells(ctx, S, background) {
   };
   cell('pineA',   (c, w) => cellPine(c, w, 1201), [78, 104, 58]);
   cell('pineB',   (c, w) => cellPine(c, w, 4409), [70, 96, 52]);
-  cell('cypress', (c, w) => cellCypress(c, w, 7717), [48, 74, 42]);
+  cell('cypress', (c, w) => cellCypress(c, w, 7717), [44, 70, 52]);
   cell('oak',     (c, w) => cellOak(c, w, 3313, true), [58, 88, 44]);
   cell('olive',   (c, w) => cellOlive(c, w, 9091), [116, 132, 100]);
   cell('almond',  (c, w) => cellAlmond(c, w, 5155), [104, 132, 68]);
