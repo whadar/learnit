@@ -373,7 +373,7 @@ void main() {
       vec2 cu = pl * uCloudScale * 0.30 * vec2( 0.62, 1.35 ) + uDrift * 0.35;
       float w = texture2D( uCloudTex, cu ).r * 0.65 + texture2D( uCloudTex, cu * 2.1 + 0.4 ).g * 0.35;
       float wisp = smoothstep( 0.50, 0.80, 1.0 - abs( 2.0 * w - 1.0 ) );
-      wisp *= smoothstep( 0.08, 0.34, direction.y );
+      wisp *= smoothstep( 0.17, 0.44, direction.y );   // keep the veil out of the chase band
       sky = mix( sky, mix( uCloudLit * 0.55, sky, 0.35 ), wisp * uCirrus );
     }
     #endif
@@ -384,8 +384,12 @@ void main() {
       // degrees above the skyline. The old fade ran to 0.40 (≈24 deg), and a chase camera
       // never looks higher than about 20 deg, so it dissolved 85% of every cumulus the
       // player could actually see. That is why four of seven review frames had no cloud.
+      // ...and they sink into the *sky*, not into the dust. Mixing 45% of a warm dust tint
+      // into every cloud within 6 deg of the skyline is what turned the one band a chase
+      // camera actually frames into a cream lid — and a warm near-neutral is exactly the
+      // hue the grade LUT rotates toward green.
       float far = 1.0 - smoothstep( 0.010, 0.115, direction.y );
-      cl.rgb = mix( cl.rgb, mix( sky, uHazeTint * skyL * uHazeGain, 0.45 ), far * 0.70 );
+      cl.rgb = mix( cl.rgb, mix( sky, uHazeTint * skyL * uHazeGain, 0.18 ), far * 0.70 );
       sky = mix( sky, cl.rgb, cl.a * uCloudOpacity * above );
     }
   }
@@ -474,20 +478,22 @@ const DEFAULTS = {
   turbidity: 2.05, rayleigh: 3.5, mie: 0.0019, mieG: 0.72,
   // Fair-weather cumulus: lower coverage threshold = more deck. `cloudField` peaks near
   // 1.4, so 0.375 gives scattered-to-broken cloud rather than the odd wisp.
-  coverage: 0.375, cloudScale: 0.22, cloudOpacity: 1.0, cirrus: 0.05,
+  coverage: 0.40, cloudScale: 0.22, cloudOpacity: 1.0, cirrus: 0.035,
   cloudSeed: 20250815, cloudSpeed: 0.0022,
   // Pre-tonemap radiance scale for the dome. Read together with `uToneExposure`: the dome
   // now goes through the same ACES curve as everything else, so this sets where the zenith
   // sits on that curve. 0.23 lands the zenith around RGB 122,176,219 before the grade,
   // which the LUT's saturation push turns into a proper Mediterranean blue.
   exposure: 0.215,
-  skySaturation: 1.36,
+  skySaturation: 1.42,
   // How much air mass *over* the zenith column the in-scatter term is allowed to accumulate.
   // The skyline asymptotes to (1 + this) zenith depths instead of Preetham's ~38, which is
   // what keeps chroma in the bottom 20 deg — the only part of the dome a chase camera sees.
-  // 1.6 lands the skyline near RGB 93,159,193 away from the sun and holds the zenith exactly
-  // where it was; higher values bleach the horizon again, lower ones turn it navy.
-  horizonChroma: 1.6,
+  // 1.25 holds the zenith exactly where it was and still leaves the skyline a real blue on
+  // the *sunward* side, which is the half a chase camera keeps pointing at; higher values
+  // bleach that side back to cream, lower ones drive the anti-solar sky past the grade's
+  // blue ceiling and it posterises.
+  horizonChroma: 1.25,
 };
 
 /**
@@ -715,7 +721,7 @@ export function createSky(engine, world, opts = {}) {
     // the old 3.3 put every cumulus at a flat clipped 255 with no form at all.
     const gain = 1 / Math.max(ex, 1e-3);
     uniforms.uCloudLit.value.copy(palette.sunColor)
-      .lerp(new THREE.Color(1, 1, 1), 0.72)
+      .lerp(new THREE.Color(1, 1, 1), 0.82)
       .multiplyScalar(gain * lerp(0.80, 1.15, smoothstep(2, 30, elev)));
     uniforms.uCloudDark.value.setRGB(radZen[0], radZen[1], radZen[2], THREE.LinearSRGBColorSpace);
     {
