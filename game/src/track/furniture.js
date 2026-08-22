@@ -115,11 +115,16 @@ function buildSignAtlas() {
 
   // 0 — start gantry banner
   row(0, ctx => {
-    ctx.fillStyle = grad(ctx, '#16457c', '#0a2246'); ctx.fillRect(0, 0, W, cell);
-    ctx.fillStyle = '#e9b53a'; ctx.fillRect(0, cell - 9, W, 9); ctx.fillRect(0, 0, W, 6);
-    catMark(ctx, 74, cell * 0.52, 34, 'rgba(233,181,58,0.85)');
-    catMark(ctx, W - 74, cell * 0.52, 34, 'rgba(233,181,58,0.85)');
-    centred(ctx, 'מסלול מושב עמיקם', 'AMIKAM VILLAGE CIRCUIT', '#f6f1e4', 56);
+    // Lifted out of near-black: at the start line the banner is side-on to the sun and the
+    // old #0a2246 ground tone-mapped to a flat dark slab. A brighter ground plus a lit top
+    // edge and a shadowed bottom edge give the board some modelling of its own.
+    ctx.fillStyle = grad(ctx, '#3a7cc4', '#17497f'); ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = 'rgba(255,255,255,0.16)'; ctx.fillRect(0, 6, W, 14);
+    ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.fillRect(0, cell - 24, W, 15);
+    ctx.fillStyle = '#f0bd44'; ctx.fillRect(0, cell - 9, W, 9); ctx.fillRect(0, 0, W, 6);
+    catMark(ctx, 74, cell * 0.52, 34, 'rgba(255,214,116,0.92)');
+    catMark(ctx, W - 74, cell * 0.52, 34, 'rgba(255,214,116,0.92)');
+    centred(ctx, 'מסלול מושב עמיקם', 'AMIKAM VILLAGE CIRCUIT', '#ffffff', 56);
   });
   // 1 — START / FINISH, chequer-edged
   row(1, ctx => {
@@ -134,17 +139,25 @@ function buildSignAtlas() {
     centred(ctx, 'הקפה אחרונה', 'FINAL LAP', '#f7e9c9', 58);
   });
   // 3 — sponsor: olive press
+  //
+  // Sponsor boards used to be authored as saturated dark grounds with pale text. That works
+  // on a lit board and collapses on a shaded one: the whole left third of the start-line
+  // frame came back as a black rectangle with the lettering invisible inside it. Every board
+  // that can end up in shade now has a LIGHT ground and DARK text, so the contrast survives
+  // when the only light on it is sky fill.
   row(3, ctx => {
-    ctx.fillStyle = '#2f5b34'; ctx.fillRect(0, 0, W, cell);
-    ctx.fillStyle = '#cfe0b6'; ctx.beginPath(); ctx.ellipse(96, cell / 2, 40, 26, -0.4, 0, TAU); ctx.fill();
-    ctx.fillStyle = '#8fae70'; ctx.beginPath(); ctx.ellipse(W - 96, cell / 2, 40, 26, 0.4, 0, TAU); ctx.fill();
-    centred(ctx, 'בית הבד עמיקם', 'AMIKAM OLIVE PRESS', '#e9f0dc', 50);
+    ctx.fillStyle = grad(ctx, '#f2eddc', '#ddd6bd'); ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#3d6b3a'; ctx.fillRect(0, 0, W, 9); ctx.fillRect(0, cell - 9, W, 9);
+    ctx.fillStyle = '#4f7a3c'; ctx.beginPath(); ctx.ellipse(96, cell / 2, 40, 26, -0.4, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#7d9b52'; ctx.beginPath(); ctx.ellipse(W - 96, cell / 2, 40, 26, 0.4, 0, TAU); ctx.fill();
+    centred(ctx, 'בית הבד עמיקם', 'AMIKAM OLIVE PRESS', '#22331f', 50);
   });
   // 4 — sponsor: dairy / cats
   row(4, ctx => {
-    ctx.fillStyle = '#2a3b6d'; ctx.fillRect(0, 0, W, cell);
-    catMark(ctx, 92, cell * 0.52, 36, '#dfe6f4');
-    centred(ctx, 'מחלבת רמות מנשה', 'RAMOT MENASHE DAIRY', '#f0eede', 50);
+    ctx.fillStyle = grad(ctx, '#ffffff', '#dfe6f2'); ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#2a3b6d'; ctx.fillRect(0, 0, W, 10); ctx.fillRect(0, cell - 10, W, 10);
+    catMark(ctx, 92, cell * 0.52, 36, '#2a3b6d');
+    centred(ctx, 'מחלבת רמות מנשה', 'RAMOT MENASHE DAIRY', '#1d2a4d', 50);
   });
   // 5 — sponsor: watermelon
   row(5, ctx => {
@@ -185,15 +198,20 @@ function buildSignAtlas() {
   });
   // 10 — sponsor: winery
   row(10, ctx => {
-    ctx.fillStyle = grad(ctx, '#6d3055', '#431c36'); ctx.fillRect(0, 0, W, cell);
-    ctx.fillStyle = '#c9a24a'; ctx.fillRect(0, cell - 7, W, 7);
-    centred(ctx, 'יקב רמות מנשה', 'MENASHE HILLS WINERY', '#f0e2d6', 50);
+    ctx.fillStyle = grad(ctx, '#f6eddd', '#e4d3bd'); ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#7d2544'; ctx.fillRect(0, 0, W, 8);
+    ctx.fillStyle = '#c9a24a'; ctx.fillRect(0, cell - 10, W, 10);
+    ctx.fillStyle = '#7d2544';
+    ctx.beginPath(); ctx.ellipse(88, cell * 0.52, 26, 34, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(W - 88, cell * 0.52, 26, 34, 0, 0, TAU); ctx.fill();
+    centred(ctx, 'יקב רמות מנשה', 'MENASHE HILLS WINERY', '#5c1a33', 50);
   });
   // 11 — sponsor: tyres
   row(11, ctx => {
-    ctx.fillStyle = '#17181c'; ctx.fillRect(0, 0, W, cell);
-    ctx.strokeStyle = '#e0a21f'; ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(96, cell / 2, 38, 0, TAU); ctx.stroke();
-    centred(ctx, 'צמיגי עמיקם', 'AMIKAM TYRES', '#f0d99a', 52);
+    ctx.fillStyle = '#33353c'; ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#e0a21f'; ctx.fillRect(0, 0, W, 12); ctx.fillRect(0, cell - 12, W, 12);
+    ctx.strokeStyle = '#f2c85e'; ctx.lineWidth = 9; ctx.beginPath(); ctx.arc(96, cell / 2, 38, 0, TAU); ctx.stroke();
+    centred(ctx, 'צמיגי עמיקם', 'AMIKAM TYRES', '#ffe6ae', 52);
   });
   // 12 — chequered strip (no text) for barrier tops
   row(12, ctx => { chequerBand(ctx, 0, cell * 0.5, 32); chequerBand(ctx, cell * 0.5, cell * 0.5, 32); ctx.fillStyle = '#f2efe6'; for (let i = 0; i < 32; i += 2) ctx.fillRect(i * W / 32, cell * 0.5, W / 32 + 1, cell * 0.5); for (let i = 1; i < 32; i += 2) { ctx.fillStyle = '#16171b'; ctx.fillRect(i * W / 32, cell * 0.5, W / 32 + 1, cell * 0.5); } });
@@ -205,10 +223,11 @@ function buildSignAtlas() {
   });
   // 14 — championship banner
   row(14, ctx => {
-    ctx.fillStyle = grad(ctx, '#0e6b6e', '#07393f'); ctx.fillRect(0, 0, W, cell);
-    catMark(ctx, 80, cell * 0.5, 36, '#f2c94c');
-    catMark(ctx, W - 80, cell * 0.5, 36, '#f2c94c');
-    centred(ctx, 'אליפות החתולים', 'KAT RACING GRAND PRIX', '#f2efe0', 52);
+    ctx.fillStyle = grad(ctx, '#1aa0a2', '#0c6068'); ctx.fillRect(0, 0, W, cell);
+    ctx.fillStyle = '#f2c94c'; ctx.fillRect(0, 0, W, 7); ctx.fillRect(0, cell - 7, W, 7);
+    catMark(ctx, 80, cell * 0.5, 36, '#fbe08a');
+    catMark(ctx, W - 80, cell * 0.5, 36, '#fbe08a');
+    centred(ctx, 'אליפות החתולים', 'KAT RACING GRAND PRIX', '#ffffff', 52);
   });
   // 15 — red/white chevron hazard
   row(15, ctx => {
@@ -248,43 +267,6 @@ function buildFlagTexture() {
     x.restore();
   });
   return { tex: texFrom(c), cols: 4 };
-}
-
-/**
- * Triangular bunting pennants.
- *
- * Clean primaries, not the muddy maroon/olive/navy the review found: the old palette read
- * dull because the strings were also lit with a hard-coded normal, so every pennant that did
- * not happen to face +Z came back near-black. Colours here are authored bright and the mesh
- * supplies real per-string normals.
- */
-function buildBuntingTexture() {
-  const { c, x } = makeCanvas(384, 128);
-  x.clearRect(0, 0, 384, 128);
-  const cols = ['#ee3b26', '#ffc21f', '#2f8fe0', '#fbf4e4', '#3fb256', '#ff7a1c'];
-  const cw = 384 / 6;
-  for (let i = 0; i < 6; i++) {
-    x.fillStyle = cols[i];
-    x.beginPath();
-    x.moveTo(i * cw + 1.5, 6); x.lineTo((i + 1) * cw - 1.5, 6); x.lineTo(i * cw + cw * 0.5, 118);
-    x.closePath(); x.fill();
-    // a soft crease down the middle of each pennant so the cloth is not one flat fill
-    const sh = x.createLinearGradient(i * cw, 0, (i + 1) * cw, 0);
-    sh.addColorStop(0, 'rgba(0,0,0,0.28)');
-    sh.addColorStop(0.40, 'rgba(255,255,255,0.18)');
-    sh.addColorStop(0.56, 'rgba(255,255,255,0.08)');
-    sh.addColorStop(1, 'rgba(0,0,0,0.32)');
-    x.save();
-    x.beginPath();
-    x.moveTo(i * cw + 1.5, 6); x.lineTo((i + 1) * cw - 1.5, 6); x.lineTo(i * cw + cw * 0.5, 118);
-    x.closePath(); x.clip();
-    x.fillStyle = sh; x.fillRect(i * cw, 0, cw, 128);
-    x.restore();
-  }
-  x.fillStyle = '#3b332a'; x.fillRect(0, 0, 384, 7);
-  const t = texFrom(c, { repeat: true });
-  t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.ClampToEdgeWrapping;
-  return t;
 }
 
 /**
@@ -330,18 +312,21 @@ function buildStrawTextures() {
   const W = 512, H = 512;
   const R = rng(770311);
   const { c, x } = makeCanvas(W, H);
-  x.fillStyle = '#c0a061'; x.fillRect(0, 0, W, H);
-  // broad tonal bands: sun-bleached crown, damp shadowed core
+  x.fillStyle = '#d2b070'; x.fillRect(0, 0, W, H);
+  // broad tonal bands: sun-bleached crown, damp shadowed core. The dark band used to bottom
+  // out near #765824, which is a green-shifted olive once the shaded half of the barrel is
+  // only lit by sky fill — the exact "hay is not green" the review kept finding. Both bands
+  // now stay inside straw's own warm range.
   for (let i = 0; i < 90; i++) {
     const y = R() * H, hh = 8 + R() * 40, t = R();
-    x.fillStyle = t > 0.6 ? `rgba(228,196,120,${0.06 + R() * 0.14})`
-      : `rgba(118,88,36,${0.05 + R() * 0.13})`;
+    x.fillStyle = t > 0.6 ? `rgba(240,212,146,${0.06 + R() * 0.14})`
+      : `rgba(158,122,62,${0.05 + R() * 0.12})`;
     x.fillRect(0, y, W, hh);
   }
   const { c: bc, x: bx } = makeCanvas(W, H);
   bx.fillStyle = '#808080'; bx.fillRect(0, 0, W, H);
   // fibres — drawn on both canvases so albedo and bump agree exactly
-  const fibre = ['#ecd79c', '#d6b573', '#bb9855', '#a08040', '#f4e6c0', '#8d7440'];
+  const fibre = ['#f2e0aa', '#ddbe80', '#c7a463', '#b08c4e', '#f8edcb', '#a08652'];
   for (let i = 0; i < 5200; i++) {
     const px = R() * W, py = R() * H;
     const ang = (R() - 0.5) * 0.55;                    // straw lies broadly along the bale axis
@@ -357,7 +342,7 @@ function buildStrawTextures() {
   }
   // scattered darker chaff and a few loose wisps
   for (let i = 0; i < 500; i++) {
-    x.fillStyle = `rgba(90,66,26,${0.10 + R() * 0.30})`;
+    x.fillStyle = `rgba(132,101,46,${0.10 + R() * 0.26})`;
     x.beginPath(); x.ellipse(R() * W, R() * H, 1 + R() * 4, 0.8 + R() * 2, R() * TAU, 0, TAU); x.fill();
   }
   const map = texFrom(c, { repeat: true });
@@ -618,7 +603,7 @@ export function createFurniture(engine, world, track, opts = {}) {
   // Three cached variants, each with its radius pushed about by a little noise, so a row of
   // bales does not share one perfectly straight shading terminator across every barrel.
   const baleGeo = (v) => geo('bale' + v, () => {
-    const g = new THREE.CylinderGeometry(0.66, 0.66, 1.32, 24, 4);
+    const g = new THREE.CylinderGeometry(0.66, 0.66, 1.32, 36, 4);
     const pos = g.attributes.position;
     for (let i = 0; i < pos.count; i++) {
       const px = pos.getX(i), py = pos.getY(i), pz = pos.getZ(i);
@@ -634,7 +619,11 @@ export function createFurniture(engine, world, track, opts = {}) {
     g.computeVertexNormals();
     return g.rotateZ(Math.PI / 2);
   });
-  const twineGeo = () => geo('twine', () => new THREE.CylinderGeometry(0.673, 0.673, 0.011, 20, 1).rotateZ(Math.PI / 2));
+  // Baler twine. It used to be an 11 mm black band, which at any distance is a 1 px black
+  // slit that aliases into a hard stripe — the "vertical stripe strip" the review saw. Real
+  // twine is 4 mm orange sisal wound tight, so this is now a slightly proud, warm, *lit*
+  // ring rather than a hairline of pure shadow.
+  const twineGeo = () => geo('twine', () => new THREE.CylinderGeometry(0.670, 0.670, 0.030, 24, 1).rotateZ(Math.PI / 2));
   const crateGeo = () => geo('crate', () => new THREE.BoxGeometry(0.62, 0.34, 0.44));
   /**
    * One round bale: straw-mapped barrel, four turns of black baler twine, and a shallow tilt
@@ -648,9 +637,9 @@ export function createFurniture(engine, world, track, opts = {}) {
     straw.add(baleGeo((R() * 3) | 0), trs(x, y, z, ry, sc, sc, sc, tilt, (R() - 0.5) * 0.05),
       [1.02 * tint, 0.99 * tint, 0.93 * tint], [6, 2]);
     const ax = Math.cos(ry), az = -Math.sin(ry);
-    for (const d of [-0.52, -0.36, -0.18, 0, 0.18, 0.36, 0.52]) {
-      rubber.add(twineGeo(), trs(x + ax * d * sc, y, z + az * d * sc, ry, sc, sc, sc, tilt),
-        [0.20, 0.18, 0.13]);
+    for (const d of [-0.50, -0.30, -0.10, 0.10, 0.30, 0.50]) {
+      wood.add(twineGeo(), trs(x + ax * d * sc, y, z + az * d * sc, ry, sc, sc, sc, tilt),
+        [0.74, 0.42, 0.16]);
     }
     // a wisp of loose straw shed at the foot of the bale
     if (R() < 0.7) {
@@ -1108,61 +1097,136 @@ export function createFurniture(engine, world, track, opts = {}) {
   }
 
   /* ------------------------------------------------------------ bunting --- */
+  /*
+   * Bunting, round 4.
+   *
+   * The previous version was a textured alpha strip: one solid RGB per pennant, a 2 px black
+   * line for the string, and six spans thrown straight across the road — which stacked four
+   * deep in the start-line camera and buried most of the gantry banner behind flat vector
+   * shapes. Two things changed.
+   *
+   *   1. Geometry, not alpha. Every pennant is a real curved cloth: a 3 x 4 grid bowed across
+   *      its width, tapering and sweeping back at the tip, with computed normals. It therefore
+   *      shades, catches the sun on the bow and goes soft in the fold, has no alpha edge to
+   *      staircase, and reads as an object rather than a sticker. The string is a real 3 cm
+   *      rope in the wood material, not a black line baked into a texture.
+   *   2. Placement. The bunting now runs *along* the verge on both sides of the village
+   *      straight, pole to pole, the way a moshav actually dresses a street — so it frames the
+   *      road and converges on the gate instead of hanging in front of it. Only two spans
+   *      still cross the road, and both are placed far enough from the line that neither can
+   *      cover the banner.
+   */
   let buntingMat = null;
   if (o.bunting) {
-    const tex = buildBuntingTexture();
-    const gs = [];
-    // Alternating heights: two strings seen down the straight used to superimpose into one
-    // muddy band. Staggering them by 0.9 m separates them at every camera angle.
-    for (let k = 0; k < 6; k++) {
-      const s = track.startS - 46 + k * 17;
-      const sm = at(s), hw = sm.width * 0.5;
-      const a = side(sm, -(hw + 2.6)), b = side(sm, hw + 2.6);
-      const top = 5.3 + (k & 1) * 0.9;
-      const ay = Math.min(a.y, world.heightAt(a.x, a.z)) + top;
-      const by = Math.min(b.y, world.heightAt(b.x, b.z)) + top;
-      const spanLen = Math.hypot(b.x - a.x, b.z - a.z);
-      // real string normal: horizontal, perpendicular to the run (i.e. along the road)
-      const nx = (b.z - a.z) / (spanLen || 1), nz = -(b.x - a.x) / (spanLen || 1);
-      const reps = Math.max(2, Math.round(spanLen / (0.58 * 6)));
-      const segs = 20, sag = 1.35, drop = 0.62;
-      const pos = [], uv = [], idx = [], nor = [];
-      for (let i = 0; i <= segs; i++) {
-        const t = i / segs;
-        const x = lerp(a.x, b.x, t), z = lerp(a.z, b.z, t);
-        const y = lerp(ay, by, t) - Math.sin(t * Math.PI) * sag;
-        // gentle twist along the string so the pennants catch the light differently
-        const tw = Math.sin(t * Math.PI * 3.1 + k) * 0.30;
-        const cy = Math.cos(tw), cs = Math.sin(tw);
-        const n = new THREE.Vector3(nx * cy, cs, nz * cy).normalize();
-        pos.push(x, y, z, x, y - drop, z);
-        uv.push(t * reps, 1, t * reps, 0);
-        nor.push(n.x, n.y, n.z, n.x, n.y, n.z);
+    const cloth = new Builder();
+    const PENNANT = [
+      [0.93, 0.23, 0.15], [1.00, 0.76, 0.12], [0.18, 0.56, 0.88],
+      [0.98, 0.96, 0.89], [0.25, 0.70, 0.34], [1.00, 0.48, 0.11],
+    ];
+    /**
+     * A unit pennant hanging from the origin: top edge along local X (-0.5..0.5), tip at
+     * local Y = -1, bowed in local Z. Three cached variants so a run is not one shape
+     * repeated — the cloth has to look slack, and slack cloth is never twice the same.
+     */
+    const pennantGeo = (v) => geo('pennant' + v, () => {
+      const NX = 3, NY = 4;
+      const bulge = 0.15 + v * 0.055, sweep = 0.09 + v * 0.05, curl = (v - 1) * 0.085;
+      const pos = [], uv = [], idx = [];
+      for (let j = 0; j <= NY; j++) {
+        const vv = j / NY;
+        const hw2 = 0.5 * (1 - vv * 0.93);
+        for (let i2 = 0; i2 <= NX; i2++) {
+          const u = i2 / NX, e = (u - 0.5) * 2;
+          pos.push(e * hw2 + curl * vv * vv,
+            -vv - Math.sin(vv * 2.4) * 0.035,
+            bulge * (1 - e * e) * (1 - vv * 0.65) + sweep * vv * vv);
+          uv.push(u, 1 - vv);
+        }
       }
-      for (let i = 0; i < segs; i++) {
-        const q = i * 2;
-        idx.push(q, q + 2, q + 1, q + 1, q + 2, q + 3);
+      for (let j = 0; j < NY; j++) for (let i2 = 0; i2 < NX; i2++) {
+        const a = j * (NX + 1) + i2;
+        idx.push(a, a + NX + 1, a + 1, a + 1, a + NX + 1, a + NX + 2);
       }
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
       g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
       g.setIndex(idx);
-      gs.push(g);
-      // poles
-      for (const p of [a, b]) {
+      g.computeVertexNormals();
+      return g;
+    });
+    const ropeCol = [0.54, 0.46, 0.35];
+    /** One catenary run: rope, then a pennant every ~42 cm hanging off it. */
+    const buntRun = (a, b2, opt2 = {}) => {
+      const dx = b2.x - a.x, dz = b2.z - a.z;
+      const L = Math.hypot(dx, dz);
+      if (L < 3) return;
+      const sag = opt2.sag ?? Math.min(0.95, L * 0.055);
+      const ux = dx / L, uz = dz / L;
+      const ry = Math.atan2(-uz, ux);
+      const yAt = t => lerp(a.y, b2.y, t) - Math.sin(t * Math.PI) * sag;
+      // rope: short boxes chained along the curve, so it is lit and has real thickness
+      const rs = Math.max(6, Math.round(L / 1.6));
+      for (let i = 0; i < rs; i++) {
+        const t0 = i / rs, t1 = (i + 1) / rs;
+        const p0 = [lerp(a.x, b2.x, t0), yAt(t0), lerp(a.z, b2.z, t0)];
+        const p1 = [lerp(a.x, b2.x, t1), yAt(t1), lerp(a.z, b2.z, t1)];
+        const sx = p1[0] - p0[0], sy = p1[1] - p0[1], sz = p1[2] - p0[2];
+        const sl = Math.hypot(sx, sy, sz);
+        wood.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
+          trs((p0[0] + p1[0]) * 0.5, (p0[1] + p1[1]) * 0.5, (p0[2] + p1[2]) * 0.5,
+            Math.atan2(sx, sz), 0.032, 0.032, sl * 1.02, -Math.asin(sy / (sl || 1))), ropeCol);
+      }
+      const n = Math.max(4, Math.round(L / 0.44));
+      for (let i = 0; i < n; i++) {
+        const t = (i + 0.5) / n;
+        const x = lerp(a.x, b2.x, t), z = lerp(a.z, b2.z, t), y = yAt(t) - 0.028;
+        // slope of the rope here, so the pennant hangs off a tilted string correctly
+        const slope = ((b2.y - a.y) - Math.cos(t * Math.PI) * Math.PI * sag) / L;
+        const col = PENNANT[(i + (opt2.phase | 0)) % PENNANT.length];
+        const w = 0.335 + R() * 0.04, h = 0.40 + R() * 0.06;
+        // baked cloth shading: a little darker in the fold under the string, warmer at the tip
+        const k = 0.90 + R() * 0.16;
+        cloth.add(pennantGeo((R() * 3) | 0),
+          trs(x, y, z, ry + (R() - 0.5) * 0.34, w, h, w, (R() - 0.5) * 0.80, Math.atan(slope)),
+          [col[0] * k, col[1] * k, col[2] * k]);
+      }
+    };
+    // --- runs along the verge, both sides of the village straight ---------------
+    const POLE_GAP = 11.5, OFF = 3.2, TOP = 4.65;
+    for (const sgn of [-1, 1]) {
+      let prev = null;
+      for (let s = track.startS - 58; s <= track.startS + 58 + 0.1; s += POLE_GAP) {
+        const sm = at(s), hw = sm.width * 0.5;
+        const p = side(sm, sgn * (hw + OFF));
         const gy = Math.min(p.y, world.heightAt(p.x, p.z));
-        wood.add(geo('pole', () => new THREE.CylinderGeometry(0.09, 0.12, 5.6, 6)),
-          trs(p.x, gy + 2.8, p.z, 0), [0.44, 0.34, 0.24]);
+        const node = { x: p.x, y: gy + TOP, z: p.z };
+        wood.add(geo('buntpole', () => new THREE.CylinderGeometry(0.075, 0.105, 1, 7)),
+          trs(p.x, gy + (TOP + 0.25) * 0.5, p.z, 0, 1, TOP + 0.25, 1), [0.46, 0.36, 0.25]);
+        wood.add(geo('buntcap', () => new THREE.SphereGeometry(0.10, 6, 4)),
+          trs(p.x, gy + TOP + 0.16, p.z, 0), [0.40, 0.31, 0.21]);
+        if (prev) buntRun(prev, node, { phase: (s * 0.7) | 0, sag: 0.62 });
+        prev = node;
+        markBusy(s, 1.2, sgn > 0 ? 1 : 0);
       }
     }
-    const merged = mergeSimple(gs);
-    if (merged) {
-      // A touch of self-illumination keeps the primaries clean when a string is backlit, and
-      // a vertex-shader wind term gives the cloth motion instead of dead flat triangles.
+    // --- two spans across the road, both well clear of the gantry sightline -----
+    for (const s of [track.startS - 86, track.startS + 62]) {
+      const sm = at(s), hw = sm.width * 0.5;
+      const a = side(sm, -(hw + 2.8)), b2 = side(sm, hw + 2.8);
+      const ay = Math.min(a.y, world.heightAt(a.x, a.z)) + 5.9;
+      const by = Math.min(b2.y, world.heightAt(b2.x, b2.z)) + 5.9;
+      for (const p of [a, b2]) {
+        const gy = Math.min(p.y, world.heightAt(p.x, p.z));
+        wood.add(geo('pole', () => new THREE.CylinderGeometry(0.09, 0.12, 6.2, 7)),
+          trs(p.x, gy + 3.1, p.z, 0), [0.46, 0.36, 0.25]);
+      }
+      buntRun({ x: a.x, y: ay, z: a.z }, { x: b2.x, y: by, z: b2.z }, { phase: 2, sag: 1.15 });
+    }
+    const cg = cloth.build();
+    if (cg) {
       buntingMat = new THREE.MeshStandardMaterial({
-        map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.30,
-        transparent: true, alphaTest: 0.35, side: THREE.DoubleSide, roughness: 0.88, metalness: 0,
+        vertexColors: true, roughness: 0.86, metalness: 0.0,
+        side: THREE.DoubleSide, emissive: 0x0a0a0a,
       });
       buntingMat.userData.time = { value: 0 };
       buntingMat.onBeforeCompile = (sh) => {
@@ -1174,12 +1238,16 @@ export function createFurniture(engine, world, track, opts = {}) {
   float hang = 1.0 - uv.y;
   float w = sin(uWind * 2.3 + wp.x * 0.55 + wp.z * 0.42) * 0.5
           + sin(uWind * 3.7 + wp.x * 1.30) * 0.22;
-  transformed += normal * w * hang * 0.26;
-  transformed.y -= abs(w) * hang * 0.05; }`);
+  transformed += normal * w * hang * 0.09;
+  transformed.y -= abs(w) * hang * 0.04; }`);
+        // thin sunlit cloth glows with its own colour instead of going black when backlit
+        sh.fragmentShader = sh.fragmentShader
+          .replace('#include <emissivemap_fragment>',
+            '#include <emissivemap_fragment>\n\ttotalEmissiveRadiance += diffuseColor.rgb * 0.26;');
       };
-      const buntingMesh = new THREE.Mesh(merged, buntingMat);
+      const buntingMesh = new THREE.Mesh(cg, buntingMat);
       buntingMesh.name = 'furniture:bunting';
-      buntingMesh.frustumCulled = false;
+      buntingMesh.castShadow = o.shadows;
       group.add(buntingMesh);
     }
   }
@@ -1474,11 +1542,35 @@ export function createFurniture(engine, world, track, opts = {}) {
       }
     }
 
-    /** Prickly pear (sabra) — the hedge every Israeli field edge has. */
-    function sabra(x, gy, z, sc = 1) {
+    /**
+     * Prickly pear (sabra) — the hedge every Israeli field edge has.
+     *
+     * This used to build its own pads from a 24-face squashed sphere with one flat vertex
+     * colour, which is what sprinkled open ground with chartreuse blobs — while the *good*
+     * cactus (real pad geometry, generated spine texture, its own material) sat in
+     * `vegetation.js` as the `prickly` species and was never asked for from here. Exactly the
+     * mistake the trackside cypresses made for three rounds, so it is fixed the same way:
+     * route through `veg.plant('prickly', ...)` and keep the primitive only as a fallback for
+     * when the vegetation system is not running at all.
+     *
+     * Sabra also never grows as isolated dots — it marks a boundary. Each call now lays a
+     * short hedge along the verge rather than one lone bush in the middle of nowhere.
+     */
+    function sabra(x, gy, z, sc = 1, dirX = 0, dirZ = 0) {
+      const n = 3 + ((R() * 4) | 0);
+      const dl = Math.hypot(dirX, dirZ);
+      const ux = dl > 1e-3 ? dirX / dl : 1, uz = dl > 1e-3 ? dirZ / dl : 0;
+      if (o.veg?.plant) {
+        let ok = false;
+        for (let i = 0; i < n; i++) {
+          const d = (i - (n - 1) * 0.5) * (1.30 + R() * 0.55);
+          const px = x + ux * d + (R() - 0.5) * 0.65, pz = z + uz * d + (R() - 0.5) * 0.65;
+          ok = o.veg.plant('prickly', px, pz, { scale: sc * (0.85 + R() * 0.45), tint: R() }) || ok;
+        }
+        if (ok) return;
+      }
       const pad = geo('sabrapad', () => new THREE.SphereGeometry(0.5, 6, 4).scale(1.0, 1.25, 0.28));
-      const n = 4 + ((R() * 5) | 0);
-      for (let i = 0; i < n; i++) {
+      for (let i = 0; i < n + 2; i++) {
         const a = R() * TAU, r = R() * 0.55 * sc;
         const h = (0.55 + R() * 0.85) * sc;
         const t = 0.85 + R() * 0.3;
@@ -1707,7 +1799,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       const roll = R();
       if (steep) {
         if (roll < 0.5) boulders(p2.x, gy2, p2.z, 0.9 + R() * 0.7);
-        else if (roll < 0.8) sabra(p2.x, gy2, p2.z, 0.9 + R() * 0.5);
+        else if (roll < 0.8) sabra(p2.x, gy2, p2.z, 0.9 + R() * 0.5, sm2.tangent.x, sm2.tangent.z);
         else oliveAt(wood, foliage, p2.x, gy2, p2.z, 0.8 + R() * 0.4, R);
         continue;
       }
@@ -1724,7 +1816,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       } else {
         if (roll < 0.20) stoneWall(p2.x, p2.z, ry2, 10 + R() * 10, 0.55 + R() * 0.45);
         else if (roll < 0.38) wireFence(p2.x, p2.z, ry2, 14 + R() * 10);
-        else if (roll < 0.50) sabra(p2.x, gy2, p2.z, 1.0 + R() * 0.6);
+        else if (roll < 0.50) sabra(p2.x, gy2, p2.z, 1.0 + R() * 0.6, sm2.tangent.x, sm2.tangent.z);
         else if (roll < 0.60) boulders(p2.x, gy2, p2.z, 0.9 + R() * 0.6);
         else if (roll < 0.70) { for (let j = 0; j < 3; j++) { const q = { x: p2.x + sm2.tangent.x * j * 5.5 + sm2.normal.x * sgn * (R() * 3), z: p2.z + sm2.tangent.z * j * 5.5 + sm2.normal.z * sgn * (R() * 3) }; oliveAt(wood, foliage, q.x, world.heightAt(q.x, q.z), q.z, 0.85 + R() * 0.45, R); } }
         else if (roll < 0.78) { const cyp = geo('cypress', () => new THREE.ConeGeometry(1, 1, 8)); for (let j = 0; j < 4; j++) { const q = { x: p2.x + sm2.tangent.x * j * 4.2, z: p2.z + sm2.tangent.z * j * 4.2 }; const qy = world.heightAt(q.x, q.z); const hh = 6.0 + R() * 3.0, w2 = 0.9 + R() * 0.3, t2 = 0.85 + R() * 0.3; if (o.veg?.plant) { o.veg.plant('cypress', q.x, q.z, { scale: hh / 7.6, widthScale: w2, lean: 0.02 + R() * 0.05 }); } else { wood.add(geo('cyptrunk', () => new THREE.CylinderGeometry(0.14, 0.20, 1, 5)), trs(q.x, qy + 0.5, q.z, 0, 1, 1.0, 1), [0.31, 0.26, 0.20]); foliage.add(cyp, trs(q.x, qy + hh * 0.5 + 0.4, q.z, R() * TAU, w2, hh, w2), [0.135 * t2, 0.225 * t2, 0.135 * t2]); } } }
@@ -1747,13 +1839,23 @@ export function createFurniture(engine, world, track, opts = {}) {
   mk(wood, 'wood', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.86, metalness: 0.0 }));
   mk(rubber, 'rubber', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.93, metalness: 0.0 }));
   const strawTex = buildStrawTextures();
+  // Straw is thin, dry and translucent: light that hits the sunlit side of a bale leaks
+  // through and bounces off the ground, so the shaded two-thirds of a real bale stays warm
+  // gold. With only sky fill on it the shaded half tone-mapped down into a dark olive, which
+  // is why three rounds of review kept reporting "green hay". The emissive term is that
+  // missing bounce — keyed off the straw map so it follows the fibre rather than flattening
+  // it, and warm rather than white so it cannot push the shadow towards green.
   mk(straw, 'straw', new THREE.MeshStandardMaterial({
     vertexColors: true, map: strawTex.map, normalMap: strawTex.normal,
-    normalScale: new THREE.Vector2(2.1, 2.1), roughness: 0.98, metalness: 0.0,
-    emissive: 0xffffff, emissiveMap: strawTex.map, emissiveIntensity: 0.075,
+    normalScale: new THREE.Vector2(1.55, 1.55), roughness: 0.96, metalness: 0.0,
+    envMapIntensity: 1.25,
+    emissive: 0xffd39a, emissiveMap: strawTex.map, emissiveIntensity: 0.34,
   }));
   mk(foliage, 'foliage', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0.0, flatShading: true }));
-  mk(fur, 'cats', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.80, metalness: 0.0, flatShading: true }));
+  // Smooth-shaded, not flat: a 7 x 5 sphere with flatShading on is a faceted blob at any
+  // distance, and the crowd was read as exactly that three rounds running. The same geometry
+  // with interpolated normals reads as a rounded, soft-furred animal for free.
+  mk(fur, 'cats', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0.0 }));
   if (canvasB.count) {
     mk(canvasB, 'awning', new THREE.MeshStandardMaterial({
       map: buildAwningTexture(), vertexColors: true, roughness: 0.90, metalness: 0.0, side: THREE.DoubleSide,
@@ -1840,6 +1942,11 @@ function catAt(b, x, y, z, ry, sc, R, opt = {}) {
   const scarf = geo('catscarf', () => new THREE.CylinderGeometry(0.168, 0.168, 0.095, 8));
   const capTop = geo('catcap', () => new THREE.SphereGeometry(0.145, 7, 4).scale(1, 0.62, 1));
   const capPeak = geo('catpeak', () => new THREE.BoxGeometry(0.20, 0.022, 0.11));
+  // Round 4: haunches, hind paws and a shoulder ball at every arm root. Without them the
+  // torso simply stopped in mid-air and the arms read as tapered sticks pushed into a blob.
+  const shoulder = geo('catshoulder', () => new THREE.SphereGeometry(0.064, 5, 4));
+  const haunch = geo('cathaunch', () => new THREE.SphereGeometry(0.115, 6, 4).scale(1.0, 0.88, 1.25));
+  const foot = geo('catfoot', () => new THREE.SphereGeometry(0.072, 5, 4).scale(1.2, 0.70, 1.5));
 
   // local frame: +dx right, +dy up, +dz forward (the way the cat faces)
   const fx = -Math.sin(ry), fz = -Math.cos(ry);
@@ -1849,41 +1956,74 @@ function catAt(b, x, y, z, ry, sc, R, opt = {}) {
       ry + dry, s * sc, (sy ?? s) * sc, (sz ?? s) * sc, rx, rz), col);
   };
 
-  put(body, c, 0, 0.26, 0);
-  put(bib, cream, 0, 0.25, 0.11);
-  put(scarf, sk, 0, 0.425, 0.01);
-  put(head, c, 0, 0.555, 0.045);
-  put(muzzle, cream, 0, 0.520, 0.175);
-  put(nose, [0.86, 0.46, 0.46], 0, 0.545, 0.235);
+  /**
+   * One foreleg, built as shoulder + upper arm + forearm + paw.
+   *
+   * `a1`/`a2` are the two segment angles measured from straight up, positive = away from the
+   * body. A raised arm is a1 ≈ 0.4, a2 ≈ 0.1 (up and a little out); a hanging arm is a1 ≈ π.
+   * The old cheer pose was a single stick at 66° from vertical on both sides, i.e. every cat
+   * in the crowd holding its arms straight out sideways in exactly the same pose.
+   */
+  const arm = (sd, rootY, rootZ, a1, a2) => {
+    const L1 = 0.28, L2 = 0.23;
+    const x0 = sd * 0.142, y0 = rootY;
+    put(shoulder, c, x0, y0, rootZ);
+    const x1 = x0 + sd * Math.sin(a1) * L1, y1 = y0 + Math.cos(a1) * L1;
+    put(limb, c, (x0 + x1) * 0.5, (y0 + y1) * 0.5, rootZ, 0.98, 0, -sd * a1, 0, L1 / 0.30);
+    const x2 = x1 + sd * Math.sin(a2) * L2, y2 = y1 + Math.cos(a2) * L2;
+    put(limb, c, (x1 + x2) * 0.5, (y1 + y2) * 0.5, rootZ + 0.012, 0.86, 0, -sd * a2, 0, L2 / 0.30);
+    put(paw, cream, x2, y2 + Math.cos(a2) * 0.03, rootZ + 0.012, 0.98);
+  };
+
+  // Per-cat pose noise. Every spectator used to be the same mesh at the same angle; a crowd
+  // only reads as a crowd when no two silhouettes line up.
+  const hy = (R() - 0.5) * 0.55;            // head turn
+  const ht = (R() - 0.5) * 0.30;            // head tilt
+  const bl = (R() - 0.5) * 0.16;            // body lean
+
+  put(body, c, 0, 0.26, 0, 1, bl);
+  put(bib, cream, 0, 0.25, 0.11, 1, bl);
+  // haunches and hind paws: the torso now sits on something instead of stopping in mid-air
   for (const s of [-1, 1]) {
-    put(eye, ink, s * 0.068, 0.590, 0.150);
-    put(ear, dark, s * 0.105, 0.700, 0.005, 1, 0, -s * 0.38);
-    put(earIn, [0.92, 0.62, 0.60], s * 0.104, 0.706, 0.030, 1, 0, -s * 0.38);
+    put(haunch, dark, s * 0.150, 0.135, -0.040);
+    put(foot, cream, s * 0.128, 0.036, 0.092);
+  }
+  if (R() < 0.72) put(scarf, sk, 0, 0.425, 0.01, 1, bl);
+  put(head, c, 0, 0.555, 0.045, 1, ht, 0, hy);
+  put(muzzle, cream, 0, 0.520, 0.175, 1, ht, 0, hy);
+  put(nose, [0.86, 0.46, 0.46], 0, 0.545, 0.235, 1, ht, 0, hy);
+  for (const s of [-1, 1]) {
+    put(eye, ink, s * 0.068, 0.590, 0.150, 1, ht, 0, hy);
+    put(ear, dark, s * 0.105, 0.700, 0.005, 1, ht, -s * 0.38, hy);
+    put(earIn, [0.92, 0.62, 0.60], s * 0.104, 0.706, 0.030, 1, ht, -s * 0.38, hy);
   }
   // forelegs — either planted in front, or hooked over a rail when leaning out
   if (opt.lean) {
     for (const s of [-1, 1]) {
-      put(limb, c, s * 0.115, 0.325, 0.20, 1, 1.15);
-      put(paw, cream, s * 0.115, 0.300, 0.335);
+      put(shoulder, c, s * 0.142, 0.355, 0.09);
+      put(limb, c, s * 0.122, 0.325, 0.20, 1, 1.15);
+      put(paw, cream, s * 0.118, 0.300, 0.335);
     }
   } else {
     for (const s of [-1, 1]) {
+      put(shoulder, c, s * 0.128, 0.255, 0.075);
       put(limb, c, s * 0.105, 0.135, 0.135, 1, 0.25);
       put(paw, cream, s * 0.105, 0.010, 0.185);
     }
   }
-  // one in three has both arms up — that is what turns a stand into a crowd
-  if (opt.cheer ?? (R() < 0.34)) {
+  // arms in the air — but not the same arms, at the same angle, on every cat
+  if (opt.cheer ?? (R() < 0.36)) {
+    const single = R() < 0.42, upSide = R() < 0.5 ? -1 : 1;
     for (const s of [-1, 1]) {
-      put(limb, c, s * 0.185, 0.470, 0.02, 1, 0, -s * 1.15, 0, 1.15);
-      put(paw, cream, s * 0.300, 0.630, 0.02);
+      if (single && s !== upSide) continue;
+      arm(s, 0.395 + (R() - 0.5) * 0.03, 0.02, 0.30 + R() * 0.34, -0.10 + R() * 0.34);
     }
   }
-  put(tail, dark, 0, 0.215, -0.215, 1, 0.85);
+  put(tail, dark, 0, 0.215, -0.215, 1, 0.85 + (R() - 0.5) * 0.5, (R() - 0.5) * 0.6);
   // a supporter cap on some of them: a strong dark/bright shape on top of the head
-  if (R() < 0.30) {
-    put(capTop, sk2, 0, 0.660, 0.030);
-    put(capPeak, sk2, 0, 0.640, 0.175);
+  if (R() < 0.34) {
+    put(capTop, sk2, 0, 0.660, 0.030, 1, ht, 0, hy);
+    put(capPeak, sk2, 0, 0.640, 0.175, 1, ht, 0, hy);
   }
 }
 

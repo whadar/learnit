@@ -192,8 +192,12 @@ function cellPine(ctx, S, seed, sparse) {
 function cellCypress(ctx, S, seed) {
   const r = rng(seed);
   const bx = S * 0.5, by = S * 0.99;
-  const deep = [22, 40, 34], dark = [34, 58, 46], mid = [52, 86, 64];
-  const lit = [92, 132, 90], hot = [134, 168, 112];
+  // Cypress reads as the darkest tree on the course, but "dark" has to be a deep blue-green,
+  // not a dark neutral: at these values the tint (0x92b088, linear luma 0.38) and the baked
+  // canopy AO still have to multiply through, and a texel that starts at luma 0.03 has nothing
+  // left after that. Every step is lifted and its green/blue separation widened.
+  const deep = [30, 60, 50], dark = [44, 82, 64], mid = [70, 116, 84];
+  const lit = [114, 160, 104], hot = [158, 196, 124];
   // The spray outline: blunt-topped and widest a third of the way up, not a spindle.
   const prof = t => S * 0.33 * Math.pow(Math.sin(Math.PI * Math.pow(clamp(t, 0.001, 1), 0.46)), 0.46);
   // 1. under-mass, drawn with a lumpy margin so even the base coverage has a broken outline
@@ -306,7 +310,7 @@ function cellOlive(ctx, S, seed) {
   const bx = S * 0.5, by = S * 0.99;
   // Olive foliage is bicoloured: grey-green above, near-white felted underside. Half the
   // leaves of a real tree show their pale side, which is what makes a grove read silver.
-  underMass(ctx, S, r, [150, 158, 130], S * 0.32, S * 0.30, bx, by - S * 0.42, 9, 0.32);
+  underMass(ctx, S, r, [132, 156, 112], S * 0.32, S * 0.30, bx, by - S * 0.42, 9, 0.32);
   for (let b = 0; b < 11; b++) {
     const ang = -Math.PI / 2 + (b - 5) * 0.175 + (r() - 0.5) * 0.14;
     const L = S * (0.46 + r() * 0.30);
@@ -323,9 +327,12 @@ function cellOlive(ctx, S, seed) {
         ctx.translate(px, py);
         ctx.rotate(la + Math.PI / 2);
         const g = r();
+        // Half the leaves of a real olive show their felted pale underside, but at 0.56 the
+        // silver half no longer swamps the tree: an olive grove has to read grey-*green*, and
+        // the upper surface is a proper mid green, not a khaki.
         drawLeaf(ctx, L2, W2,
-          g > 0.44 ? jit([212, 218, 192], r, 0.09) : jit([110, 134, 86], r, 0.22),
-          g > 0.44 ? 'rgba(188,194,168,0.5)' : 'rgba(160,172,136,0.5)', 0, false);
+          g > 0.56 ? jit([206, 214, 186], r, 0.09) : jit([96, 140, 82], r, 0.22),
+          g > 0.56 ? 'rgba(180,190,162,0.5)' : 'rgba(140,164,124,0.5)', 0, false);
         ctx.restore();
       }
     }
@@ -681,9 +688,9 @@ function drawAtlasCells(ctx, S, background) {
   };
   cell('pineA',   (c, w) => cellPine(c, w, 1201), [78, 104, 58]);
   cell('pineB',   (c, w) => cellPine(c, w, 4409), [70, 96, 52]);
-  cell('cypress', (c, w) => cellCypress(c, w, 7717), [44, 70, 52]);
+  cell('cypress', (c, w) => cellCypress(c, w, 7717), [58, 96, 72]);
   cell('oak',     (c, w) => cellOak(c, w, 3313, true), [58, 88, 44]);
-  cell('olive',   (c, w) => cellOlive(c, w, 9091), [116, 132, 100]);
+  cell('olive',   (c, w) => cellOlive(c, w, 9091), [116, 138, 100]);
   cell('almond',  (c, w) => cellAlmond(c, w, 5155), [104, 132, 68]);
   cell('sage',    (c, w) => cellSage(c, w, 2287), [132, 140, 106]);
   cell('broom',   (c, w) => cellBroom(c, w, 6631), [126, 146, 96]);
@@ -998,29 +1005,89 @@ uniform vec3  uSunColor;
 uniform float uTrans;
 uniform float uTransPow;
 uniform float uWrap;
+uniform vec3  uScatterCol;
+uniform float uScatter;
 #ifdef VEG_AO
   uniform float uAo;
   varying float vVegAo;
 #endif
 `;
 
-// Cheap subsurface: light that reaches the camera *through* the leaf. Peaks when the sun is
-// directly behind the fragment and is strongest on cards turned away from the sun.
+// Three separate things happen to sunlight in a canopy and a foliage card needs all three, or
+// it renders as a black silhouette with a bright rim and nothing in between:
+//
+//   1. **Back-light.** Light that comes straight *through* one leaf toward the camera. Peaks
+//      when the sun is directly behind the fragment.
+//   2. **Wrapped direct.** A card is a paper-thin slice of a scattering volume, so its
+//      terminator is not at N.L = 0; it wraps well past 90 deg. This used to be squared,
+//      which drove it to ~0.005 by the time N.L reached -0.5 — i.e. it did nothing at all on
+//      the shaded flank, which is exactly where it was supposed to work. It is linear now,
+//      and the wrap is wide (0.85), so the shaded flank keeps a real gradient.
+//   3. **Canopy scatter.** The dominant term inside a dense tree, and the one that was
+//      missing entirely. Most light reaching a fragment deep in a cypress has already passed
+//      through one or two layers of foliage; it is a sizeable fraction of the sun and it is
+//      *green*, because leaves transmit green and eat red and blue. Modelled as an additive
+//      fill in `uScatterCol` (a transmission colour derived from the species tint) that fades
+//      in exactly as the fragment stops receiving sun, so the sunlit face is untouched and the
+//      shaded face lands in a deep blue-green mid-tone instead of neutral black. It is lightly
+//      modulated by albedo, because scattered light does not carry the card's own texture —
+//      but enough that the cords and needles keep their internal value range.
 const TRANS_BODY = /* glsl */`
 {
   vec3  sunV  = normalize( ( viewMatrix * vec4( uSunDir, 0.0 ) ).xyz );
-  float back  = pow( clamp( -dot( geometryViewDir, sunV ), 0.0, 1.0 ), uTransPow );
   float ndl   = dot( geometryNormal, sunV );
+  float back  = pow( clamp( -dot( geometryViewDir, sunV ), 0.0, 1.0 ), uTransPow );
   float sheen = 1.0 - 0.55 * clamp( ndl, 0.0, 1.0 );
   reflectedLight.indirectDiffuse += uSunColor * ( uTrans * back * sheen ) * diffuseColor.rgb;
-  // Wrapped fill. A leaf card is a paper-thin slice of a canopy that scatters light in every
-  // direction; lit strictly by N.L half of every puff falls off a cliff into black, which is
-  // exactly the "half bright-green / half near-black" tell. Wrap the terminator around by
-  // 0.62 and add back only the difference, so the sunlit side is untouched.
-  float wrapd = clamp( ( ndl + 0.62 ) / 1.62, 0.0, 1.0 );
-  reflectedLight.indirectDiffuse += uSunColor * ( uWrap * max( 0.0, wrapd * wrapd - max( ndl, 0.0 ) ) ) * diffuseColor.rgb;
+
+  float wrapd = clamp( ( ndl + 0.85 ) / 1.85, 0.0, 1.0 );
+  float fill  = max( 0.0, wrapd - max( ndl, 0.0 ) );
+  reflectedLight.indirectDiffuse += uSunColor * ( 2.1 * uWrap * fill ) * diffuseColor.rgb;
+
+  // How much sun this fragment actually got, in units of "full sun", read back off the direct
+  // term itself: N.L alone is not enough, because the front of a cypress column is *shadowed*
+  // by its own outer cards as often as it is turned away, and a geometric term cannot see that.
+  // The ratio is albedo-independent, since directDiffuse is linear in diffuseColor.
+  float alb   = max( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ), 1e-3 );
+  float recv  = dot( reflectedLight.directDiffuse, vec3( 0.2126, 0.7152, 0.0722 ) ) / alb;
+  float shade = 1.0 - smoothstep( 0.10, 0.85, recv );
+  reflectedLight.indirectDiffuse += uScatterCol * ( uScatter * shade * ( 0.50 + 1.6 * alb ) );
 }
 `;
+
+/**
+ * Transmission colour for the canopy-scatter fill: the colour light comes out as after it has
+ * been through a leaf or two of this species.
+ *
+ * The species tint (`opts.color`) is a pastel multiplier — 0x92b088 for cypress is barely
+ * 12 % chroma — so it cannot be used directly: a fill in that colour is a grey fill. Push its
+ * chroma hard about its own luma, give a green-dominant species a floor of blue so the result
+ * is *blue*-green rather than lime, then renormalise to unit luma so `uScatter` alone sets the
+ * level and the tint only sets the hue. A straw tint (dry grass, wheat) stays straw; a leaf
+ * tint becomes bottle green.
+ */
+function scatterColour(tint) {
+  const c = new THREE.Color(tint);                       // sRGB literal -> working linear
+  const l = c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722;
+  const K = 2.0;
+  let r = Math.max(l + (c.r - l) * K, 0);
+  let g = Math.max(l + (c.g - l) * K, 0);
+  let b = Math.max(l + (c.b - l) * K, 0);
+  let mx = Math.max(r, g, b);
+  if (g >= mx) {
+    // Anything still green-dominant is a live leaf, and what a live leaf *transmits* is
+    // chlorophyll green regardless of how silver or grey its face reflects — which is why the
+    // inside of an olive canopy is green even though the tree reads silver from outside.
+    // Straw-coloured cards (dry grass, wheat: red-dominant tints) are dead and keep their hue.
+    b = Math.max(b, g * 0.52);                           // cypress/pine shade is blue-green
+    const LEAF = [0.345, 1.231, 0.640], m = 0.45;
+    r += (LEAF[0] - r) * m; g += (LEAF[1] - g) * m; b += (LEAF[2] - b) * m;
+    mx = Math.max(r, g, b);
+  }
+  r = Math.max(r, mx * 0.16); g = Math.max(g, mx * 0.16); b = Math.max(b, mx * 0.16);
+  const l2 = Math.max(r * 0.2126 + g * 0.7152 + b * 0.0722, 1e-4);
+  return new THREE.Color(r / l2, g / l2, b / l2);
+}
 
 /**
  * Install the wind (and optionally the translucency / no-flip normal) patch on a material.
@@ -1035,6 +1102,8 @@ export function patchVegetationMaterial(mat, wind, opts = {}) {
     uTransPow: { value: opts.transPow ?? 3.2 },
     uWrap:     { value: opts.wrap ?? 0.0 },
     uAo:       { value: opts.aoStrength ?? 0.75 },
+    uScatterCol: { value: scatterColour(opts.scatterColor ?? opts.color ?? 0xa8bf8c) },
+    uScatter:  { value: opts.scatter ?? 0.0 },
   };
   if (opts.alphaSharp) {
     const img = opts.alphaSharp.image || {};
@@ -1062,8 +1131,12 @@ export function patchVegetationMaterial(mat, wind, opts = {}) {
     if (lit) {
       shader.fragmentShader = shader.fragmentShader
         .replace('void main() {', TRANS_PARS + '\nvoid main() {')
+        // Baked canopy AO, floored: the interior cards carry AO down to ~0.2, and 0.2 x a
+        // pastel tint x a dark leaf texel is an albedo of 0.02 — a surface with no hue left in
+        // it for any amount of light to reveal. The floor keeps the deep canopy dark without
+        // letting it go achromatic.
         .replace('#include <color_fragment>',
-          '#include <color_fragment>\n\t#ifdef VEG_AO\n\tdiffuseColor.rgb *= mix( 1.0, vVegAo, uAo );\n\t#endif');
+          '#include <color_fragment>\n\t#ifdef VEG_AO\n\tdiffuseColor.rgb *= mix( 1.0, max( vVegAo, 0.42 ), uAo );\n\t#endif');
       if (opts.sphericalNormals) {
         // Spherical canopy normals must survive DoubleSide: three flips them for back faces,
         // which would black out half of every card.
@@ -1099,6 +1172,8 @@ export function createFoliageMaterial(atlas, wind, opts = {}) {
     bend: opts.bend ?? 0.20, flutter: opts.flutter ?? 1.0, gustScale: opts.gustScale ?? 0.028,
     translucency: opts.translucency ?? 0.55, transPow: opts.transPow ?? 3.0,
     wrap: opts.wrap ?? 0.45, aoStrength: opts.aoStrength ?? 0.80,
+    // Canopy scatter is what stops a shaded canopy going neutral black; see TRANS_BODY.
+    scatter: opts.scatter ?? 0.17, scatterColor: opts.scatterColor ?? opts.color,
     alphaSharp: opts.alphaSharp === false ? null : atlas, alphaRef: mat.alphaTest,
     sphericalNormals: opts.sphericalNormals !== false && !opts.billboard,
     billboard: !!opts.billboard, lit: true,
