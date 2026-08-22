@@ -655,8 +655,8 @@ export function createLighting(engine, world, sky, opts = {}) {
   // A shadow map can only ever darken the ground *behind* an occluder. What sells a kart as
   // standing on the road is the little wedge of near-black right where rubber meets tarmac —
   // the ambient occlusion of a 1 m box sitting on a plane, which no directional shadow map
-  // resolves at this sun angle (elevation ~56 deg puts the cast shadow almost entirely under
-  // the chassis). MK8 draws it as an explicit soft blob under every kart and so does this.
+  // resolves at this sun angle (elevation 53 deg puts the cast shadow almost entirely under
+  // the chassis, and the canonical views all look within ~30 deg of the sun's azimuth). MK8 draws it as an explicit soft blob under every kart and so does this.
   //
   // The previous pool was the size of the kart's own footprint — 2.3 x 3.0 m — and that is
   // exactly why it never appeared in a frame. A chase or photo-finish camera sits about a
@@ -731,7 +731,7 @@ export function createLighting(engine, world, sky, opts = {}) {
       scene.add(mesh);
 
       const targets = [];
-      const restY = new Map();          // racer -> smoothed resting height, see update()
+      const restY = new WeakMap();      // racer -> smoothed resting height, see update()
       const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
       const _n = new THREE.Vector3(), _fw = new THREE.Vector3(), _rt = new THREE.Vector3();
       const _m = new THREE.Matrix4();

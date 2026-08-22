@@ -61,18 +61,36 @@ const _c1 = new THREE.Color();
  *     contrast against something darker, not by being brighter than everything else.
  */
 const FX_TUNE = {
-  /* mini-turbo charge sparks: short, stretched, individually readable comets */
+  /**
+   * Mini-turbo charge sparks.
+   *
+   * The blue-confetti post-mortem. Round 3 ran these through the alpha-over `fire` batch to
+   * escape the round-1 white blowout. Alpha-over *replaces* the background with the particle
+   * colour, so a saturated tier hue on dark tarmac came out as a solid mid-blue quad with a
+   * hard edge and no value structure at all — a dozen blue chips scattered over the road.
+   * A spark is light, not paint, and it has to be brighter than what it sits on.
+   *
+   * So they go back to the screen-blended `add` batch — `dst + src*(1-dst)`, which *cannot*
+   * exceed 1.0 no matter how many overlap, so the round-1 blowout is structurally impossible
+   * — and the ramp runs white-hot core -> saturated tier hue instead of tier hue -> lighter
+   * tier hue. Over a dark road that is a white head with a coloured tail: a comet.
+   *
+   * `spin: 0` matters as much as the blend. `stretch` maps the quad into the screen-space
+   * velocity frame, so with no spin the four-point star's long arm lies *along* the streak
+   * and the sprite reads as motion. Round 3 spun it at 5 rad/s, which is exactly why twelve
+   * sparks sat at twelve unrelated angles and read as scattered plastic chips.
+   */
   driftSpark: {
-    blend: 'fire',
+    blend: 'add',
     // stretch is a *multiplier on screen-space velocity*, so raising it and the base size
     // together turned a 0.26 m spark into a 3 m streak and the shower into a firework that
     // bloomed to white over the kart. Short and dense reads as a mini-turbo; long does not.
-    size: [0.34, 0.040], life: [0.20, 0.40], alpha: 0.88, stretch: 0.30,
-    speed: [2.6, 6.2], spread: 0.42, jitter: 0.7, drag: 6.0, grav: -5.5,
-    turb: [0.04, 3.0], spin: 5, fadeIn: 0.03,
+    size: [0.28, 0.055], life: [0.18, 0.34], alpha: 1.0, stretch: 0.40,
+    speed: [3.0, 7.0], spread: 0.30, jitter: 0.5, drag: 5.6, grav: -2.4,
+    turb: [0.02, 3.0], spin: 0, fadeIn: 0.02,
   },
   /* the soft bloom that sits under a spark shower — small and dim, it is not the star */
-  miniTurbo: { blend: 'fire', size: [0.24, 0.035], life: [0.14, 0.28], alpha: 0.48, speed: [0.8, 2.2] },
+  miniTurbo: { blend: 'add', size: [0.30, 0.045], life: [0.12, 0.24], alpha: 0.50, speed: [0.8, 2.2], spin: 0 },
 
   /* Exhaust fire body. Alpha-over, so this orange is the orange you see, no matter how many
    * sprites overlap; the colour ramp does the cooling, hot yellow-orange at birth to
@@ -112,20 +130,33 @@ const FX_TUNE = {
    * column rather than as a wash — which is what lets it be this big without flattening. */
   driftSmoke: {
     lit: 1,
-    size: [0.32, 1.55], life: [0.46, 0.95], alpha: 0.38,
+    // Fewer, denser, shorter-lived puffs than round 3. A wash is what you get when thirty
+    // 0.38-alpha billboards overlap: every pixel lands on the same integrated grey and the
+    // plume has no billow. Half as many puffs at 0.54 alpha integrate to the same coverage
+    // but each one keeps a lit shoulder and a shaded belly, so the column has lumps.
+    size: [0.26, 1.30], life: [0.38, 0.80], alpha: 0.54,
     speed: [1.1, 2.9], spread: 0.5, jitter: 0.6, drag: 2.0, grav: 0.85,
-    turb: [0.26, 0.65], fadeIn: 0.07, spin: 1.3,
-    colorA: [0.93, 0.91, 0.89], colorB: [0.46, 0.44, 0.45],
+    turb: [0.30, 0.75], fadeIn: 0.05, spin: 1.3,
+    colorA: [0.95, 0.93, 0.91], colorB: [0.40, 0.39, 0.41],
   },
-  /* Surface dust. Lower alpha than round 2 and lit: the plume now gets its presence from
-   * value contrast between the sunlit and shaded side of each puff, not from stacking
-   * enough flat sprites to reach opacity. That is the whole difference between dust and
-   * fog, and it is why this can be big without washing the kart in front of it. */
+  /**
+   * Surface dust.
+   *
+   * Round 3 sized this for a full-lock slide across a ploughed field and then let a kart
+   * tracking dead straight emit at 45% of that rate (see the `loose` term in the rig), so a
+   * 59 km/h run down Ridge Road put ~48 concurrent 2.3 m puffs at 0.58 effective alpha
+   * directly between the chase lens and the hero. That is the round-1 "blown blob erases
+   * the kart" failure wearing a beige coat.
+   *
+   * A dust trail is a *trail*: small, short-lived, dense near the tyre and gone a car length
+   * later. The rate is now slip-driven rather than speed-driven, and the plume budget in the
+   * rig caps what any combination of speed and surface can put in the air at once.
+   */
   dust: {
     lit: 1,
-    size: [0.44, 2.30], life: [0.80, 1.60], alpha: 0.70,
-    speed: [1.0, 3.0], spread: 0.7, jitter: 0.85, drag: 1.35, grav: 0.26,
-    turb: [0.45, 0.42], fadeIn: 0.10, spin: 0.9,
+    size: [0.34, 1.40], life: [0.50, 1.00], alpha: 0.42,
+    speed: [1.0, 2.8], spread: 0.6, jitter: 0.7, drag: 1.7, grav: 0.20,
+    turb: [0.40, 0.50], fadeIn: 0.09, spin: 0.9,
   },
 };
 
@@ -157,11 +188,28 @@ const FX_EXTRA = {
     speed: [2.0, 5.5], spread: 0.6, jitter: 1.0, drag: 2.0, grav: 0.8, turb: [0.3, 0.9],
     alpha: 0.42, colorA: [0.82, 0.78, 0.72], colorB: [0.45, 0.42, 0.40], fadeIn: 0.10, spin: 1.1,
   },
-  /** Rooster tail: the long, low plume a kart drags across loose ground at speed. */
+  /**
+   * Rooster tail: the long, low plume a kart drags across loose ground *while sliding*.
+   * Round 3 gated it on speed alone with a 0.55 floor, so a straight-line kart threw a
+   * 1.8 s, 2.8 m, 0.72-alpha column on top of the dust above it. Now it is the reward for
+   * actually scrubbing the tyres, and it is a plume rather than a wall.
+   */
   rooster: {
-    sprite: 'dust', blend: 'alpha', lit: 1, count: 1, life: [0.90, 1.8], size: [0.50, 2.8],
-    speed: [2.8, 7.2], spread: 0.30, jitter: 1.1, drag: 1.7, grav: 0.30, turb: [0.55, 0.45],
-    alpha: 0.72, colorA: [0.94, 0.87, 0.73], colorB: [0.50, 0.44, 0.37], fadeIn: 0.12, spin: 0.8,
+    sprite: 'dust', blend: 'alpha', lit: 1, count: 1, life: [0.55, 1.15], size: [0.42, 1.85],
+    speed: [2.8, 7.2], spread: 0.30, jitter: 1.1, drag: 1.9, grav: 0.30, turb: [0.55, 0.45],
+    alpha: 0.46, colorA: [0.94, 0.87, 0.73], colorB: [0.50, 0.44, 0.37], fadeIn: 0.10, spin: 0.8,
+  },
+  /**
+   * The tier-coloured pool of light at the contact patch. A mini-turbo in MK8 is not only
+   * the individual sparks — it is the glow they come out of, which is what makes the charge
+   * level readable at race distance when no single spark is more than four pixels wide.
+   * Screen-blended, low alpha and pinned to the tyre so it never becomes a light source
+   * floating in the air.
+   */
+  sparkGlow: {
+    sprite: 'flare', blend: 'add', count: 1, life: [0.10, 0.22], size: [0.62, 0.10],
+    speed: [0.4, 1.6], spread: 0.9, jitter: 0.35, drag: 7.0, grav: 0.5, turb: [0.02, 2.0],
+    alpha: 0.40, fadeIn: 0.02, spin: 0,
   },
   /**
    * Tyre scrub: the dense, low, hard-edged kernel that sits *at the contact patch* while a
@@ -1435,6 +1483,24 @@ function createKartRig(vfx, world, target, o = {}) {
   // race headlessly), and without it the plume would lose its tier colour entirely.
   let heldTier = 1;
   let mudLevel = 0;
+
+  /**
+   * Plume budget — the standing guard against "the VFX ate the hero".
+   *
+   * This game has now lost the player kart twice to a lobe of my own output: round 1 to a
+   * white boost blowout, round 3 to a beige dust column. Both times the emitter was obeying
+   * its rate formula perfectly; the failure was that no rate formula anywhere knew how much
+   * was *already in the air*. Tuning constants cannot fix that, because the next surface,
+   * the next speed or the next quality setting simply finds a new combination that stacks.
+   *
+   * So the ground plume carries an explicit occupancy counter: every alpha-blended puff this
+   * rig emits adds one, and it bleeds off at roughly one puff-lifetime. Past PLUME_SOFT the
+   * emission rate rolls smoothly to zero at PLUME_HARD, so the plume is allowed to be dense
+   * and is structurally incapable of becoming opaque, whatever the inputs do.
+   */
+  let plume = 0;
+  const PLUME_SOFT = 22, PLUME_HARD = 40;
+
   const skidId = seed;
   const TRAIL_ANCHOR = [0, -0.02, -0.95];
   const LANDING_ANCHOR = [0, -0.3, 0];
@@ -1575,6 +1641,22 @@ function createKartRig(vfx, world, target, o = {}) {
     }
   }
   let wheelDrop = 0.40;
+  /**
+   * How far the racing ribbon sits above the raw SRTM terrain, learned at every real wheel
+   * contact. The circuit is a smoothed spline draped over the heightfield and stands up to
+   * 0.7 m proud of it on an embanked corner, so `world.heightAt` alone puts a mark under the
+   * road. Carrying the measured offset forward is what lets the rig still place a mark on
+   * the *road* during the quarter-second hops where no wheel reports a contact at all — the
+   * alternative is stamping at the kart's flight height, which hangs the stripe in mid-air.
+   */
+  let ribbonLift = 0;
+  function roadYAt(x, z, fallback) {
+    if (world && world.heightAt) {
+      const h = world.heightAt(x, z);
+      if (Number.isFinite(h)) return h + ribbonLift;
+    }
+    return fallback;
+  }
   function trackSurfaceLift(dt) {
     const pw = physWheels();
     if (!pw) return;
@@ -1583,6 +1665,10 @@ function createKartRig(vfx, world, target, o = {}) {
       if (!c || !c.contact || !c.contactPos || !Number.isFinite(c.contactPos.y)) continue;
       local(wheels[i - 2] || wheels[0], wtmp);
       wheelDrop = damp(wheelDrop, clamp(wtmp.y - c.contactPos.y, 0.02, 1.4), 8, dt);
+      if (world && world.heightAt) {
+        const h = world.heightAt(c.contactPos.x, c.contactPos.z);
+        if (Number.isFinite(h)) ribbonLift = damp(ribbonLift, clamp(c.contactPos.y - h, -2, 4), 6, dt);
+      }
       return;
     }
   }
@@ -1605,17 +1691,34 @@ function createKartRig(vfx, world, target, o = {}) {
     const grounded = st.grounded;
     const onWater = fx.wet > 0;
 
+    // Bleed the plume occupancy off over roughly one puff lifetime, then derive the gate
+    // that every alpha-blended ground emitter below multiplies into its rate.
+    plume = Math.max(0, plume - dt * (plume * 1.15 + 0.5));
+    const plumeGate = 1 - smoothstep(PLUME_SOFT, PLUME_HARD, plume);
+
     /* --- tyre smoke / surface dust ------------------------------------------------ */
     if (st.contact > 0.02 && spd > 1.2) {
       const heat = clamp(slip * 2.1, 0, 1.25) * (0.35 + 0.85 * fast);
-      const loose = fx.rate * (0.30 + 0.85 * fast) * (0.45 + 0.85 * slip);
+      /**
+       * Loose-surface dust rate.
+       *
+       * The 0.45 floor this used to carry is what put a dust column over the hero on Ridge
+       * Road: a kart with 1% slip angle, tracking dead straight down a road the art renders
+       * as asphalt, still earned 45% of the full-lock-slide rate purely for being fast. But
+       * dust is thrown by tyres *scrubbing*, not by tyres *rolling* — a kart tracking true
+       * on hard-packed dirt leaves a thin trail off the rear contact patches and nothing
+       * else. So the rate is now dominated by slip and by the measured slide, with only a
+       * small speed-driven floor to keep a trail alive on a straight.
+       */
+      const loose = fx.rate * (0.10 + 0.55 * fast) * (0.12 + 0.70 * slip + 0.55 * st.slide);
       const hard = fx.decal === 'tyre';
       // Halved against the old rates. driftSmoke lives ~0.65 s, so 46/s on tarmac put ~30
       // metre-wide puffs around the kart at once and they merged into one fog bank that hid
       // the wheels. A pair of readable plumes needs ~8 concurrent, not 30.
       const smokeRate = (onWater ? 22 * fast
-        : (hard ? fx.rate * heat * 0.72 : loose * 1.00 + fx.rate * heat * 0.35)) * st.contact;
+        : (hard ? fx.rate * heat * 0.48 : loose * 1.00 + fx.rate * heat * 0.30)) * st.contact * plumeGate;
       const n = rate('smoke', smokeRate * (o.rate ?? 1) * vfx.emitScale, dt);
+      plume += n;
       for (let i = 0; i < n; i++) {
         const w = wheels[i % wheels.length];
         local(w, wp);
@@ -1638,11 +1741,13 @@ function createKartRig(vfx, world, target, o = {}) {
           pos: wp, dir: dirv, count: 1, raw: true,
           vx: vel.x * inh, vy: vel.y * inh, vz: vel.z * inh,
           colorA: fx.a, colorB: fx.b,
-          scale: lerp(0.58, 1.42, rand()) * (hard ? lerp(0.85, 1.5, heat) : 1),
+          scale: lerp(0.58, 1.35, rand()) * (hard ? lerp(0.80, 1.25, heat) : 1),
           // per-puff opacity spread: identical alphas integrate to a flat plateau, a spread
           // of them keeps individual puffs readable inside the plume
-          opacity: (hard ? clamp(0.36 + heat * 0.50, 0, 0.98) : clamp(0.52 + 0.48 * fast, 0, 1.05))
-            * lerp(0.7, 1.18, rand()),
+          // A loose-ground puff's opacity follows the scrub too, not the speedometer: a
+          // straight-line trail is a translucent smudge, a full slide is a solid plume.
+          opacity: (hard ? clamp(0.40 + heat * 0.52, 0, 0.98)
+            : clamp(0.24 + 0.26 * fast + 0.42 * st.slide, 0, 1.0)) * lerp(0.7, 1.18, rand()),
           speedScale: 0.7 + fast * 0.9,
           drag: fx.drag,
         });
@@ -1653,8 +1758,9 @@ function createKartRig(vfx, world, target, o = {}) {
       // has to grow out of something that touches the road, or the whole plume floats.
       if (!onWater && st.slide > 0.12) {
         const sgn = vel.dot(right) < 0 ? -1 : 1;
-        const scrubRate = (hard ? 34 : 16) * st.slide * (0.45 + 0.75 * fast) * st.contact;
+        const scrubRate = (hard ? 34 : 16) * st.slide * (0.45 + 0.75 * fast) * st.contact * plumeGate;
         const sn = rate('scrub', scrubRate * (o.rate ?? 1) * vfx.emitScale, dt);
+        plume += sn * 0.6;                       // scrub puffs are small; they count for less
         for (let i = 0; i < sn; i++) {
           const w = wheels[i % wheels.length];
           local(w, wp);
@@ -1679,7 +1785,12 @@ function createKartRig(vfx, world, target, o = {}) {
       // the rear wheels drag across loose ground, and it is the single strongest speed cue
       // available on a pale sand surface where nothing else has any value contrast.
       if (!onWater && fx.chips !== undefined && fx.decal !== 'tyre' && fast > 0.25) {
-        const rn = rate('rooster', fx.rate * 0.60 * fast * (0.55 + 0.7 * slip) * st.contact * (o.rate ?? 1) * vfx.emitScale, dt);
+        // Slip- and slide-driven, like the dust above: a rooster tail is thrown by a tyre
+        // being dragged sideways. The old 0.55 speed-only floor is what doubled the beige
+        // column over the hero on a straight.
+        const rr = fx.rate * 0.34 * fast * (0.10 + 0.55 * slip + 0.55 * st.slide) * st.contact * plumeGate;
+        const rn = rate('rooster', rr * (o.rate ?? 1) * vfx.emitScale, dt);
+        plume += rn;
         for (let i = 0; i < rn; i++) {
           const w = wheels[i % wheels.length];
           local(w, wp);
@@ -1691,7 +1802,7 @@ function createKartRig(vfx, world, target, o = {}) {
             vx: vel.x * 0.52, vy: vel.y * 0.52, vz: vel.z * 0.52,
             colorA: fx.a, colorB: fx.b,
             scale: 0.85 + rand() * 0.6, speedScale: 0.55 + fast * 0.85,
-            opacity: clamp(0.50 + 0.45 * fast, 0, 1.05) * lerp(0.72, 1.16, rand()),
+            opacity: clamp(0.26 + 0.24 * fast + 0.40 * st.slide, 0, 1.0) * lerp(0.72, 1.16, rand()),
           });
         }
       }
@@ -1758,7 +1869,19 @@ function createKartRig(vfx, world, target, o = {}) {
           // A stamp is drawn at half the axes it is handed, so ask for twice the rubber a
           // tyre actually lays and the mark comes out tyre-width on screen.
           width: (o.markWidth ?? 0.52) * (1.0 + 0.30 * st.slide),
-          alpha: clamp(strength, 0, 0.78),
+          alpha: clamp(strength, 0, 0.86),
+          /**
+           * The mark has to be darker than the road, not the same value as it.
+           *
+           * decals.js defaults a tyre mark to [0.30, 0.29, 0.30]. That is almost exactly the
+           * display value of the sunlit asphalt on this circuit, and the decal shader is a
+           * plain alpha-over — so the whole ladder of stamps was being painted, uploaded and
+           * drawn in the right place at 0.78 alpha, and changed the road by nothing. It read
+           * on screen as "there are no skid marks", which is what three review rounds have
+           * called it. Hot rubber laid on asphalt is near-black with a warm cast; giving the
+           * trail an explicit colour is what makes the mark exist.
+           */
+          color: fx.decal === 'tyre' ? [0.052, 0.046, 0.050] : [0.30, 0.26, 0.20],
           life: fx.decal === 'tyre' ? 11 : 7,
           // A stamp is only laid once the wheel has travelled `segment`, and it covers half
           // of what it was given. Leaving that at the 0.42 m default meant a kart moving
@@ -1776,7 +1899,7 @@ function createKartRig(vfx, world, target, o = {}) {
           let sy;
           if (c && c.contact && c.contactPos && Number.isFinite(c.contactPos.y)) {
             sy = c.contactPos.y; wp.x = c.contactPos.x; wp.z = c.contactPos.z;
-          } else sy = wp.y - wheelDrop;
+          } else sy = roadYAt(wp.x, wp.z, wp.y - wheelDrop);
           wp.y = sy;
           vfx.surfaceHint(wp.x, wp.z, sy, 2.2);
           vfx.decals.trail(skidId + i, wp, fwd, opts);
@@ -1804,32 +1927,97 @@ function createKartRig(vfx, world, target, o = {}) {
     if (st.drifting && st.tier > 0) {
       const T = tierColor(st.tier);
       heldTier = st.tier;
+      /**
+       * Charge staging. MK8 steps blue -> orange -> purple, and the step is the whole point
+       * of holding a drift. One flat hue for the entire charge (which is what a plate caught
+       * mid-tier used to show) throws that away, so as `slideT` climbs toward the next tier
+       * a growing share of the shower is emitted in the *next* tier's colours. The result is
+       * a blue shower that visibly starts throwing orange before it flips — the charge
+       * reading MK8 gets from its gauge, on the sparks themselves.
+       */
+      const nextT = tierColor(Math.min(3, st.tier + 1));
+      const span = TIER_T[Math.min(2, st.tier)] - (st.tier > 0 ? TIER_T[st.tier - 1] : 0);
+      const toNext = st.tier >= 3 ? 0
+        : clamp((st.slideT - (st.tier > 0 ? TIER_T[st.tier - 1] : 0)) / Math.max(span, 1e-3), 0, 1);
+      const bleed = smoothstep(0.45, 1.0, toNext) * 0.5;
+
       // sparks come off the loaded, outboard rear wheel — the one being dragged sideways
       const sgn = vel.dot(right) < 0 ? -1 : 1;
       const n = rate('spark', T.rate * 3.6 * (0.55 + 0.55 * fast) * (0.35 + 0.75 * st.slide) * vfx.emitScale, dt);
+      const pwS = physWheels();
       for (let i = 0; i < n; i++) {
-        const a = sparkAnchor[i % sparkAnchor.length];
-        local(a, wp);
-        wp.addScaledVector(right, sgn * 0.10 * (a[0] * sgn > 0 ? 1.6 : 0.4));
-        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.40 + rand() * 0.35)
-          .addScaledVector(right, sgn * (0.35 + rand() * 0.55));
-        // hot at birth, cooling into the saturated tier hue: a spark reads as a coloured
-        // comet with a white tip rather than a white dot with a coloured halo.
-        // white at the tip, saturated tier hue in the tail: a spark has to read as a
-        // coloured comet, not a white dot with a faint halo round it
+        /**
+         * Anchor at the *contact patch*, not at an art offset.
+         *
+         * The rig's `sparkAnchor` is a guess about where a kart's rear wheels sit in its own
+         * space; the suspension decides where they actually are, and on a kerb-hop or a
+         * cambered corner the guess is a good half metre out. That is why sparks were seen
+         * floating clear of any wheel, sitting on the road like dropped chips. When the
+         * physics reports a rear contact, spawn there and the shower is welded to the tyre.
+         */
+        const wi = i % 2;
+        const c = pwS && pwS[2 + wi];
+        if (c && c.contact && c.contactPos && Number.isFinite(c.contactPos.y)) {
+          wp.set(c.contactPos.x, c.contactPos.y + 0.06, c.contactPos.z);
+        } else {
+          local(sparkAnchor[wi % sparkAnchor.length], wp);
+        }
+        // bias the shower to the loaded, outboard wheel — that is the one being scrubbed
+        wp.addScaledVector(right, sgn * (0.04 + rand() * 0.10));
+        dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.55 + rand() * 0.30)
+          .addScaledVector(right, sgn * (0.40 + rand() * 0.50));
+        const S = (bleed > 0 && rand() < bleed) ? nextT : T;
+        /**
+         * Hue survival under a screen blend.
+         *
+         * `dst + src*(1-dst)` drives *every* channel toward 1, so a source that already has
+         * two bright channels (the tier `glow`, e.g. 0x86e2ff) lands as plain white over a
+         * mid-value road and the charge tier stops reading at all — which is what the first
+         * pass of this fix produced. The hue has to live in a colour with real channel
+         * separation, so the tail is the deep tier flame (0x0e34c4 blue, 0xc42a00 orange,
+         * 0x5c10b4 purple), and only a third of the shower gets the white-hot head. That is
+         * a blue shower with white leaders in it, not a white shower.
+         */
+        const hot = rand() < 0.34;
+        // White-hot head cooling into the saturated tier hue. Screen-blended over dark
+        // tarmac that is a bright core with a coloured tail; `rot: 0` with `stretch` pins
+        // the star's long arm along the streak so it reads as a comet and not as a chip.
         vfx.emit('driftSpark', {
           pos: wp, dir: dirv, count: 1, raw: true,
-          colorA: rand() < 0.35 ? T.core : T.glow, colorB: T.flameA,
-          scale: T.size * (0.85 + rand() * 0.75),
-          speedScale: 0.8 + rand() * 0.8,
+          colorA: hot ? S.core : S.flameA, colorB: S.flameB,
+          rot: 0, rotJitter: 0,
+          scale: S.size * (0.85 + rand() * 0.8),
+          speedScale: 0.85 + rand() * 0.7,
         });
+        // A few longer, brighter leaders so the shower has a size hierarchy rather than a
+        // dozen identical quads — the other half of why round 3 read as confetti.
+        if (rand() < 0.22) {
+          vfx.emit('driftSpark', {
+            pos: wp, dir: dirv, count: 1, raw: true,
+            colorA: S.core, colorB: S.flameA,
+            rot: 0, rotJitter: 0, stretch: 0.70,
+            scale: S.size * (1.5 + rand() * 0.7), lifeScale: 1.25,
+            speedScale: 1.25 + rand() * 0.5,
+          });
+        }
         // the soft tier-coloured pool the shower sits in: MK8 reads its charge level from
         // this glow as much as from the individual sparks
-        if (rand() < 0.40) {
+        if (rand() < 0.45) {
           vfx.emit('miniTurbo', {
             pos: wp, dir: dirv, count: 1, raw: true,
-            colorA: T.flameA, colorB: T.flameB, scale: T.size * (1.1 + rand() * 0.7),
-            opacity: 0.62, speedScale: 0.5 + rand() * 0.5,
+            colorA: S.flameA, colorB: S.flameB, scale: S.size * (1.0 + rand() * 0.6),
+            rot: 0, rotJitter: 0,
+            opacity: 0.8, speedScale: 0.5 + rand() * 0.5,
+          });
+        }
+        // and the pool of light at the tyre itself, which is what makes the charge tier
+        // legible at race distance when no single spark is four pixels across
+        if (rand() < 0.30) {
+          vfx.emit('sparkGlow', {
+            pos: wp, dir: up, count: 1, raw: true,
+            colorA: S.flameA, colorB: S.flameB,
+            scale: S.size * (1.1 + rand() * 0.6),
+            opacity: 0.55 + 0.35 * st.slide,
           });
         }
       }
@@ -1837,8 +2025,9 @@ function createKartRig(vfx, world, target, o = {}) {
         events.tierUps++;
         for (const a of sparkAnchor) {
           local(a, wp);
-          vfx.emit('miniTurbo', { pos: wp, dir: up, count: 6, scale: T.size * 2.0, colorA: T.flameA, colorB: T.flameB, opacity: 0.9, speedScale: 1.6 });
-          vfx.emit('driftSpark', { pos: wp, dir: up, count: 16, scale: T.size * 1.3, colorA: T.core, colorB: T.flameA, speedScale: 1.5 });
+          vfx.emit('miniTurbo', { pos: wp, dir: up, count: 6, scale: T.size * 2.0, colorA: T.flameA, colorB: T.flameB, rot: 0, rotJitter: 0, opacity: 0.9, speedScale: 1.6 });
+          vfx.emit('driftSpark', { pos: wp, dir: up, count: 16, scale: T.size * 1.3, colorA: T.core, colorB: T.flameB, rot: 0, rotJitter: 0, speedScale: 1.5 });
+          vfx.emit('sparkGlow', { pos: wp, dir: up, count: 3, scale: T.size * 2.2, colorA: T.flameA, colorB: T.flameB, opacity: 0.85 });
         }
       }
     }
@@ -1868,7 +2057,7 @@ function createKartRig(vfx, world, target, o = {}) {
         dirv.copy(fwd).multiplyScalar(-1).addScaledVector(up, 0.4);
         vfx.emit('driftSpark', {
           pos: wp, dir: dirv, count: 10 + 4 * tier, scale: T.size * 1.25,
-          colorA: T.core, colorB: T.flameA, speedScale: 1.5,
+          colorA: T.core, colorB: T.flameB, rot: 0, rotJitter: 0, speedScale: 1.5,
         });
       }
       vfx.emit('squashPuff', { pos, dir: up, count: 8, scale: 1.2, opacity: 0.35 });

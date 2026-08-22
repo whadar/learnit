@@ -520,7 +520,7 @@ function createSurfaceMaterial(tex, o) {
      * palette. The albedo now carries a real hue split (warm limestone chippings in cool
      * bitumen, see `tarmacTextures`) so the grade only has to take the edge off. */
     uSat: { value: 0.40 },
-    uTint: { value: new THREE.Vector3(0.945, 1.00, 1.115) },
+    uTint: { value: new THREE.Vector3(0.940, 1.00, 1.135) },
     uDetail: { value: new THREE.Vector2(1.0, 0.85) },   // (unused, strength)
     uDebug: { value: 0 },
   };
@@ -636,10 +636,11 @@ float kBL(float f, float foot){ return smoothstep(0.95, 2.4, 1.0 / (f * foot)); 
   float n3 = (kdN(wp * f3 + 41.7) - 0.5) * w3;
   float agg = (n1 * 0.42 + n2 * 0.62 + n3 * 0.98) * dstr;
   gGrain = (n2 * 0.55 + n3 * 1.0) * dstr;
-  diffuseColor.rgb *= 1.0 + agg * 0.90;
-  // stone tops catch the warm limestone; the binder between them stays cool
-  float chips = smoothstep(0.045, 0.30, agg);
-  diffuseColor.rgb *= mix(vec3(1.0), uChipA, chips * 0.45);
+  diffuseColor.rgb *= 1.0 + agg * 1.15;
+  // Stone tops catch the warm limestone, the binder between them keeps the cool of the
+  // bitumen. Both ends of the mix are centred near 1, so this is a hue split, not a lift.
+  float chips = smoothstep(-0.04, 0.26, agg);
+  diffuseColor.rgb *= mix(vec3(0.975, 0.988, 1.045), uChipA, chips * 0.55);
 
   /* --- start / finish chequer, laid on the road axis ----------------------- */
   float ds = s - uStartS;
@@ -800,7 +801,7 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   const SURF_V = 34;                       // metres of road per texture repeat along V
   const surfTex = tarmacTextures({
     total: NOMW + MARGIN * 2, road: NOMW, vMetres: SURF_V,
-    seed: 771, normalStrength: 1.15, W: 384, H: 960,
+    seed: 771, normalStrength: 1.15, W: 512, H: 1280,
     // Two tyre tracks per lane, not one broad bleached band down the middle: the old
     // 3 m-wide polish washed the whole centre of the road out to the value of the verge.
     polish: [{ at: 2.10, w: 0.95, k: 0.60 }, { at: 5.00, w: 0.85, k: 0.26 }, { at: 0, w: 3.2, k: 0.14 }],

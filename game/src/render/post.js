@@ -7,7 +7,8 @@ import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { Pass, FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { clamp, smoothstep } from '../core/mathx.js';
-import { BloomPrefilterFrag, BlurShader, makeCompositeShader, makeGradeLUT } from './materials/postShaders.js';
+import { BloomPrefilterFrag, BlurShader, makeCompositeShader, makeGradeLUT,
+  ResolveShader, KeyDownShader, KeyReduceShader } from './materials/postShaders.js';
 
 /**
  * Kat Racing post-processing stack.
@@ -147,6 +148,82 @@ class DofBlurPass extends Pass {
   dispose() { this.rtA.dispose(); this.rtB.dispose(); this.material.dispose(); this._quad.dispose(); }
 }
 
+/**
+ * Supersample resolve. The whole chain runs at `renderScale` times the canvas resolution and
+ * this filters it back down as the last pass, straight to the screen.
+ */
+class ResolvePass extends Pass {
+  constructor() {
+    super();
+    this.needsSwap = false;
+    this.material = new THREE.ShaderMaterial({
+      name: ResolveShader.name,
+      uniforms: THREE.UniformsUtils.clone(ResolveShader.uniforms),
+      vertexShader: ResolveShader.vertexShader,
+      fragmentShader: ResolveShader.fragmentShader,
+      depthTest: false, depthWrite: false,
+    });
+    this._quad = new FullScreenQuad(this.material);
+  }
+  setDestination(w, h) {
+    this.material.uniforms.uDstTexel.value.set(1 / Math.max(1, w), 1 / Math.max(1, h));
+  }
+  render(renderer, writeBuffer, readBuffer) {
+    this.material.uniforms.tDiffuse.value = readBuffer.texture;
+    renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+    if (this.clear) renderer.clear();
+    this._quad.render(renderer);
+  }
+  dispose() { this._quad.dispose(); this.material.dispose(); }
+}
+
+/**
+ * Auto-key probe. Reduces the finished composite to a single mean-luma texel that the
+ * composite reads back on the next frame (see `uKeyTarget` there). Two passes, 145 pixels
+ * in total; it never touches the composer's own buffers.
+ */
+class KeyProbePass extends Pass {
+  constructor() {
+    super();
+    this.needsSwap = false;
+    this.blend = 1;
+    const o = { type: THREE.HalfFloatType, depthBuffer: false, stencilBuffer: false,
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter };
+    this.rtDown = new THREE.WebGLRenderTarget(16, 9, o);
+    this.rtA = new THREE.WebGLRenderTarget(1, 1, o);
+    this.rtB = new THREE.WebGLRenderTarget(1, 1, o);
+    this.rtDown.texture.name = 'KatPost.keyDown';
+    const mk = (sh) => new THREE.ShaderMaterial({
+      name: sh.name,
+      uniforms: THREE.UniformsUtils.clone(sh.uniforms),
+      vertexShader: sh.vertexShader, fragmentShader: sh.fragmentShader,
+      depthTest: false, depthWrite: false,
+    });
+    this.matDown = mk(KeyDownShader);
+    this.matReduce = mk(KeyReduceShader);
+    this._qDown = new FullScreenQuad(this.matDown);
+    this._qReduce = new FullScreenQuad(this.matReduce);
+  }
+  /** The most recently written 1x1 measurement. */
+  get texture() { return this.rtA.texture; }
+  render(renderer, writeBuffer, readBuffer) {
+    this.matDown.uniforms.tDiffuse.value = readBuffer.texture;
+    renderer.setRenderTarget(this.rtDown);
+    this._qDown.render(renderer);
+    this.matReduce.uniforms.tDiffuse.value = this.rtDown.texture;
+    this.matReduce.uniforms.tPrev.value = this.rtA.texture;
+    this.matReduce.uniforms.uBlend.value = this.blend;
+    renderer.setRenderTarget(this.rtB);
+    this._qReduce.render(renderer);
+    const t = this.rtA; this.rtA = this.rtB; this.rtB = t;   // ping-pong
+  }
+  dispose() {
+    this.rtDown.dispose(); this.rtA.dispose(); this.rtB.dispose();
+    this._qDown.dispose(); this._qReduce.dispose();
+    this.matDown.dispose(); this.matReduce.dispose();
+  }
+}
+
 // ---------------------------------------------------------------------------------------
 
 export function createPostFX(renderer, scene, camera, opts = {}) {
@@ -156,6 +233,16 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
 
   const params = {
     exposure:        opts.exposure ?? 1.0,
+    // Supersampling. SMAA is morphological: it straightens edges it can *see*, and a 2 px
+    // marker post, an olive canopy or a bunting line that falls between samples never makes
+    // an edge for it to find. Round-4 review named whole-image shimmer the second-loudest
+    // "not shipped" tell in the game. The quality tiers ask for a 1.5 device pixel ratio at
+    // High, but `quality.js` clamps that with `Math.min(devicePixelRatio, tier.pixelRatio)`,
+    // so on any ordinary 1x display — and in the review harness, which runs at
+    // --force-device-scale-factor=1 — it silently resolves to 1.0 and no supersampling ever
+    // happens. Owning the sample rate here instead is also simply better: the DOM HUD stays
+    // crisp at native resolution and only the 3D image pays.
+    renderScale:     opts.renderScale ?? 1.5,
     // Bloom. The threshold is in *reconstructed* HDR units (see the prefilter): display
     // 0.90 comes back at ~3.4, sunlit white plaster at 0.95 at ~7, display white at ~17,
     // and a genuinely over-range additive flame in the 30..80 range. 12 with a 6-wide knee
@@ -204,8 +291,31 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // 1.0 and the frames only looked saturated because a wrongly-binary boost flag was
     // multiplying it by 1.22 nearly all the time — when that bug went, so did the punch.
     contrast:        opts.contrast ?? 1.0,
-    saturation:      opts.saturation ?? 1.02,
+    saturation:      opts.saturation ?? 1.24,
     lutMix:          opts.lutMix ?? 1.0,
+    // Neutral chroma. A saturation control multiplies the chroma a pixel already has, and
+    // the wide grey asphalt ribbon that fills half of `villageStreet` has none — which is
+    // why that plate measured 0.264 mean chroma against a Mario Kart band of 0.45-0.60 while
+    // the frames full of foliage and liveries passed. This gives the achromatic mass a
+    // direction instead: cool sky-fill in the shade, warm key where the sun reaches, which
+    // is both what really lights a road and the complementary accent the tan-and-green
+    // palette was missing. Shaped in the composite; see `uShadeTint` / `uSunTint`.
+    neutral:         opts.neutral ?? 1.40,
+    // The tonal anchor. One black and one white for the whole game, applied after the
+    // vignette so nothing downstream can move them.
+    black:           opts.black ?? 0.062,
+    toePivot:        opts.toePivot ?? 0.22,
+    toeGamma:        opts.toeGamma ?? 1.30,
+    whiteKnee:       opts.whiteKnee ?? 0.92,
+    whiteCeil:       opts.whiteCeil ?? 1.02,
+    // Auto-key. Bounded hard: this is a stabiliser that stops one corner of the course
+    // reading two stops darker than the next, not a light meter. `keyStrength` 0 turns it
+    // off entirely and the stack falls back to a fixed exposure.
+    keyTarget:       opts.keyTarget ?? 0.405,
+    keyStrength:     opts.keyStrength ?? 0.55,
+    keyMin:          opts.keyMin ?? 0.87,
+    keyMax:          opts.keyMax ?? 1.17,
+    keyRate:         opts.keyRate ?? 4.5,      // 1/s; how fast the measurement follows
     // The vignette was measured crushing the corner mid-tones and adding to the milky
     // reading; a Mario Kart frame is evenly lit corner to corner.
     vignette:        opts.vignette ?? 0.17,
@@ -218,10 +328,20 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // streak veil over the whole of photoFinish — a plate in which the player kart is not
     // even on screen — because a mid-range boost was enough to switch them on and the broad
     // edge flare that comes with them reads as haze rather than as speed.
+    //
+    // Round 4 found them again, over the pine canopy in `itemChaos`, over the sky in
+    // `driftCorner` and across `hilltopVista`'s horizon: evenly spaced screen-space diagonals
+    // that are the radial streaks seen off-centre. Two things were wrong. The threshold at
+    // 0.58 sat exactly *below* a tier-2 mini-turbo (main.js maps power 0.27 to a punch of
+    // 0.58), which is the most common boost in the game, so the lines were on most of the
+    // time; and the streaks reached from r = 0.30 — the middle of the frame — to the corner,
+    // with a broad edge flare over everything past r = 0.62 that read as haze. 0.76 puts the
+    // threshold above a tier-2 charge so only a tier-3 or a mushroom earns them, and the
+    // shader now keeps them in the outer ring.
     rushStrength:    opts.rushStrength ?? 0.024,
-    rushLines:       opts.rushLines ?? 0.32,
+    rushLines:       opts.rushLines ?? 0.26,
     rushOn:          opts.rushOn ?? 0.34,
-    rushLinesOn:     opts.rushLinesOn ?? 0.58,
+    rushLinesOn:     opts.rushLinesOn ?? 0.76,
     speedRef:        opts.speedRef ?? 110,     // km/h that counts as "full speed"
   };
 
@@ -321,6 +441,14 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   cu.uResolution.value.set(width, height);
 
   const smaaPass = new SMAAPass();
+  const keyPass = new KeyProbePass();
+  const resolvePass = new ResolvePass();
+  cu.tKey.value = keyPass.texture;
+  // Allocate the probe's two 1x1 targets up front so the composite's very first frame samples
+  // a real (cleared) texture rather than an unbound one. The shader treats the zero it reads
+  // back as "no measurement yet" and runs at unit gain, so this is belt and braces.
+  try { renderer.initRenderTarget?.(keyPass.rtA); renderer.initRenderTarget?.(keyPass.rtB); }
+  catch (e) { /* older three: the guard in the shader covers it */ }
 
   composer.addPass(scenePass);
   composer.addPass(sourcePass);
@@ -328,11 +456,14 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   composer.addPass(bloomPass);
   composer.addPass(dofPass);
   composer.addPass(compositePass);
+  composer.addPass(keyPass);        // measures what the composite just produced
   composer.addPass(smaaPass);
+  composer.addPass(resolvePass);    // supersample -> canvas; disabled at scale 1
 
   // ---- state ---------------------------------------------------------------------------
   let tier = -1;
   let speedN = 0, boost = 0, gradeOn = true, vignetteScale = 1;
+  let superSample = 1;
   const prevViewProj = new THREE.Matrix4();
   const curViewProj = new THREE.Matrix4();
   let havePrev = false;
@@ -372,6 +503,16 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     compositePass.material.needsUpdate = true;
 
     vignetteScale = tier >= 1 ? 1 : 0.6;   // without bloom a full vignette reads heavy
+
+    // Supersampling is the one thing in this stack that costs in proportion to itself, so it
+    // is the first thing a lower tier gives up. `Everything on` gets the full rate.
+    const wantScale = tier >= 3 ? params.renderScale
+      : tier >= 2 ? Math.min(params.renderScale, 1.25)
+      : 1;
+    if (Math.abs(wantScale - superSample) > 1e-3) {
+      superSample = wantScale;
+      setSize(width, height);
+    }
     havePrev = false;
   }
 
@@ -389,11 +530,25 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   function setSize(w, h) {
     width = Math.max(2, Math.round(w)); height = Math.max(2, Math.round(h));
     const pr = renderer.getPixelRatio() || 1;
-    const pw = Math.max(2, Math.round(width * pr)), ph = Math.max(2, Math.round(height * pr));
+    // The canvas the browser actually shows.
+    const cw = Math.max(2, Math.round(width * pr)), ch = Math.max(2, Math.round(height * pr));
+    // ...and the rate this stack samples at. A HiDPI display already supersamples, so the
+    // two are not multiplied: the total sample rate is max(devicePixelRatio, renderScale),
+    // never their product, or a 2x phone would be asked for nine times the pixels.
+    const ss = Math.max(1, superSample / pr);
+    const pw = Math.max(2, Math.round(cw * ss)), ph = Math.max(2, Math.round(ch * ss));
+
     rtScene.setSize(pw, ph);
-    composer.setSize(width, height);          // composer applies the pixel ratio itself
+    // Drive the composer in device pixels directly. Its own pixel-ratio multiply would put a
+    // fractional size on every internal target once renderScale is not an integer, and a
+    // render target rounded differently from our scene target puts a half-texel shear
+    // between the composite's colour and its depth.
+    composer.setPixelRatio(1);
+    composer.setSize(pw, ph);
     cu.uResolution.value.set(pw, ph);
     cu.tBlur.value = dofPass.texture;
+    resolvePass.setDestination(cw, ch);
+    resolvePass.enabled = ss > 1.001;
     havePrev = false;
   }
 
@@ -421,6 +576,27 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // CA scales only gently with boost: past ~4 px of separation the fringe stops reading
     // as a lens and starts reading as a bug.
     cu.uCA.value = params.chromatic * (1 + 0.7 * punch + 0.15 * speedN);
+    cu.uNeutral.value = params.neutral;
+
+    // ---- the fixed tonal anchor --------------------------------------------------------
+    // These are constants on purpose. They are the one thing in the frame that must not move
+    // with speed, boost, time of day or which corner the camera is in.
+    cu.uBlack.value = params.black;
+    cu.uToePivot.value = params.toePivot;
+    cu.uToeGamma.value = params.toeGamma;
+    cu.uWhiteKnee.value = params.whiteKnee;
+    cu.uWhiteCeil.value = params.whiteCeil;
+
+    // ---- auto-key ------------------------------------------------------------------------
+    // The composite reads the measurement the probe wrote last frame; the probe then measures
+    // what the composite just produced. It is a damped negative feedback loop, so it settles
+    // in a handful of frames and settles on the same value every time — which is what keeps
+    // review screenshots reproducible.
+    cu.tKey.value = keyPass.texture;
+    cu.uKeyTarget.value = params.keyTarget;
+    cu.uKeyStrength.value = params.keyStrength;
+    cu.uKeyRange.value.set(params.keyMin, params.keyMax);
+    keyPass.blend = 1 - Math.exp(-step * params.keyRate);
 
     // ---- camera reprojection motion blur ------------------------------------------------
     _tmp.copy(camera.projectionMatrix).multiply(camera.matrixWorldInverse).invert();
@@ -481,7 +657,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     composer, render, setSize, setQuality, setSpeed, dispose,
     params, lut,
     get quality() { return tier; },
-    passes: { scenePass, sourcePass, aoPass, bloomPass, dofPass, compositePass, smaaPass },
+    passes: { scenePass, sourcePass, aoPass, bloomPass, dofPass, compositePass,
+      keyPass, smaaPass, resolvePass },
+    get renderScale() { return superSample; },
     /** Toggle the grade LUT off for A/B comparisons; the rest of the stack keeps running. */
     setGradeEnabled(on) { gradeOn = !!on; cu.uLutMix.value = gradeOn ? params.lutMix : 0; },
   };

@@ -178,6 +178,106 @@ export const BlurShader = {
 };
 
 // ---------------------------------------------------------------------------------------
+// Supersample resolve — the last pass when the stack renders above canvas resolution.
+//
+// The whole chain (scene, AO, bloom, composite, SMAA) runs at `renderScale` times the canvas
+// and this filters it back down. SMAA is a morphological filter: it can straighten an edge
+// it can see, but a 2 px marker post, an olive canopy or a bunting line that lands *between*
+// samples never produces an edge for it to find, so it shimmers however well SMAA is tuned.
+// The only cure for sub-pixel content is more samples, and this is where they are spent.
+//
+// Four bilinear taps at the quarter-points of the destination pixel. Each tap is itself a
+// weighted read of up to four source texels, so at a 1.5x scale the sixteen source samples
+// under a destination pixel are all represented, with a tent-ish falloff — a straight
+// bilinear stretch would skip a third of them and reintroduce the aliasing.
+// ---------------------------------------------------------------------------------------
+
+export const ResolveShader = {
+  name: 'KatPostResolve',
+  uniforms: {
+    tDiffuse:  { value: null },
+    uDstTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
+  },
+  vertexShader: FS_QUAD_VERT,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform vec2 uDstTexel;
+    varying vec2 vUv;
+    void main() {
+      vec2 o = uDstTexel * 0.25;
+      vec3 c  = texture2D( tDiffuse, vUv + vec2( -o.x, -o.y ) ).rgb;
+      c      += texture2D( tDiffuse, vUv + vec2(  o.x, -o.y ) ).rgb;
+      c      += texture2D( tDiffuse, vUv + vec2( -o.x,  o.y ) ).rgb;
+      c      += texture2D( tDiffuse, vUv + vec2(  o.x,  o.y ) ).rgb;
+      gl_FragColor = vec4( c * 0.25, 1.0 );
+    }`,
+};
+
+// ---------------------------------------------------------------------------------------
+// Auto-key probe — two tiny passes that reduce the finished composite to one number.
+//
+// Stage A takes the full-resolution frame down to a 16x9 luma map with a 4x4 stratified
+// grid of taps per output texel (2304 samples over the frame, at fixed positions, so the
+// measurement is reproducible between review rounds). Stage B averages those 144 texels into
+// a single texel and damps it against last frame's value, and the composite reads that one
+// texel next frame. Total cost is 144 pixels plus one.
+// ---------------------------------------------------------------------------------------
+
+export const KeyDownShader = {
+  name: 'KatKeyDown',
+  uniforms: {
+    tDiffuse:  { value: null },
+    uDstTexel: { value: new THREE.Vector2(1 / 16, 1 / 9) },
+  },
+  vertexShader: FS_QUAD_VERT,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform vec2 uDstTexel;
+    varying vec2 vUv;
+    ${GLSL_COMMON}
+    void main() {
+      float s = 0.0;
+      for ( int y = 0; y < 4; y ++ ) {
+        for ( int x = 0; x < 4; x ++ ) {
+          vec2 f = ( vec2( float( x ), float( y ) ) + 0.5 ) * 0.25 - 0.5;
+          s += katLuma( min( texture2D( tDiffuse, vUv + f * uDstTexel ).rgb, vec3( 1.0 ) ) );
+        }
+      }
+      gl_FragColor = vec4( vec3( s * ( 1.0 / 16.0 ) ), 1.0 );
+    }`,
+};
+
+export const KeyReduceShader = {
+  name: 'KatKeyReduce',
+  uniforms: {
+    tDiffuse: { value: null },   // the 16x9 luma map
+    tPrev:    { value: null },   // last frame's 1x1
+    uBlend:   { value: 1.0 },    // 0 = hold, 1 = follow instantly
+  },
+  vertexShader: FS_QUAD_VERT,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform sampler2D tPrev;
+    uniform float uBlend;
+    varying vec2 vUv;
+    void main() {
+      float s = 0.0;
+      for ( int y = 0; y < 9; y ++ ) {
+        for ( int x = 0; x < 16; x ++ ) {
+          s += texture2D( tDiffuse,
+            vec2( ( float( x ) + 0.5 ) / 16.0, ( float( y ) + 0.5 ) / 9.0 ) ).r;
+        }
+      }
+      s *= 1.0 / 144.0;
+      float prev = texture2D( tPrev, vec2( 0.5 ) ).r;
+      // An unwritten previous target reads 0; take the measurement whole in that case so the
+      // very first frame is already at the right key instead of ramping in from black.
+      float v = prev > 0.002 ? mix( prev, s, clamp( uBlend, 0.0, 1.0 ) ) : s;
+      gl_FragColor = vec4( vec3( v ), 1.0 );
+    }`,
+};
+
+// ---------------------------------------------------------------------------------------
 // Composite: motion blur + rush blur + DoF + chromatic aberration + LUT grade +
 // speed-driven saturation/contrast + speed lines + vignette + dither.
 // ---------------------------------------------------------------------------------------
@@ -219,6 +319,25 @@ export function makeCompositeShader() {
       uCA:           { value: 0.0 },
       uLift:         { value: 0.0 },
       uShoulder:     { value: 0.86 },
+      // Auto-key: the mean luma of last frame's finished composite, measured by the probe
+      // chain below. `uKeyTarget` is where every frame's key is pulled to; the clamp bounds
+      // how far it may be pulled, so this is an anchor, not a light meter.
+      tKey:          { value: null },
+      uKeyTarget:    { value: 0.405 },
+      uKeyStrength:  { value: 0.0 },
+      uKeyRange:     { value: new THREE.Vector2(0.86, 1.18) },
+      // Neutral chroma: the asphalt, plaster and dust that make up most of this course
+      // carry almost no hue, and no saturation control can multiply zero. These two tints
+      // give the achromatic mass a direction instead — cool in shade, warm in the sun.
+      uNeutral:      { value: 0.0 },
+      uShadeTint:    { value: new THREE.Vector3(-0.052, -0.006, 0.078) },
+      uSunTint:      { value: new THREE.Vector3(0.030, 0.012, -0.028) },
+      // The fixed tonal anchor. Every frame ends on the same floor and the same ceiling.
+      uBlack:        { value: 0.062 },
+      uToePivot:     { value: 0.22 },
+      uToeGamma:     { value: 1.30 },
+      uWhiteKnee:    { value: 0.92 },
+      uWhiteCeil:    { value: 1.02 },
     },
     vertexShader: FS_QUAD_VERT,
     fragmentShader: /* glsl */`
@@ -237,6 +356,12 @@ export function makeCompositeShader() {
       uniform float uDofMax;
       uniform float uExposure, uContrast, uSaturation, uLutMix, uVignette, uCA, uLift;
       uniform float uShoulder;
+      uniform sampler2D tKey;
+      uniform float uKeyTarget, uKeyStrength;
+      uniform vec2  uKeyRange;
+      uniform float uNeutral;
+      uniform vec3  uShadeTint, uSunTint;
+      uniform float uBlack, uToePivot, uToeGamma, uWhiteKnee, uWhiteCeil;
       varying vec2 vUv;
 
       ${GLSL_COMMON}
@@ -339,15 +464,54 @@ export function makeCompositeShader() {
         // white shape with a hard edge, which is exactly how a boost flame ends up erasing
         // the kart. Below uShoulder (0.86) this is the identity, so the graded midtones and
         // shadows every other module tuned come through untouched.
-        vec3 g = clamp( katSoftClip( col * uExposure, uShoulder ), 0.0, 1.0 );
+        // ---- auto-key ---------------------------------------------------------------------
+        // A shipped racer holds one key across a lap: the player's eye must not re-adapt
+        // between a pine tunnel and an open vista. The probe chain measures the mean luma
+        // of the finished frame and this pulls it back toward uKeyTarget — bounded hard,
+        // so it is a stabiliser rather than a light meter. uKeyStrength 0 disables it,
+        // and an unwritten probe (first frame, or the probe pass off) reads 0 and is
+        // ignored, so the stack always degrades to a fixed exposure.
+        float keyMeasured = texture2D( tKey, vec2( 0.5 ) ).r;
+        float keyGain = 1.0;
+        if ( uKeyStrength > 0.001 && keyMeasured > 0.002 ) {
+          keyGain = clamp( pow( uKeyTarget / keyMeasured, uKeyStrength ),
+                           uKeyRange.x, uKeyRange.y );
+        }
+
+        vec3 g = clamp( katSoftClip( col * ( uExposure * keyGain ), uShoulder ), 0.0, 1.0 );
 
         #if USE_LUT == 1
           g = mix( g, katLUT( tLut, g ), uLutMix );
         #endif
 
+        // ---- neutral chroma ---------------------------------------------------------------
+        // Round-4 review measured the road-heavy plates at 0.26-0.34 mean chroma against a
+        // Mario Kart band of 0.45-0.60, and correctly named the cause: a saturation control
+        // multiplies the chroma a pixel already has, and a grey asphalt ribbon covering half
+        // the frame has none. So give the achromatic mass a *direction* — the cool sky-fill
+        // that actually lights a shaded road, and the warm key on the parts the sun reaches.
+        // Weighted by how neutral the pixel is, so nothing that already carries a hue (the
+        // kerbs, the roofs, the foliage, a livery) is touched, and faded out at the very
+        // bottom of the range so deep shadow does not turn into blue ink.
+        //
+        // The luma ramp is deliberately wide (0.30 to 0.85). A narrow one flips between the
+        // cool and the warm tint across the asphalt's own noise and turns a grain pattern
+        // into blue-and-tan speckle.
+        {
+          float nmx = max( g.r, max( g.g, g.b ) );
+          float nmn = min( g.r, min( g.g, g.b ) );
+          float nchroma = nmx > 1e-4 ? ( nmx - nmn ) / nmx : 0.0;
+          float neutral = 1.0 - smoothstep( 0.06, 0.26, nchroma );
+          float nl = katLuma( g );
+          float floorFade = smoothstep( 0.02, 0.16, nl );
+          float key = smoothstep( 0.30, 0.85, nl );
+          g += uNeutral * neutral * floorFade * mix( uShadeTint, uSunTint, key );
+        }
+
         float l = katLuma( g );
         g = mix( vec3( l ), g, uSaturation );
         g = ( g - 0.5 ) * uContrast + 0.5 + uLift;
+        g = clamp( g, 0.0, 1.0 );
 
         // ---- boost rush: radial speed lines + edge flare ---------------------------------
         #if USE_RUSH == 1
@@ -360,14 +524,50 @@ export function makeCompositeShader() {
           float gate = smoothstep( 0.58, 0.94, n );
           // a thin streak down the middle of each angular wedge; whole wedges read as bands
           float thin = smoothstep( 0.42, 0.10, abs( f - 0.5 ) );
-          float radial = smoothstep( 0.30 + n * 0.30, 1.05, r );
-          g += gate * thin * radial * uRushLines * uRushTint * 1.15;
-          g += uRushLines * uRushTint * 0.09 * smoothstep( 0.62, 1.18, r );
+          // The streaks live in the outer ring only. The old ramp started at r = 0.30-0.60,
+          // which is the middle of the frame: review round 4 found evenly spaced diagonal
+          // lines over the pine canopy, over the sky and across the horizon band in plates
+          // that were not even boosting hard, because a tier-2 mini-turbo was enough to
+          // switch them on and they then reached most of the way to the centre. Starting at
+          // 0.66 leaves the two-thirds of the frame the player is actually reading clean.
+          float radial = smoothstep( 0.66 + n * 0.18, 1.10, r );
+          g += gate * thin * radial * uRushLines * uRushTint * 0.90;
+          // ...and the broad edge flare is a rim, not a veil. At 0.09 from r = 0.62 it laid
+          // a milky wash over a third of the image and was a large part of why the darks
+          // read hazy.
+          g += uRushLines * uRushTint * 0.030 * smoothstep( 0.88, 1.20, r );
         }
         #endif
 
-        // ---- vignette + dither ---------------------------------------------------------------
+        // ---- vignette ---------------------------------------------------------------------
         g *= 1.0 - uVignette * smoothstep( 0.30, 1.12, r );
+
+        // ---- the tonal anchor: one floor and one ceiling for the whole game ---------------
+        // Round-4 review measured the fraction of the frame below luma 0.06 running from
+        // 0.31% to 12.35% across the canonical set — the same course at the same hour — with
+        // shadowed asphalt and the chequered flag's dark squares both landing on RGB 3,11,30:
+        // black with a blue cast and no detail left in it. The cause is that nothing in this
+        // stack owned the bottom of the range; the LUT's cool-shade split tone simply ran off
+        // the end of it.
+        //
+        // This is a toe, not a lift. Below uToePivot the curve is a power law anchored on
+        // uBlack, and its slope at the pivot is (pivot-black)/pivot * gamma = 0.96, so it
+        // meets the untouched range smoothly instead of putting a milky step in the shadows.
+        // Above the pivot nothing changes at all. The effect is that every frame in the game
+        // ends on exactly the same black, and the last few percent of the range keeps its
+        // gradient instead of collapsing onto one value.
+        {
+          vec3 t = max( g, vec3( 0.0 ) ) / uToePivot;
+          vec3 toed = uBlack + ( uToePivot - uBlack ) * pow( t, vec3( uToeGamma ) );
+          g = mix( toed, g, step( vec3( uToePivot ), g ) );
+        }
+        // ...and the matching ceiling, so a bright plate cannot drift past the top either.
+        {
+          float wr = max( uWhiteCeil - uWhiteKnee, 1e-3 );
+          vec3 over = max( g - uWhiteKnee, vec3( 0.0 ) );
+          g = min( g, vec3( uWhiteKnee ) ) + wr * ( 1.0 - exp( - over / wr ) );
+        }
+
         g += ( katHash( gl_FragCoord.xy ) - 0.5 ) * ( 1.5 / 255.0 );
 
         gl_FragColor = vec4( clamp( g, 0.0, 1.0 ), 1.0 );
