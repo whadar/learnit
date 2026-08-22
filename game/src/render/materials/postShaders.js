@@ -205,19 +205,41 @@ export const ResolveShader = {
   uniforms: {
     tDiffuse:  { value: null },
     uDstTexel: { value: new THREE.Vector2(1 / 1280, 1 / 720) },
+    uSpread:   { value: 0.25 },   // 0 when the chain already runs at canvas resolution
+    uSharpen:  { value: 0.34 },
   },
   vertexShader: FS_QUAD_VERT,
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse;
     uniform vec2 uDstTexel;
+    uniform float uSpread, uSharpen;
     varying vec2 vUv;
     void main() {
-      vec2 o = uDstTexel * 0.25;
+      vec2 o = uDstTexel * uSpread;
       vec3 c  = texture2D( tDiffuse, vUv + vec2( -o.x, -o.y ) ).rgb;
       c      += texture2D( tDiffuse, vUv + vec2(  o.x, -o.y ) ).rgb;
       c      += texture2D( tDiffuse, vUv + vec2( -o.x,  o.y ) ).rgb;
       c      += texture2D( tDiffuse, vUv + vec2(  o.x,  o.y ) ).rgb;
-      gl_FragColor = vec4( c * 0.25, 1.0 );
+      c *= 0.25;
+
+      // Contrast-adaptive sharpen, on the destination grid.
+      //
+      // Round-5 review called the whole image soft "even when nothing is moving" and, in the
+      // same breath, aliased — authored detail (tile grids, asphalt aggregate, tyre tread)
+      // blurred away while edges still stair-step. That pair is what a supersampled chain
+      // resolved with a box filter looks like: the box kills the sub-pixel detail the extra
+      // samples were spent on and gives nothing back. This puts the acutance back on the
+      // *destination* grid, where it cannot reintroduce sub-pixel aliasing, and clamps the
+      // result into the neighbourhood's own min/max so it can never ring into a halo — the
+      // classic sharpening failure that reads as an outline round every roof.
+      vec3 e  = texture2D( tDiffuse, vUv + vec2(  uDstTexel.x, 0.0 ) ).rgb;
+      vec3 w  = texture2D( tDiffuse, vUv - vec2(  uDstTexel.x, 0.0 ) ).rgb;
+      vec3 n  = texture2D( tDiffuse, vUv + vec2( 0.0, uDstTexel.y ) ).rgb;
+      vec3 sth= texture2D( tDiffuse, vUv - vec2( 0.0, uDstTexel.y ) ).rgb;
+      vec3 lo = min( c, min( min( e, w ), min( n, sth ) ) );
+      vec3 hi = max( c, max( max( e, w ), max( n, sth ) ) );
+      vec3 sharp = c + ( c - ( e + w + n + sth ) * 0.25 ) * uSharpen;
+      gl_FragColor = vec4( clamp( sharp, lo, hi ), 1.0 );
     }`,
 };
 
@@ -338,14 +360,18 @@ export function makeCompositeShader() {
       // carry almost no hue, and no saturation control can multiply zero. These two tints
       // give the achromatic mass a direction instead — cool in shade, warm in the sun.
       uNeutral:      { value: 0.0 },
-      uShadeTint:    { value: new THREE.Vector3(-0.052, -0.006, 0.078) },
-      uSunTint:      { value: new THREE.Vector3(0.030, 0.012, -0.028) },
-      // The fixed tonal anchor. Every frame ends on the same floor and the same ceiling.
-      uBlack:        { value: 0.062 },
-      uToePivot:     { value: 0.22 },
-      uToeGamma:     { value: 1.30 },
-      uWhiteKnee:    { value: 0.92 },
-      uWhiteCeil:    { value: 1.02 },
+      uShadeTint:    { value: new THREE.Vector3(-0.040, -0.005, 0.058) },
+      uSunTint:      { value: new THREE.Vector3(0.026, 0.010, -0.024) },
+      // The fixed tonal anchor. Every frame ends on the same floor and the same ceiling —
+      // and both ends are *reachable*: uBlackPt/uWhitePt are the display levels that map to
+      // 0 and 1, so the grade owns a real black and a real white instead of living in the
+      // middle of the range.
+      uBlackPt:      { value: 0.014 },
+      uWhitePt:      { value: 0.918 },
+      uBlack:        { value: 0.0 },
+      uToePivot:     { value: 0.17 },
+      uToeGamma:     { value: 1.10 },
+      uWhiteKnee:    { value: 0.885 },
     },
     vertexShader: FS_QUAD_VERT,
     fragmentShader: /* glsl */`
@@ -369,7 +395,7 @@ export function makeCompositeShader() {
       uniform vec2  uKeyRange;
       uniform float uNeutral;
       uniform vec3  uShadeTint, uSunTint;
-      uniform float uBlack, uToePivot, uToeGamma, uWhiteKnee, uWhiteCeil;
+      uniform float uBlackPt, uWhitePt, uBlack, uToePivot, uToeGamma, uWhiteKnee;
       varying vec2 vUv;
 
       ${GLSL_COMMON}
@@ -408,21 +434,31 @@ export function makeCompositeShader() {
           vec2 prevUv = ( prev.xy / prev.w ) * 0.5 + 0.5;
           vec2 vel = ( uv - prevUv ) * uMotionScale;
           vel *= smoothstep( uMotionNear.x, uMotionNear.y, dist );   // keep the kart crisp
-          // The dome is the one surface with no parallax and no detail to lose, and it is
-          // also where a long smear shows every tap: a hard yaw through a drift was dragging
-          // the whole sky sideways and leaving faint parallel streaks behind the cloud
-          // gradient. It keeps a third of the blur, which is enough to sell the whip.
-          vel *= mix( 1.0, 0.35, isSky );
+          // The dome gets *none* of it. A blur is a weighted read of the neighbourhood, so a
+          // sky pixel with a blur vector reaches down across the silhouette below it and
+          // drags whatever is there upward into the sky — which is precisely the pale
+          // vertical bars round-5 review found rising out of the rooflines in photoFinish,
+          // oliveGrove, hilltopVista and gridStart, and the faint parallel streaks behind the
+          // clouds before that. The dome has no parallax and no high-frequency detail, so
+          // there was never anything to gain here: the whip comes from the scenery, not from
+          // smearing a gradient.
+          vel *= 1.0 - isSky;
           blurVec += vel;
         }
         #endif
 
+        float bl = length( blurVec );
+        if ( bl > uMotionMax ) blurVec *= uMotionMax / bl;
+
+        // The radial rush is added *after* the reprojection clamp, because it is not camera
+        // motion and must not be squeezed out by it. It is the frame's actual speed cue: the
+        // reprojection blur is gated to hold the road readable (and suppressed outright while
+        // the chase camera is still settling), so without this a 75 km/h plate is razor-sharp
+        // corner to corner. Zero at the centre, growing to the frame edge — the scenery
+        // streams past while the kart and the racing line stay crisp.
         #if USE_RUSH == 1
           blurVec += c * ( uRush * smoothstep( 0.10, 1.0, r ) );
         #endif
-
-        float bl = length( blurVec );
-        if ( bl > uMotionMax ) blurVec *= uMotionMax / bl;
 
         // ---- resolve colour ---------------------------------------------------------------
         vec3 col;
@@ -444,11 +480,15 @@ export function makeCompositeShader() {
         #if USE_DOF == 1
         {
           float coc = smoothstep( uFocus.x, uFocus.y, dist ) * uDofMax;
-          // The dome used to be force-blurred at 0.55 of the full circle of confusion — a
-          // 0.19 CoC over every sky pixel, which is enough to dissolve a cumulus edge into
-          // the gradient behind it. The sky is the one surface with no aliasing to hide, so
-          // it gets only a whisper, just enough to soften the dome's own banding.
-          coc = max( coc, isSky * uDofMax * 0.10 );
+          // The dome is the far end of the depth range, so smoothstep hands it a *full*
+          // circle of confusion — and a blur is a weighted read of the neighbourhood, so
+          // every sky pixel within the kernel of a roofline reaches down across the
+          // silhouette and pulls the roof up into the sky. That is the other half of round
+          // 5's vertical light-shaft bars (measured: turning DoF off shortened them by
+          // 10-15 px and left only the bloom halo underneath). The sky has no depth cue to
+          // sell and no aliasing to hide, so it keeps only a whisper — enough to soften the
+          // dome's own banding, far too little to drag a roof anywhere.
+          coc = mix( coc, uDofMax * 0.06, isSky );
           col = mix( col, min( texture2D( tBlur, uv ).rgb, vec3( KAT_MAX ) ), coc );
         }
         #endif
@@ -529,7 +569,10 @@ export function makeCompositeShader() {
         float l = katLuma( g );
         g = mix( vec3( l ), g, uSaturation );
         g = ( g - 0.5 ) * uContrast + 0.5 + uLift;
-        g = clamp( g, 0.0, 1.0 );
+        // Only the floor is clamped here. Clamping the top as well threw away every value
+        // the range remap below needs in order to reach white, which is how the stack ended
+        // up with clipW = 0.00% in all eight canonical frames.
+        g = max( g, vec3( 0.0 ) );
 
         // ---- boost rush: radial speed lines + edge flare ---------------------------------
         #if USE_RUSH == 1
@@ -560,31 +603,44 @@ export function makeCompositeShader() {
         // ---- vignette ---------------------------------------------------------------------
         g *= 1.0 - uVignette * smoothstep( 0.30, 1.12, r );
 
-        // ---- the tonal anchor: one floor and one ceiling for the whole game ---------------
-        // Round-4 review measured the fraction of the frame below luma 0.06 running from
-        // 0.31% to 12.35% across the canonical set — the same course at the same hour — with
-        // shadowed asphalt and the chequered flag's dark squares both landing on RGB 3,11,30:
-        // black with a blue cast and no detail left in it. The cause is that nothing in this
-        // stack owned the bottom of the range; the LUT's cool-shade split tone simply ran off
-        // the end of it.
+        // ---- the tonal anchor: one black and one white for the whole game -----------------
+        // Round-5 review measured clipW = 0.00% *and* clipB = 0.00% in every one of the eight
+        // canonical frames: p1 ran 20-40 and p99 ran 215-244, so not one pixel in the game
+        // reached either end of the range. Three ceilings were stacked on top of each other
+        // (the composite's soft clip, the LUT's own asymptotic shoulder and an exponential
+        // white knee whose fixed point mapped 1.0 to 0.975) and a hard 0.062 floor sat under
+        // everything. High chroma over a midtone-only range is the definition of the flat,
+        // milky poster-paint look the review named.
         //
-        // This is a toe, not a lift. Below uToePivot the curve is a power law anchored on
-        // uBlack, and its slope at the pivot is (pivot-black)/pivot * gamma = 0.96, so it
-        // meets the untouched range smoothly instead of putting a milky step in the shadows.
-        // Above the pivot nothing changes at all. The effect is that every frame in the game
-        // ends on exactly the same black, and the last few percent of the range keeps its
-        // gradient instead of collapsing onto one value.
+        // So the anchor is now a *range*: uBlackPt and uWhitePt are the display levels that
+        // land on 0 and 1. Everything between keeps its shape, the top stop still rolls into
+        // white through a knee instead of slamming into it, and the bottom is a genuine toe
+        // rather than a lift.
+        g = ( g - uBlackPt ) / max( uWhitePt - uBlackPt, 1e-3 );
+
+        // Toe. Below uToePivot the curve is a power law anchored on uBlack; its slope at the
+        // pivot meets the untouched range smoothly, so this deepens the shadow end without
+        // putting a step in it. uBlack is 0 — the frame is allowed to reach black — and what
+        // keeps the darks from going blue-black is that the LUT's split tone now fades out
+        // under luma 0.11 rather than tinting a pixel the renderer sent in as black.
         {
           vec3 t = max( g, vec3( 0.0 ) ) / uToePivot;
           vec3 toed = uBlack + ( uToePivot - uBlack ) * pow( t, vec3( uToeGamma ) );
           g = mix( toed, g, step( vec3( uToePivot ), g ) );
         }
-        // ...and the matching ceiling, so a bright plate cannot drift past the top either.
+
+        // Highlight knee. A quadratic that leaves the line at uWhiteKnee with slope 1 and
+        // arrives at exactly 1.0 with slope 0, then clips. Unlike an exponential shoulder
+        // this *reaches* white, so a sunlit wall or a specular hit can be white while the
+        // stop below it still rolls instead of banding.
         {
-          float wr = max( uWhiteCeil - uWhiteKnee, 1e-3 );
-          vec3 over = max( g - uWhiteKnee, vec3( 0.0 ) );
-          g = min( g, vec3( uWhiteKnee ) ) + wr * ( 1.0 - exp( - over / wr ) );
+          float k = uWhiteKnee;
+          float w2 = 2.0 * max( 1.0 - k, 1e-3 );          // width of the knee in input units
+          vec3 d = clamp( g - k, vec3( 0.0 ), vec3( w2 ) );
+          vec3 kneed = k + d - d * d / ( 2.0 * w2 );
+          g = mix( g, kneed, step( vec3( k ), g ) );
         }
+        g = clamp( g, 0.0, 1.0 );
 
         g += ( katHash( gl_FragCoord.xy ) - 0.5 ) * ( 1.5 / 255.0 );
 
@@ -669,7 +725,11 @@ const HUE_ANCHORS = [
   { h:  12, sigma: 27, lo: 1.24, hi: 1.06 },                     // pantile red, kerb, livery
   { h:  46, sigma: 26, lo: 0.88, hi: 1.10 },                     // limestone, dust, straw
   { h: 118, sigma: 40, lo: 1.40, hi: 0.80, c0: 0.28, c1: 0.60 }, // olive, pine, cypress, vine
-  { h: 215, sigma: 55, lo: 1.78, hi: 1.38 },                     // sky, shade, water, liveries
+  // Blue is the one family that touches the largest single object in every frame — the sky —
+  // and round-5 review named it "electric". 1.78/1.38 was a push aimed at a road that had no
+  // chroma to push; the neutral-chroma term in the composite does that job now, so this can
+  // go back to a gain that flatters a livery without turning the dome into poster paint.
+  { h: 215, sigma: 55, lo: 1.45, hi: 1.20 },                     // sky, shade, water, liveries
   { h: 310, sigma: 50, lo: 1.30, hi: 1.14 },                     // item box, bougainvillea
 ];
 
@@ -702,7 +762,13 @@ export function makeGradeLUT(opts = {}) {
   // global R/B slope makes *everything* orange and eats the blue out of the sky. The
   // Mediterranean warmth comes from the split tone below, which only moves the ends.
   const slope  = [1.020 * warmth, 1.0, 0.984 / warmth];
-  const offset = [0.003, 0.001, -0.001];
+  // The offsets have to stay small in *linear* terms, because linear values near black are
+  // tiny: at sRGB byte 8 a channel carries 0.0024 of light, so the old +0.003 red offset was
+  // larger than the pixel itself and the bottom of the range came out with red surviving
+  // while green and blue clipped to zero. That did not show while the split tone below was
+  // lifting every dark pixel; now that the frame is allowed to reach black, it would be the
+  // only thing anyone saw down there.
+  const offset = [0.0010, 0.0004, -0.0004];
   const power  = [0.985, 1.0, 1.022];
 
   for (let bi = 0; bi < N; bi++) {
@@ -801,30 +867,44 @@ export function makeGradeLUT(opts = {}) {
         }
 
         lum = clamp(0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2], 0, 1);
-        const sh = (1 - lum) * (1 - lum);   // shadow weight
+        // Shadow weight, *faded out at the very bottom of the range*. This factor is the
+        // reason the game has a black at all. Round-5 review measured clipB = 0.00% in every
+        // one of the eight canonical frames and traced a hard floor at sRGB byte ~40; half of
+        // that floor was built right here. `(1-lum)^2` is largest exactly where the image is
+        // darkest, so the split tone below and the warm lift after it were at *full strength*
+        // on a pixel the renderer had sent in as pure black — this table used to map
+        // (0,0,0) to (0,5,21), a blue-lifted black that no downstream curve can take back
+        // out. Rolling the weight to zero under luma 0.11 keeps the cool shade where it does
+        // its work (the mid-shadows on plaster and asphalt) and lets the bottom of the range
+        // land on a neutral black.
+        const shw = (1 - lum) * (1 - lum) * ss(0.008, 0.11, lum);
         const hi = lum * lum * lum;         // highlight weight
 
-        // cool-teal shade, warm amber highlight — the classic sunny-afternoon split tone
         // Cool shade, warm highlight — the classic sunny-afternoon split tone, but weighted
         // toward the shade end. A strong warm highlight tint tints the *sky and the haze*
         // before it tints anything else, because those are the brightest things in a frame
         // shot outdoors; that is how a Mediterranean afternoon ends up looking like a dust
         // storm. The shade side carries the colour contrast instead, which is also where it
         // does the most good — a third of this course is under an olive or a pine.
-        out[0] += shadeTint * (-0.042 * sh) + warmth * (0.019 * hi);
-        out[1] += shadeTint * (0.005 * sh) + warmth * (0.011 * hi);
-        out[2] += shadeTint * (0.072 * sh) + warmth * (-0.012 * hi);
+        out[0] += shadeTint * (-0.030 * shw) + warmth * (0.017 * hi);
+        out[1] += shadeTint * (0.004 * shw) + warmth * (0.010 * hi);
+        out[2] += shadeTint * (0.050 * shw) + warmth * (-0.011 * hi);
 
-        // a whisper of warm lift so the blacks are dusty, not video-black
-        out[0] += 0.019 * sh; out[1] += 0.014 * sh; out[2] += 0.010 * sh;
+        // a whisper of warm lift so the mid-shadows are dusty rather than video-black; it
+        // rides the same faded weight, so it never touches the bottom of the range
+        out[0] += 0.012 * shw; out[1] += 0.009 * shw; out[2] += 0.006 * shw;
 
-        // Soft clamp on the very top end so a saturated channel rolls into white instead of
-        // clipping. Deliberately shallow and late: a hard shoulder here desaturates every
-        // bright colour in the frame — it was quietly draining the blue out of the sky.
-        const T = 0.945;
+        // Highlight shoulder — and it has to *reach white*. The old curve was
+        // `T + (1-exp(-(v-T)*9)) * (1-T)`, which is asymptotic: it maps 1.0 to 0.9665, so the
+        // brightest colour this table can emit is byte 246 and no amount of exposure
+        // downstream can produce a white pixel. That was one of three stacked ceilings (the
+        // composite's soft clip and its white knee were the others) behind round 5's
+        // clipW = 0.00% in all eight frames. Normalising by the value at v = 1 keeps the same
+        // roll-off shape through the top stop and lands exactly on 1.0.
+        const T = 0.962, TK = 7.0, TD = 1 - Math.exp(-(1 - T) * TK);
         for (let k = 0; k < 3; k++) {
           const v = out[k];
-          out[k] = v > T ? T + (1 - Math.exp(-(v - T) * 9)) * (1 - T) : v;
+          out[k] = v > T ? T + (1 - Math.exp(-(v - T) * TK)) * (1 - T) / TD : v;
         }
 
         const idx = ((gi * W) + (bi * N + ri)) * 4;

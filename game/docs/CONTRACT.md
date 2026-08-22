@@ -97,3 +97,28 @@ node tools/shoot.mjs      # must exit 0 with no page errors  (server: npx vite p
 Then **look at your screenshots** with the Read tool. Code that builds but renders wrong is
 not done. Judge them against a Mario Kart 8 screenshot from memory and keep iterating until
 the gap is about craft, not correctness.
+
+## Before you report a fix: run the regression guard
+
+```
+cd game && npm run build && node tools/shoot.mjs && node tools/guard.mjs
+```
+
+`tools/guard.mjs` measures, from the shot frames, the specific defects that have repeatedly been
+fixed and then broken again by a later agent working a different brief on the same file. It exits
+non-zero on regression. **A fix is not done until the guard passes**, whatever your own brief said.
+
+Two failure patterns have cost this project several review rounds. Both are cheap to avoid:
+
+**Misattribution.** A defect that recurs across rounds is usually blamed on the wrong file. The
+cypress trees were reported as "untextured cones in `vegetation.js`" by three consecutive review
+rounds; they were `ConeGeometry` primitives in `track/furniture.js`, and no amount of work on
+`vegetation.js` could ever have fixed them. Before you accept that a defect belongs to your file,
+reason about which system actually emits those pixels — and if it turns out not to be yours, say
+so precisely (file and line) instead of editing around it.
+
+**Oscillation.** `render/particles.js` and `render/lighting.js` have each swung between opposite
+failure modes. The drift VFX went blown-out white blob, then absent entirely, then a dust plume
+swallowing the kart, then blob again. If you touch an effect, verify BOTH failure directions in
+frames — the effect present, and the effect not swallowing its subject — not just the one your
+brief names.

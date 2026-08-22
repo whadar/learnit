@@ -165,8 +165,10 @@ class ResolvePass extends Pass {
     });
     this._quad = new FullScreenQuad(this.material);
   }
-  setDestination(w, h) {
+  setDestination(w, h, spread, sharpen) {
     this.material.uniforms.uDstTexel.value.set(1 / Math.max(1, w), 1 / Math.max(1, h));
+    if (spread !== undefined) this.material.uniforms.uSpread.value = spread;
+    if (sharpen !== undefined) this.material.uniforms.uSharpen.value = sharpen;
   }
   render(renderer, writeBuffer, readBuffer) {
     this.material.uniforms.tDiffuse.value = readBuffer.texture;
@@ -256,8 +258,15 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // the halo: a punchy glow that cannot swallow the kart. The old 0.42/1.5/0.68 trio
     // worked out to a gain of ~5.7 and turned the `driftCorner` boost flame into a
     // 600 px white hole with the kart nowhere inside it.
-    bloomStrength:   opts.bloomStrength ?? 0.18,
-    bloomRadius:     opts.bloomRadius ?? 0.40,   // low mips dominate at high radius = giant halo
+    bloomStrength:   opts.bloomStrength ?? 0.22,
+    // `bloomRadius` is UnrealBloomPass's mip-weight lerp: at 0.40 the *lowest* mip — 60x34
+    // texels for a 1920x1080 chain — was weighted 0.52, more than the tightest one. A single
+    // texel of that mip is a 32x32 px block, and bilinearly upsampled over a bright roofline
+    // it is a pale, hard-edged, flat-topped column standing in the sky. Round-5 review found
+    // exactly that in photoFinish, oliveGrove, hilltopVista and gridStart and read it as a
+    // light-shaft pass. There is no light-shaft pass; this was the bloom pyramid showing its
+    // own resolution. 0.12 puts the weight back on the tight mips, where a glow belongs.
+    bloomRadius:     opts.bloomRadius ?? 0.12,
     bloomThreshold:  opts.bloomThreshold ?? 12.0,
     bloomKnee:       opts.bloomKnee ?? 6.0,
     bloomClamp:      opts.bloomClamp ?? 0.52,
@@ -290,9 +299,18 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // exists so the base look can carry the Mario Kart punch on its own. It used to sit at
     // 1.0 and the frames only looked saturated because a wrongly-binary boost flag was
     // multiplying it by 1.22 nearly all the time — when that bug went, so did the punch.
-    contrast:        opts.contrast ?? 1.0,
-    saturation:      opts.saturation ?? 1.50,
+    // Round-5 review measured mean saturation 0.454-0.576 across the canonical eight against
+    // a Mario Kart band of 0.33-0.42, with clipW and clipB both at 0.00% — chroma-heavy over
+    // a midtone-only range, which is exactly the poster-paint failure mode. Chroma comes down
+    // here and in the LUT; the range that went missing comes back through uBlackPt/uWhitePt
+    // below, and a little contrast is what stops a wider range from reading flat.
+    contrast:        opts.contrast ?? 1.045,
+    saturation:      opts.saturation ?? 1.18,
     lutMix:          opts.lutMix ?? 1.0,
+    // Where the over-range top end starts to roll. Below this the pass is the identity. It
+    // used to sit at 0.86, which pulled ordinary sunlit plaster at 0.95 down to 0.926 before
+    // the grade had even started — a highlight ceiling nothing downstream could undo.
+    shoulder:        opts.shoulder ?? 0.90,
     // Neutral chroma. A saturation control multiplies the chroma a pixel already has, and
     // the wide grey asphalt ribbon that fills half of `villageStreet` has none — which is
     // why that plate measured 0.264 mean chroma against a Mario Kart band of 0.45-0.60 while
@@ -300,14 +318,23 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // direction instead: cool sky-fill in the shade, warm key where the sun reaches, which
     // is both what really lights a road and the complementary accent the tan-and-green
     // palette was missing. Shaped in the composite; see `uShadeTint` / `uSunTint`.
-    neutral:         opts.neutral ?? 1.65,
+    // 1.65 was tuned when the display saturation above was 1.50 and the LUT was pushing blue
+    // by 1.78; between them the shade tint was laying up to 13 bytes of blue on every
+    // achromatic pixel in the frame, which is most of what made the asphalt read violet and
+    // the roadside dirt Mars-orange.
+    neutral:         opts.neutral ?? 1.05,
     // The tonal anchor. One black and one white for the whole game, applied after the
-    // vignette so nothing downstream can move them.
-    black:           opts.black ?? 0.062,
-    toePivot:        opts.toePivot ?? 0.22,
-    toeGamma:        opts.toeGamma ?? 1.30,
-    whiteKnee:       opts.whiteKnee ?? 0.92,
-    whiteCeil:       opts.whiteCeil ?? 1.02,
+    // vignette so nothing downstream can move them — and *both ends reachable*. `blackPt`
+    // and `whitePt` are the display levels that map onto 0 and 1; the toe and the knee then
+    // shape the last stop at each end. The old anchor had a hard 0.062 floor (measured as
+    // p1 = 40 in hilltopVista, exactly the floor's byte value) and an exponential ceiling
+    // whose fixed point put display white at 0.975, so no frame could reach either end.
+    blackPt:         opts.blackPt ?? 0.014,
+    whitePt:         opts.whitePt ?? 0.918,
+    black:           opts.black ?? 0.0,
+    toePivot:        opts.toePivot ?? 0.17,
+    toeGamma:        opts.toeGamma ?? 1.10,
+    whiteKnee:       opts.whiteKnee ?? 0.885,
     // Auto-key. Bounded hard: this is a stabiliser that stops one corner of the course
     // reading two stops darker than the next, not a light meter. `keyStrength` 0 turns it
     // off entirely and the stack falls back to a fixed exposure.
@@ -320,6 +347,8 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // reading; a Mario Kart frame is evenly lit corner to corner.
     vignette:        opts.vignette ?? 0.17,
     chromatic:       opts.chromatic ?? 0.0038,
+    // Output sharpen, applied on the canvas grid by the resolve pass. See ResolveShader.
+    sharpen:         opts.sharpen ?? 0.34,
     // Boost rush. `rushOn`/`rushLinesOn` are the *boost* levels at which each half of the
     // effect starts to appear. They sit high on purpose: the rush is the reward for a fat
     // mini-turbo, so a tier-1 charge (which reaches ~0.20 of full punch) must leave the
@@ -339,6 +368,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // threshold above a tier-2 charge so only a tier-3 or a mushroom earns them, and the
     // shader now keeps them in the outer ring.
     rushStrength:    opts.rushStrength ?? 0.024,
+    // Radial blur driven by plain ground speed, independent of boost and of the camera
+    // reprojection budget. This is what makes 75 km/h look like 75 km/h.
+    speedRush:       opts.speedRush ?? 0.019,
     rushLines:       opts.rushLines ?? 0.26,
     rushOn:          opts.rushOn ?? 0.34,
     rushLinesOn:     opts.rushLinesOn ?? 0.76,
@@ -433,7 +465,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   // Round 1 measured a mean chroma of 0.19 against Mario Kart's 0.33-0.42 with the LUT at
   // 1.28 / 1.10; this pushes both and deepens the cool-shade split so the warm sun reads
   // as warm against it.
-  const lut = makeGradeLUT({ saturation: 1.42, contrast: 1.10, shadeTint: 1.15, warmth: 0.97,
+  const lut = makeGradeLUT({ saturation: 1.32, contrast: 1.10, shadeTint: 1.00, warmth: 0.97,
     ...(opts.lut || {}) });
   cu.tLut.value = lut;
   cu.tDepth.value = depthTexture;
@@ -466,6 +498,10 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   let superSample = 1;
   const prevViewProj = new THREE.Matrix4();
   const curViewProj = new THREE.Matrix4();
+  const prevCamPos = new THREE.Vector3();
+  const curCamPos = new THREE.Vector3();
+  const prevCamQuat = new THREE.Quaternion();
+  const curCamQuat = new THREE.Quaternion();
   let havePrev = false;
 
   function setQuality(t) {
@@ -547,8 +583,12 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     composer.setSize(pw, ph);
     cu.uResolution.value.set(pw, ph);
     cu.tBlur.value = dofPass.texture;
-    resolvePass.setDestination(cw, ch);
-    resolvePass.enabled = ss > 1.001;
+    // The resolve pass now also carries the output sharpen, so it runs at every tier. With
+    // no supersampling the four box taps collapse onto the centre texel (spread 0) and the
+    // pass is purely the sharpen — which is exactly what a 1:1 chain wants, since there are
+    // no extra samples to average and softening it would be the only thing a box filter did.
+    resolvePass.setDestination(cw, ch, ss > 1.001 ? 0.25 : 0.0, params.sharpen);
+    resolvePass.enabled = true;
     havePrev = false;
   }
 
@@ -559,7 +599,49 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
 
     camera.updateMatrixWorld();
     curViewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    if (!havePrev) { prevViewProj.copy(curViewProj); havePrev = true; }
+    camera.getWorldPosition(curCamPos);
+    camera.getWorldQuaternion(curCamQuat);
+    if (!havePrev) {
+      prevViewProj.copy(curViewProj);
+      prevCamPos.copy(curCamPos); prevCamQuat.copy(curCamQuat);
+      havePrev = true;
+    }
+
+    // ---- is this camera movement real driving, or a cut? --------------------------------
+    // Reprojection blur assumes the camera moved the way the race moved it. It does not, in
+    // two situations that between them account for most of what the review harness ever
+    // sees: a hard cut (setView, a replay angle, a respawn) and the first tenth of a second
+    // after one, while the chase spring is still catching up with a kart that has been
+    // teleported onto the grid. Both hand this pass a per-frame delta an order of magnitude
+    // larger than any speed in the game, the clamp turns that into a full-length smear, and
+    // the frame comes out mush.
+    //
+    // That is the whole of round-5 defect 4: `gridStart` is a *stationary* countdown plate
+    // (0 km/h) whose eight-kart pack came back smeared into unreadable streaks while the
+    // sponsor barrier three metres nearer stayed sharp — the near cutoff at 14 m held the
+    // barrier and let go of everything beyond it, and what was being smeared through the
+    // pack was the settling camera, not speed.
+    //
+    // So the blur is scaled by how much of the movement the kart's own speed can account
+    // for. Steady driving passes at full strength; a cut collapses to zero and recovers over
+    // the following frames as the spring settles.
+    let motionTrust = 1;
+    {
+      const moved = curCamPos.distanceTo(prevCamPos);
+      const dq = Math.min(1, Math.abs(curCamQuat.dot(prevCamQuat)));
+      const turned = 2 * Math.acos(dq);
+      // Expected motion for one rendered frame. The step is capped at 1/30 s so a slow
+      // frame (the software-raster harness renders one frame in seconds) does not widen the
+      // allowance far enough to let a cut through.
+      const eStep = Math.min(step, 1 / 30);
+      const mps = (speedN * params.speedRef) / 3.6;
+      const expectMove = mps * eStep * 1.4 + 0.10;    // + slack for the chase spring
+      const expectTurn = 3.0 * eStep + 0.020;         // rad; a hard drift yaws about 2 rad/s
+      motionTrust = Math.min(
+        clamp(expectMove / Math.max(moved, 1e-6), 0, 1),
+        clamp(expectTurn / Math.max(turned, 1e-9), 0, 1));
+      motionTrust = motionTrust * motionTrust;        // and fall off fast once it is wrong
+    }
 
     // ---- exposure + grade, driven by speed / boost ------------------------------------
     const punch = boost;
@@ -583,11 +665,13 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // ---- the fixed tonal anchor --------------------------------------------------------
     // These are constants on purpose. They are the one thing in the frame that must not move
     // with speed, boost, time of day or which corner the camera is in.
+    cu.uBlackPt.value = params.blackPt;
+    cu.uWhitePt.value = params.whitePt;
     cu.uBlack.value = params.black;
     cu.uToePivot.value = params.toePivot;
     cu.uToeGamma.value = params.toeGamma;
     cu.uWhiteKnee.value = params.whiteKnee;
-    cu.uWhiteCeil.value = params.whiteCeil;
+    cu.uShoulder.value = params.shoulder;
 
     // ---- auto-key ------------------------------------------------------------------------
     // The composite reads the measurement the probe wrote last frame; the probe then measures
@@ -609,8 +693,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // Blur represents shutter-open time. The reprojection vector already spans one frame,
     // so scaling by the shutter fraction keeps blur frame-rate independent; the clamp then
     // stops a hitched frame from smearing the whole screen.
-    cu.uMotionScale.value = params.motionShutter * (0.22 + 0.62 * speedN + 1.00 * punch);
-    cu.uMotionMax.value = params.motionMax * (0.40 + 0.55 * speedN + 0.9 * punch);
+    cu.uMotionScale.value =
+      params.motionShutter * (0.22 + 0.62 * speedN + 1.00 * punch) * motionTrust;
+    cu.uMotionMax.value = params.motionMax * (0.40 + 0.55 * speedN + 0.9 * punch) * motionTrust;
     cu.uMotionNear.value.set(params.motionNear, params.motionFull);
 
     // ---- boost rush ---------------------------------------------------------------------
@@ -619,7 +704,14 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // engaged the whole effect, which is why review plates taken at an ordinary 58-62 km/h
     // came back with smeared edges and speed lines across the sky.
     const rush = smoothstep(params.rushOn, 1.0, punch);
-    cu.uRush.value = params.rushStrength * rush + 0.0035 * smoothstep(0.88, 1.3, speedN);
+    // The speed term is the frame's only guaranteed speed cue, so it is not gated on boost
+    // and it starts well down the range. Round-5 review shot driftCorner at 61 km/h,
+    // itemChaos at 75 and photoFinish at 75 and found all three razor-sharp edge to edge:
+    // the old term did not begin until 0.88 of speedRef — 97 km/h — which is a speed the
+    // canonical set never reaches. It is radial and zero at the centre, so it sells the rush
+    // past the frame edge without touching the road, the pack or the HUD.
+    cu.uRush.value = params.rushStrength * rush
+      + params.speedRush * smoothstep(0.24, 1.05, speedN);
     cu.uRushLines.value = params.rushLines * smoothstep(params.rushLinesOn, 1.0, punch);
 
     // ---- depth of field ------------------------------------------------------------------
