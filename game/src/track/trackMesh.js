@@ -256,8 +256,8 @@ function tarmacTextures(p) {
 
   /* LINEAR albedo. The scene runs a hot key through ACES plus a warm grade, so these come
    * back a long way lifted; they were picked from rendered frames, not from a swatch. */
-  const BINDER = [0.0330, 0.0326, 0.0368];      // cool near-black bitumen
-  const STONE = [0.1180, 0.1090, 0.0905];       // warm limestone chipping
+  const BINDER = [0.0268, 0.0270, 0.0318];      // cool near-black bitumen
+  const STONE = [0.0855, 0.0828, 0.0762];       // warm limestone chipping
   const DUST = [0.2450, 0.2140, 0.1520];        // wind-drifted shoulder dust
 
   const alb = new Uint8ClampedArray(W * H * 4);
@@ -283,7 +283,7 @@ function tarmacTextures(p) {
       // `cov` is the *mean* stone coverage of the pack at this texel. The per-chipping
       // contrast lives in the shader, where it can be band-limited; putting it here is what
       // produced the sandpaper.
-      let cov = clamp(0.395 + (batch - 0.5) * 0.30 + (macro - 0.5) * 0.30 + (coarse - 0.5) * 0.20, 0.05, 0.94);
+      let cov = clamp(0.300 + (batch - 0.5) * 0.30 + (macro - 0.5) * 0.30 + (coarse - 0.5) * 0.20, 0.04, 0.94);
       let rough = 0.905 - (coarse - 0.5) * 0.06;
       let h = (coarse - 0.5) * 0.9 + (batch - 0.5) * 0.5 + macro * 0.3;
 
@@ -296,7 +296,7 @@ function tarmacTextures(p) {
       }
       pol *= 0.52 + NF(U, V, 0.17, seed + 617, 3) * 0.80;
       const wear = clamp(pol, 0, 1);
-      cov = clamp(cov + wear * 0.30, 0, 0.97);
+      cov = clamp(cov + wear * 0.22, 0, 0.97);
       rough -= wear * 0.085;
       h -= wear * 0.35;
 
@@ -489,8 +489,17 @@ function createSurfaceMaterial(tex, o) {
   const uniforms = {
     uStartS: { value: o.startS },
     uLen: { value: o.length },
-    uPaint: { value: new THREE.Vector3(0.72, 0.80, 0.95) },
-    uPaintGlow: { value: new THREE.Vector3(0.0, 0.012, 0.075) },
+    /* Road paint, LINEAR albedo. It used to be authored blue-biased (0.72, 0.80, 0.95) with a
+     * blue emissive lift on top, which is fine in direct sun and wrong everywhere else: in a
+     * tree shadow the only light on it is blue skylight, so a blue-biased white went full
+     * periwinkle. A reviewer counting the centre dashes across itemChaos read the near,
+     * shadowed, violet ones and the far, sunlit, white ones as two different systems and
+     * filed the near ones as mis-oriented geometry. They are the same dashes, correctly on
+     * the centreline — the fan is perspective — but the colour split is real, so the paint
+     * is now a slightly warm, faintly dirty white that stays white in shade, and the legibility
+     * lift is neutral instead of blue. */
+    uPaint: { value: new THREE.Vector3(0.80, 0.785, 0.745) },
+    uPaintGlow: { value: new THREE.Vector3(0.026, 0.025, 0.022) },
     uDark: { value: new THREE.Vector3(0.016, 0.020, 0.030) },
     uCell: { value: 1.25 },
     uBand: { value: 3.75 },
@@ -503,15 +512,15 @@ function createSurfaceMaterial(tex, o) {
      * tree shadow blew straight through the tonemapper into a shapeless cream blob. A tint
      * cannot do that: it is centred on 1, so the layer redistributes value instead of
      * manufacturing it. */
-    uChipA: { value: new THREE.Vector3(1.34, 1.25, 1.05) },
+    uChipA: { value: new THREE.Vector3(1.18, 1.11, 0.99) },
     /* The scene's key light and grade skew a neutral albedo warm. The correction happens on
      * the LIT result and is anchored to LUMINANCE: pull the pixel towards `luma * uTint`,
      * keeping `uSat` of its own chroma. It used to sit at 0.30, which threw away 70 % of the
      * road's colour and left r = g = b across every probe — a grey hole in a Mediterranean
      * palette. The albedo now carries a real hue split (warm limestone chippings in cool
      * bitumen, see `tarmacTextures`) so the grade only has to take the edge off. */
-    uSat: { value: 0.62 },
-    uTint: { value: new THREE.Vector3(0.965, 1.00, 1.075) },
+    uSat: { value: 0.40 },
+    uTint: { value: new THREE.Vector3(0.945, 1.00, 1.115) },
     uDetail: { value: new THREE.Vector2(1.0, 0.85) },   // (unused, strength)
     uDebug: { value: 0 },
   };
@@ -597,7 +606,7 @@ float kChecker(vec2 p, vec2 w){ return 0.5 + 0.5 * kSq(p.x, w.x) * kSq(p.y, w.y)
  * at two metres and genuinely gone at sixty, with nothing in between to shimmer. */
 float kFoot(vec3 wp){ return max(max(abs(dFdx(wp.x)), abs(dFdy(wp.x))),
                                  max(abs(dFdx(wp.z)), abs(dFdy(wp.z)))) + 1e-5; }
-float kBL(float f, float foot){ return smoothstep(1.15, 3.0, 1.0 / (f * foot)); }`)
+float kBL(float f, float foot){ return smoothstep(0.95, 2.4, 1.0 / (f * foot)); }`)
 
       .replace('#include <map_fragment>', `#include <map_fragment>
 {
@@ -625,7 +634,7 @@ float kBL(float f, float foot){ return smoothstep(1.15, 3.0, 1.0 / (f * foot)); 
   float n1 = (kdN(wp * f1) - 0.5) * w1;
   float n2 = (kdN(wp * f2 + 17.3) - 0.5) * w2;
   float n3 = (kdN(wp * f3 + 41.7) - 0.5) * w3;
-  float agg = (n1 * 0.42 + n2 * 0.62 + n3 * 0.86) * dstr;
+  float agg = (n1 * 0.42 + n2 * 0.62 + n3 * 0.98) * dstr;
   gGrain = (n2 * 0.55 + n3 * 1.0) * dstr;
   diffuseColor.rgb *= 1.0 + agg * 0.90;
   // stone tops catch the warm limestone; the binder between them stays cool
@@ -689,6 +698,11 @@ float kBL(float f, float foot){ return smoothstep(1.15, 3.0, 1.0 / (f * foot)); 
 {
   float l = dot(outgoingLight, vec3(0.2126, 0.7152, 0.0722));
   outgoingLight = mix(l * uTint, outgoingLight, uSat);
+  /* uDebug 1 paints the road's own coordinate system: red ramps are 1 m of lateral offset,
+   * green ramps are one dash period along. Anything that claims to be a marking has to line
+   * up with one of them; it is the only way to tell a mis-oriented marking from a second
+   * piece of ribbon showing through. Off in every shipping frame. */
+  if (uDebug > 0.5) outgoingLight = vec3(fract(vRoad.x), fract(vRoad.z / uDash.x), gPaint);
 }
 #include <${ch}>`;
     for (const ch of ['opaque_fragment', 'output_fragment']) {
@@ -787,7 +801,9 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   const surfTex = tarmacTextures({
     total: NOMW + MARGIN * 2, road: NOMW, vMetres: SURF_V,
     seed: 771, normalStrength: 1.15, W: 384, H: 960,
-    polish: [{ at: 0, w: 3.05, k: 0.72 }, { at: 4.95, w: 1.05, k: 0.34 }],
+    // Two tyre tracks per lane, not one broad bleached band down the middle: the old
+    // 3 m-wide polish washed the whole centre of the road out to the value of the verge.
+    polish: [{ at: 2.10, w: 0.95, k: 0.60 }, { at: 5.00, w: 0.85, k: 0.26 }, { at: 0, w: 3.2, k: 0.14 }],
   });
   const matSurface = createSurfaceMaterial(surfTex, { startS: track.startS, length: track.length });
   const vergeTex = vergeTextures();

@@ -126,6 +126,59 @@ function installFogChunks() {
 // ---------------------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------------------
+// IBL specular roll-off.
+//
+// The sky IBL is the only fill a shaded surface gets here, and it has to be raised a long way
+// for shadows to stay readable (see the ambient block in createLighting). Raising it naively
+// is what put white smears on the asphalt: the environment's *specular* lobe is not shadowed
+// by anything, it is sampled at grazing angles all over a road whose repair patches vary in
+// roughness, and the env dome still carries the sun's Mie glow — so a low-roughness patch in
+// full tree shadow returned a lobe brighter than directly sunlit tarmac. Physically impossible
+// and it read as a light leak.
+//
+// Diffuse irradiance and specular radiance therefore get separate controls: `ktIblDiffuse`
+// scales the fill that opens the shadows, `ktIblSpec` scales the reflection, and everything
+// above `ktIblClamp` is compressed by a soft knee so no reflection of the sky can ever out-run
+// the sun. Guarded by AERIAL_PERSPECTIVE, i.e. only on materials this rig adopted.
+// ---------------------------------------------------------------------------------------
+
+function installIblChunks() {
+  const pars = THREE.ShaderChunk.envmap_physical_pars_fragment;
+  if (typeof pars === 'string' && !/ktIblSpec/.test(pars)) {
+    THREE.ShaderChunk.envmap_physical_pars_fragment = pars.replace('#ifdef USE_ENVMAP', `#ifdef USE_ENVMAP
+
+	#ifdef AERIAL_PERSPECTIVE
+		uniform float ktIblDiffuse;
+		uniform float ktIblSpec;
+		uniform float ktIblClamp;
+		uniform float ktIblKnee;
+	#endif
+`);
+  }
+
+  const maps = THREE.ShaderChunk.lights_fragment_maps;
+  if (typeof maps === 'string' && !/ktIblSpec/.test(maps)) {
+    THREE.ShaderChunk.lights_fragment_maps = maps + /* glsl */`
+#ifdef AERIAL_PERSPECTIVE
+	#if defined( RE_IndirectDiffuse ) && defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+		iblIrradiance *= ktIblDiffuse;
+	#endif
+	#if defined( USE_ENVMAP ) && defined( RE_IndirectSpecular )
+		{
+			radiance *= ktIblSpec;
+			float ktL = max( max( radiance.r, radiance.g ), radiance.b );
+			if ( ktL > ktIblClamp ) {
+				float ktOver = ktL - ktIblClamp;
+				radiance *= ( ktIblClamp + ktOver / ( 1.0 + ktOver * ktIblKnee ) ) / max( ktL, 1e-5 );
+			}
+		}
+	#endif
+#endif
+`;
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 // Shadow filter surgery.
 //
 // three's PCF path takes FIVE Vogel-disk taps and rotates the disk per pixel with interleaved
@@ -137,7 +190,7 @@ function installFogChunks() {
 // stair-stepping on the building shadows in introFlythrough. The same scene therefore showed
 // both failure modes at once.
 //
-// Sixteen taps give 17 quantisation levels — below the 8-bit quantisation of the frame — so the
+// Twelve taps give 13 quantisation levels — below the 8-bit quantisation of the frame — so the
 // radius can finally be opened to a real world-space penumbra. It is one loop over the same
 // hardware-compared sampler; the taps are the only extra cost, and the disk is still rotated
 // deterministically from gl_FragCoord so screenshots stay reproducible.
@@ -231,6 +284,11 @@ function isClosedSolid(geo) {
 const LIT = m => !!(m.isMeshStandardMaterial || m.isMeshPhysicalMaterial || m.isMeshLambertMaterial ||
                     m.isMeshPhongMaterial || m.isMeshToonMaterial);
 
+const smoothstep01 = (a, b, x) => {
+  const t = clamp((x - a) / (b - a || 1e-6), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+
 /**
  * @param {Engine} engine
  * @param {WorldData} world
@@ -238,7 +296,8 @@ const LIT = m => !!(m.isMeshStandardMaterial || m.isMeshPhysicalMaterial || m.is
  */
 export function createLighting(engine, world, sky, opts = {}) {
   installFogChunks();
-  installShadowChunk(opts.shadowTaps ?? 16);
+  installIblChunks();
+  installShadowChunk(opts.shadowTaps ?? 12);
 
   const scene = engine.scene, renderer = engine.renderer;
   const pal = sky.palette;
@@ -260,6 +319,13 @@ export function createLighting(engine, world, sky, opts = {}) {
     // A 1.5 km course never needs the distance fully replaced by haze; capping the mix
     // keeps the far ridge a *ridge* rather than a silhouette-free band of sky.
     apMax:       { value: opts.hazeMax ?? 0.62 },
+    // Split IBL controls — see installIblChunks(). The diffuse term carries the whole shadow
+    // fill so it runs hot; the specular one is held down and knee-compressed so a grazing
+    // reflection of the sky can never be brighter than sunlit ground.
+    ktIblDiffuse: { value: opts.iblDiffuse ?? 1.0 },
+    ktIblSpec:    { value: opts.iblSpecular ?? 0.34 },
+    ktIblClamp:   { value: opts.iblSpecClamp ?? 0.22 },
+    ktIblKnee:    { value: opts.iblSpecKnee ?? 9.0 },
   };
 
   const shadowMapSize = opts.shadowMapSize ?? 2048;
@@ -378,13 +444,24 @@ export function createLighting(engine, world, sky, opts = {}) {
 
     const span = c.far - c.near;
     sun.shadow.bias = -(biasMetres / span);
-    // Slope term, in metres: enough to kill acne on the terrain now that casters render
-    // their FRONT faces, small enough that a 1 m object still meets its own shadow.
-    sun.shadow.normalBias = opts.normalBias ?? Math.max(0.05, 1.8 * texel);
+    // Slope term, in metres. It has to cover a texel's worth of depth error on the terrain,
+    // which is what `texel` scales it to, but it is also a *lateral* displacement of the
+    // lookup, so anything much bigger than the smallest caster in frame walks the sample off
+    // that caster entirely. Capped at 11 cm: a kart wheel is 0.5 m across and survives that,
+    // and with the wider filter below the terrain no longer needs 16.
+    sun.shadow.normalBias = opts.normalBias ?? clamp(1.35 * texel, 0.035, 0.11);
+    // Penumbra held at a fixed size *on the ground*, not a fixed number of texels — see the
+    // note where shadow.radius is first set.
+    sun.shadow.radius = clamp(penumbraMetres / texel, 1.15, 4.6);
   }
   fitShadow();
 
   // ---- ambient: sky/ground hemisphere + a terra-rossa bounce --------------------------
+  // Gains on top of whatever sky.js's palette hands over; see the long note in applyPalette().
+  const SKY_FILL_GAIN   = opts.hemiGain ?? 3.1;
+  const SKY_FILL_WARMTH = clamp(opts.hemiWarmth ?? 0.42, 0, 1);
+  const BOUNCE_GAIN     = opts.bounceGain ?? 2.2;
+
   const hemi = new THREE.HemisphereLight(pal.skyAmbient, pal.groundAmbient, pal.hemiIntensity);
   hemi.position.set(0, 1, 0);
   scene.add(hemi);
@@ -412,11 +489,13 @@ export function createLighting(engine, world, sky, opts = {}) {
       scene.environment = envMap;
       // The dome already renders in exposed units (sky.uExposure), so the IBL lands at a
       // sane fraction of the sun without any extra normalisation.
-      // Sky IBL is the other half of the ambient-fill problem (see sky.js's hemiIntensity
-      // note): at 0.45 the shaded side of every object was lit almost as brightly as the
-      // sunlit side and cast shadows read as a faint blue smudge. 0.24 keeps the bounce
-      // colour without eating the sun's contrast.
-      scene.environmentIntensity = opts.envIntensity ?? 0.35;
+      // Sky IBL is the other half of the ambient-fill problem. It was pulled down to 0.35
+      // because raising it washed the shaded side of everything out — but what was actually
+      // washing out was the *specular* lobe, which is unshadowed, grazing-angle heavy and, on
+      // the road's smoother repair patches, brighter than sunlit tarmac. Now that diffuse and
+      // specular have separate controls (installIblChunks), the diffuse half can carry the
+      // shadow fill it is supposed to carry while the reflection stays bolted down.
+      scene.environmentIntensity = opts.envIntensity ?? 0.70;
       return envMap;
     } catch (e) {
       console.warn('[lighting] environment map generation failed:', e);
@@ -539,11 +618,25 @@ export function createLighting(engine, world, sky, opts = {}) {
     sun.position.copy(sky.sunDir).multiplyScalar(2000);
     sun.color.copy(pal.sunColor);
     sun.intensity = pal.sunIntensity;
-    hemi.color.copy(pal.skyAmbient);
+    // ---- shadow fill ------------------------------------------------------------------
+    // Everything a surface out of the sun receives comes from these three terms plus the IBL,
+    // and measured against the frame they were nowhere near enough: with the sun switched off
+    // in itemChaos, lit terra rossa fell from luma 100 to 6 — a shaded diffuse surface was
+    // getting 6% of a lit one, so 10% of gridStart sat below luma 12 and the winery hoarding,
+    // the spectator cats and the wall behind them collapsed onto one flat blue-black. A real
+    // dry Mediterranean afternoon puts sky+bounce at roughly a third of the direct beam, and
+    // MK8 pushes further still: its shadows stay open and keep their local hue.
+    //
+    // The hue matters as much as the level. `pal.skyAmbient` is close to cyan, so what little
+    // fill there was arrived heavily blue — the shadows did not just go dark, they went dark
+    // AND lost their material identity. The sky term keeps its cool cast but is pulled part of
+    // the way to the sun's own colour, and the warm ground/bounce terms are lifted alongside
+    // it so shaded stone stays stone-coloured.
+    hemi.color.copy(pal.skyAmbient).lerp(pal.sunColor, SKY_FILL_WARMTH);
     hemi.groundColor.copy(pal.groundAmbient);
-    hemi.intensity = pal.hemiIntensity;
+    hemi.intensity = pal.hemiIntensity * SKY_FILL_GAIN;
     bounce.color.copy(pal.bounceColor);
-    bounce.intensity = pal.bounceIntensity;
+    bounce.intensity = pal.bounceIntensity * BOUNCE_GAIN;
     bounce.position.set(-sky.sunDir.x * 0.35, -1, -sky.sunDir.z * 0.35).normalize().multiplyScalar(-500);
 
     apUniforms.apSunDir.value.copy(sky.sunDir);
@@ -565,28 +658,53 @@ export function createLighting(engine, world, sky, opts = {}) {
   // resolves at this sun angle (elevation ~56 deg puts the cast shadow almost entirely under
   // the chassis). MK8 draws it as an explicit soft blob under every kart and so does this.
   //
-  // One InstancedMesh, multiplicative blending so it darkens the road's own texture instead of
-  // painting grey over it, lifted 3 cm and polygon-offset so it never z-fights the surface,
-  // pulled a little down-sun so it reads as anchored to the light rather than stamped.
+  // The previous pool was the size of the kart's own footprint — 2.3 x 3.0 m — and that is
+  // exactly why it never appeared in a frame. A chase or photo-finish camera sits about a
+  // metre above the road: the ground directly beneath a kart is entirely hidden by the kart,
+  // so a pool that stops at the silhouette is drawn into pixels the kart already occludes.
+  // Toggling it on and off in photoFinish changed 1041 pixels out of 921600, all of them
+  // slivers off to one side — the karts might as well have had no contact shadow, which is
+  // what three critics reported. What has to be visible is the ring OUTSIDE the silhouette:
+  // the darkening that spills past the tyres and out behind the rear axle, which is the part
+  // of the ground the camera can actually see.
+  //
+  // So the pool is 2.95 x 3.85 m over a kart that is about 1.5 x 2.1 m, and it is not an
+  // ellipse: four tight tyre-contact lobes at the wheels, a broad chassis lobe between them
+  // and a wide low-density halo, unioned. The tyre lobes are what read as rubber touching
+  // tarmac; the halo is what survives a grazing camera.
+  //
+  // One InstancedMesh, black over the road so it darkens the surface's own texture instead of
+  // painting grey over it, lifted 3 cm and polygon-offset so it never z-fights, pulled a
+  // little down-sun so it reads as anchored to the light rather than stamped.
   const contact = (() => {
     if (opts.contactShadows === false) return null;
     try {
-      const S = 96, cv = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
+      const S = 128, cv = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
       if (!cv) return null;
       cv.width = cv.height = S;
       const c = cv.getContext('2d');
-      // Black with a soft alpha ramp: a wide flat core under the chassis and a long shoulder,
-      // slightly squashed across the kart so the pool reads as an occlusion wedge and never as
-      // a drawn ellipse.
       const img = c.createImageData(S, S);
+      // Normalised half-extents: x across the kart, y along it. 1.0 == the pool's own edge.
+      const lobe = (dx, dy, rx, ry, soft) => {
+        const d = Math.sqrt((dx / rx) * (dx / rx) + (dy / ry) * (dy / ry));
+        const t = 1 - Math.min(1, Math.max(0, (d - (1 - soft)) / (2 * soft)));
+        return t * t * (3 - 2 * t);
+      };
+      const WX = 0.44, WY = 0.35;                       // wheel centres in pool space
       for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
         const dx = (x + 0.5) / S * 2 - 1, dy = (y + 0.5) / S * 2 - 1;
-        const r = Math.sqrt(dx * dx * 1.20 + dy * dy * 0.86);
-        const t = 1 - Math.min(1, Math.max(0, (r - 0.14) / 0.80));
-        const a = t * t * (3 - 2 * t);                 // smoothstep shoulder
+        let occ = 1 - lobe(dx, dy, 0.90, 0.94, 0.98) * 0.34;      // wide halo
+        occ *= 1 - lobe(dx, dy, 0.50, 0.58, 0.72) * 0.72;         // chassis
+        for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+          occ *= 1 - lobe(dx - sx * WX, dy - sy * WY, 0.21, 0.17, 0.85);   // tyre contact
+        }
+        // The halo still carries a few percent of alpha at the quad's corners, and a quad edge
+        // at 4% over tarmac is a visible straight line — the pool reads as a printed rectangle.
+        // Window it to exactly zero at the border.
+        const win = (1 - smoothstep01(0.66, 1.0, Math.abs(dx))) * (1 - smoothstep01(0.66, 1.0, Math.abs(dy)));
         const i = (y * S + x) * 4;
         img.data[i] = img.data[i + 1] = img.data[i + 2] = 0;
-        img.data[i + 3] = Math.round(255 * a);
+        img.data[i + 3] = Math.round(255 * Math.min(1, (1 - occ) * win));
       }
       c.putImageData(img, 0, 0);
       const tex = new THREE.CanvasTexture(cv);
@@ -596,7 +714,7 @@ export function createLighting(engine, world, sky, opts = {}) {
 
       const geo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
       const mat = new THREE.MeshBasicMaterial({
-        map: tex, color: 0x000000, transparent: true, opacity: opts.contactStrength ?? 0.62,
+        map: tex, color: 0x000000, transparent: true, opacity: opts.contactStrength ?? 0.80,
         depthWrite: false, fog: false, toneMapped: false,
         polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8,
       });
@@ -605,11 +723,15 @@ export function createLighting(engine, world, sky, opts = {}) {
       mesh.name = 'lighting:contact';
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = false;
-      mesh.renderOrder = 3; mesh.count = 0;
+      // Above the transparent road dressing — the grid slabs (6) and the skid decals (5) are
+      // drawn after opaque geometry and would otherwise paint straight over the pool — and
+      // below the boost pads and the additive VFX, which belong on top of everything.
+      mesh.renderOrder = 7; mesh.count = 0;
       mesh.userData.__ktContact = true;
       scene.add(mesh);
 
       const targets = [];
+      const restY = new Map();          // racer -> smoothed resting height, see update()
       const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
       const _n = new THREE.Vector3(), _fw = new THREE.Vector3(), _rt = new THREE.Vector3();
       const _m = new THREE.Matrix4();
@@ -635,7 +757,17 @@ export function createLighting(engine, world, sky, opts = {}) {
           // here: the track ribbon is graded and can sit a metre above raw terrain, and putting
           // the pool on `heightAt` buries it under the road.
           const gy = world ? world.heightAt(_p.x, _p.z) : _p.y;
-          const air = Number.isFinite(gy) ? Math.max(0, _p.y - gy) : 0;
+          const airTerrain = Number.isFinite(gy) ? Math.max(0, _p.y - gy) : 0;
+          // ...but the heightfield ALONE cannot decide whether a kart is airborne, because a
+          // graded corner or a bridged culvert can put the ribbon several metres over raw
+          // terrain, and every kart driving over it would silently lose its contact shadow.
+          // Track a per-racer resting height instead: it snaps down the moment the kart is
+          // lower than the reference and creeps up slowly, so a jump reads as air while a
+          // climb does not. Airborne means BOTH measures agree.
+          let ref = restY.get(o);
+          ref = (ref === undefined || _p.y < ref) ? _p.y : Math.min(_p.y, ref + 0.045);
+          restY.set(o, ref);
+          const air = Math.min(airTerrain, Math.max(0, _p.y - ref));
           // A kart in the air has no contact to occlude: the pool widens, then is dropped once
           // it would only be a smudge.
           if (air > 2.4) continue;
@@ -651,10 +783,10 @@ export function createLighting(engine, world, sky, opts = {}) {
 
           _basis.makeBasis(_rt, _n, _fw);
           _basis.setPosition(
-            _p.x + lightDir.x * 0.30,
-            _p.y + 0.04,
-            _p.z + lightDir.z * 0.30);
-          _s.set(2.30 * grow, 1, 3.00 * grow);
+            _p.x + lightDir.x * 0.22,
+            _p.y + 0.03,
+            _p.z + lightDir.z * 0.22);
+          _s.set(2.95 * grow, 1, 3.85 * grow);
           _m.copy(_basis).scale(_s);
           mesh.setMatrixAt(n, _m);
           n++;

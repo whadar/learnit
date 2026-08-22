@@ -1,0 +1,22 @@
+import { chromium } from 'playwright';
+import fs from 'node:fs';
+const CHROME='/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const URL='http://127.0.0.1:4173/?review=1&audio=0&q=high';
+const view=process.argv[2]||'driftCorner';
+const b=await chromium.launch({executablePath:CHROME,args:['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--no-sandbox','--disable-dev-shm-usage','--force-device-scale-factor=1']});
+const p=await b.newPage({viewport:{width:1280,height:720}});
+await p.goto(URL,{waitUntil:'load',timeout:180000});
+await p.waitForFunction(()=>window.__game&&(window.__game.ready||window.__game.error),null,{timeout:600000});
+await p.evaluate(v=>window.__game.setView(v),view);
+await p.evaluate(()=>new Promise(r=>{let i=0;const s=()=>(++i>=8?r():requestAnimationFrame(s));requestAnimationFrame(s);}));
+const r=await p.evaluate(()=>{
+  const g=window.__game, sc=g.engine.scene, cv=g.engine.renderer.domElement;
+  let c=null; sc.traverse(o=>{if(o.name==='lighting:contact')c=o;});
+  c.visible=true; g.renderOnce(); const a=cv.toDataURL('image/png');
+  c.visible=false; g.renderOnce(); const b=cv.toDataURL('image/png');
+  c.visible=true; return {a,b,count:c.count};
+});
+fs.writeFileSync('/home/user/learnit/game/shots/_d_on.png',Buffer.from(r.a.split(',')[1],'base64'));
+fs.writeFileSync('/home/user/learnit/game/shots/_d_off.png',Buffer.from(r.b.split(',')[1],'base64'));
+console.log('count',r.count);
+await b.close();
