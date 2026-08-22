@@ -214,6 +214,9 @@ export const ResolveShader = {
     uniform vec2 uDstTexel;
     uniform float uSpread, uSharpen;
     varying vec2 vUv;
+
+    ${GLSL_COMMON}
+
     void main() {
       vec2 o = uDstTexel * uSpread;
       vec3 c  = texture2D( tDiffuse, vUv + vec2( -o.x, -o.y ) ).rgb;
@@ -239,7 +242,11 @@ export const ResolveShader = {
       vec3 lo = min( c, min( min( e, w ), min( n, sth ) ) );
       vec3 hi = max( c, max( max( e, w ), max( n, sth ) ) );
       vec3 sharp = c + ( c - ( e + w + n + sth ) * 0.25 ) * uSharpen;
-      gl_FragColor = vec4( clamp( sharp, lo, hi ), 1.0 );
+      sharp = clamp( sharp, lo, hi );
+      // Ordered-free dither, last, on the canvas grid — one LSB of noise so the sky gradient
+      // and the shadow ramp quantise smoothly instead of banding.
+      sharp += ( katHash( gl_FragCoord.xy ) - 0.5 ) * ( 1.6 / 255.0 );
+      gl_FragColor = vec4( clamp( sharp, 0.0, 1.0 ), 1.0 );
     }`,
 };
 
@@ -640,10 +647,11 @@ export function makeCompositeShader() {
           vec3 kneed = k + d - d * d / ( 2.0 * w2 );
           g = mix( g, kneed, step( vec3( k ), g ) );
         }
-        g = clamp( g, 0.0, 1.0 );
-
-        g += ( katHash( gl_FragCoord.xy ) - 0.5 ) * ( 1.5 / 255.0 );
-
+        // Dither is *not* applied here. This pass runs on the supersampled grid, where the
+        // resolve would average 2.25 samples of it back down to a third of its amplitude —
+        // and it would then be fed to SMAA, whose edge detector has to look at it. It is
+        // applied by the resolve pass instead, on the canvas grid, as the last thing that
+        // happens to the image.
         gl_FragColor = vec4( clamp( g, 0.0, 1.0 ), 1.0 );
       }`,
   };

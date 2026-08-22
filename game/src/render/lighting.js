@@ -731,7 +731,7 @@ export function createLighting(engine, world, sky, opts = {}) {
       scene.add(mesh);
 
       const targets = [];
-      const restY = new WeakMap();      // racer -> smoothed resting height, see update()
+      const restY = new WeakMap();      // racer -> { y, x, z } resting reference, see update()
       const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
       const _n = new THREE.Vector3(), _fw = new THREE.Vector3(), _rt = new THREE.Vector3();
       const _m = new THREE.Matrix4();
@@ -764,10 +764,23 @@ export function createLighting(engine, world, sky, opts = {}) {
           // Track a per-racer resting height instead: it snaps down the moment the kart is
           // lower than the reference and creeps up slowly, so a jump reads as air while a
           // climb does not. Airborne means BOTH measures agree.
-          let ref = restY.get(o);
-          ref = (ref === undefined || _p.y < ref) ? _p.y : Math.min(_p.y, ref + 0.045);
-          restY.set(o, ref);
-          const air = Math.min(airTerrain, Math.max(0, _p.y - ref));
+          //
+          // ...and the reference needs a TELEPORT guard, which is the bug that made this whole
+          // system invisible. `setView()` re-stages the field with packAt()/simulate() — every
+          // kart jumps to a different part of the course between two visual frames, often tens
+          // of metres lower. The creep then needs `drop / 0.045` frames to catch up, so for
+          // several seconds `_p.y - ref` reads as "this kart is 30 m in the air" and the pool
+          // is dropped by the `air > 2.4` test below. gridStart is the one plate that still had
+          // contact shadows precisely because it is where the reference was first written; every
+          // other plate shipped with mesh.count === 0 and the whole field floating. A jump
+          // moves a kart a few metres per frame at most, so a horizontal step of more than 6 m
+          // in a single update is a re-stage, not a jump: re-seat the reference on the spot.
+          const st = restY.get(o);
+          const staged = !st || Math.abs(_p.x - st.x) + Math.abs(_p.z - st.z) > 6;
+          const ref = staged ? _p.y
+            : (_p.y < st.y ? _p.y : Math.min(_p.y, st.y + 0.045));
+          restY.set(o, { y: ref, x: _p.x, z: _p.z });
+          const air = staged ? 0 : Math.min(airTerrain, Math.max(0, _p.y - ref));
           // A kart in the air has no contact to occlude: the pool widens, then is dropped once
           // it would only be a smudge.
           if (air > 2.4) continue;

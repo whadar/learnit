@@ -258,7 +258,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // the halo: a punchy glow that cannot swallow the kart. The old 0.42/1.5/0.68 trio
     // worked out to a gain of ~5.7 and turned the `driftCorner` boost flame into a
     // 600 px white hole with the kart nowhere inside it.
-    bloomStrength:   opts.bloomStrength ?? 0.22,
+    bloomStrength:   opts.bloomStrength ?? 0.26,
     // `bloomRadius` is UnrealBloomPass's mip-weight lerp: at 0.40 the *lowest* mip — 60x34
     // texels for a 1920x1080 chain — was weighted 0.52, more than the tightest one. A single
     // texel of that mip is a 32x32 px block, and bilinearly upsampled over a bright roofline
@@ -266,7 +266,21 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // exactly that in photoFinish, oliveGrove, hilltopVista and gridStart and read it as a
     // light-shaft pass. There is no light-shaft pass; this was the bloom pyramid showing its
     // own resolution. 0.12 puts the weight back on the tight mips, where a glow belongs.
-    bloomRadius:     opts.bloomRadius ?? 0.12,
+    bloomRadius:     opts.bloomRadius ?? 0.30,
+    // Per-mip trim, applied through UnrealBloomPass's own tint colours. This is the actual
+    // cure for the "vertical light-shaft bars" of round 5, and it needed measuring to find:
+    // the pale flat-topped columns standing in the sky above the photoFinish roofline
+    // correlate, column for column, with the whitest pixels *below* the roofline (measured:
+    // the four columns sit exactly over the four brightest min-channel runs on the white
+    // gable and the sunlit ridge), and they are one texel of the pyramid's lowest mip wide
+    // and one tall. There is no light-shaft pass in this game; that was the bloom pyramid
+    // showing its own resolution. UnrealBloomPass blurs five mips down to 60x34 for a
+    // 1920x1080 chain and its radius knob *raises* the weight of the coarsest ones, so the
+    // widest, blockiest, most bilinearly-smeared level was carrying more energy than the
+    // tight level that actually reads as a glow. Tapering the last two mips keeps the total
+    // bloom energy about where it was (3 * strength * sum(weight*tint) = 1.65, against 1.62
+    // before) and moves all of it onto levels whose texels are smaller than the artefact.
+    bloomMipTint:    opts.bloomMipTint ?? [1.0, 1.0, 0.80, 0.30, 0.08],
     bloomThreshold:  opts.bloomThreshold ?? 12.0,
     bloomKnee:       opts.bloomKnee ?? 6.0,
     bloomClamp:      opts.bloomClamp ?? 0.52,
@@ -305,12 +319,12 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // here and in the LUT; the range that went missing comes back through uBlackPt/uWhitePt
     // below, and a little contrast is what stops a wider range from reading flat.
     contrast:        opts.contrast ?? 1.045,
-    saturation:      opts.saturation ?? 1.18,
+    saturation:      opts.saturation ?? 1.24,
     lutMix:          opts.lutMix ?? 1.0,
     // Where the over-range top end starts to roll. Below this the pass is the identity. It
     // used to sit at 0.86, which pulled ordinary sunlit plaster at 0.95 down to 0.926 before
     // the grade had even started — a highlight ceiling nothing downstream could undo.
-    shoulder:        opts.shoulder ?? 0.90,
+    shoulder:        opts.shoulder ?? 0.92,
     // Neutral chroma. A saturation control multiplies the chroma a pixel already has, and
     // the wide grey asphalt ribbon that fills half of `villageStreet` has none — which is
     // why that plate measured 0.264 mean chroma against a Mario Kart band of 0.45-0.60 while
@@ -330,11 +344,11 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // p1 = 40 in hilltopVista, exactly the floor's byte value) and an exponential ceiling
     // whose fixed point put display white at 0.975, so no frame could reach either end.
     blackPt:         opts.blackPt ?? 0.014,
-    whitePt:         opts.whitePt ?? 0.918,
+    whitePt:         opts.whitePt ?? 0.878,
     black:           opts.black ?? 0.0,
     toePivot:        opts.toePivot ?? 0.17,
     toeGamma:        opts.toeGamma ?? 1.10,
-    whiteKnee:       opts.whiteKnee ?? 0.885,
+    whiteKnee:       opts.whiteKnee ?? 0.868,
     // Auto-key. Bounded hard: this is a stabiliser that stops one corner of the course
     // reading two stops darker than the next, not a light meter. `keyStrength` 0 turns it
     // off entirely and the stack falls back to a fixed exposure.
@@ -440,6 +454,9 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   // A soft knee makes the threshold forgiving: highlights ease into the bloom instead of
   // popping, which is what keeps sunlit plaster from suddenly glowing when it tips over 1.
   bloomPass.highPassUniforms.smoothWidth.value = params.bloomKnee;
+  for (let i = 0; i < bloomPass.bloomTintColors.length; i++) {
+    bloomPass.bloomTintColors[i].setScalar(params.bloomMipTint[i] ?? 1);
+  }
   // Swap in our energy-conserving, clamped prefilter (see postShaders.js). The uniforms
   // object is the same one UnrealBloomPass writes tDiffuse/threshold into every frame.
   bloomPass.highPassUniforms.bloomClamp = { value: params.bloomClamp };
