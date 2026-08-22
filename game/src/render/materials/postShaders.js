@@ -403,7 +403,7 @@ const hueDist = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 36
  */
 const HUE_WARP = [
   [0, 0], [20, 15], [36, 32], [51, 51], [58, 78], [66, 106], [76, 120], [88, 130],
-  [104, 138], [126, 150], [150, 164], [180, 190], [212, 216], [245, 246], [290, 292],
+  [104, 138], [126, 150], [150, 168], [180, 202], [212, 223], [245, 248], [290, 292],
   [330, 334], [360, 360],
 ];
 function hueWarp(h) {
@@ -437,17 +437,22 @@ function hsvToRgb(h, s, v) {
  * The palette, as hue families. `lo` is the saturation gain applied to a low-chroma pixel of
  * that hue, `hi` the gain once it is already vivid; `sigma` is the kernel width in degrees.
  *
- * The amber family is the only one below 1.0, and that is the whole point of this table: on
- * a course lit by a low warm sun, *everything* neutral lands there, so it is the one family
- * that needs pulling back rather than pushing. Its `hi` stays above 1.0 so the things that
- * are genuinely orange — boost flame, item-box gold, terracotta — are untouched by that.
+ * The amber family is the only one whose `lo` is below 1.0, and that is the whole point of
+ * this table: on a course lit by a low warm sun, *everything* neutral lands there, so it is
+ * the one family that needs pulling back rather than pushing. Its `hi` stays above 1.0 so the
+ * things that are genuinely orange — boost flame, item-box gold, terracotta — are untouched.
+ *
+ * Green is the mirror image, and its `hi` of 0.82 is doing real work: the hue warp above
+ * lands saturated yellow-olives on the green axis, and a canopy at 0.9 chroma is neon poster
+ * paint, not a pine. Pushing the dull greens up while pulling the vivid ones down compresses
+ * the whole family into the band a tree actually occupies.
  */
 const HUE_ANCHORS = [
-  { h:  12, sigma: 27, lo: 1.24, hi: 1.06 },   // pantile red, kerb stripe, kart livery
-  { h:  46, sigma: 26, lo: 0.88, hi: 1.10 },   // limestone, plaster, dust, straw, haze
-  { h: 118, sigma: 40, lo: 1.36, hi: 1.14 },   // olive, pine, cypress, vine, grass
-  { h: 215, sigma: 55, lo: 1.78, hi: 1.38 },   // sky, shade, water, blue liveries
-  { h: 310, sigma: 50, lo: 1.30, hi: 1.14 },   // item-box magenta, bougainvillea
+  { h:  12, sigma: 27, lo: 1.24, hi: 1.06 },                     // pantile red, kerb, livery
+  { h:  46, sigma: 26, lo: 0.88, hi: 1.10 },                     // limestone, dust, straw
+  { h: 118, sigma: 40, lo: 1.40, hi: 0.80, c0: 0.28, c1: 0.60 }, // olive, pine, cypress, vine
+  { h: 215, sigma: 55, lo: 1.78, hi: 1.38 },                     // sky, shade, water, liveries
+  { h: 310, sigma: 50, lo: 1.30, hi: 1.14 },                     // item box, bougainvillea
 ];
 
 /**
@@ -542,17 +547,18 @@ export function makeGradeLUT(opts = {}) {
           const h2 = ((h + (hueWarp(h) - h) * gate) % 360 + 360) % 360;
 
           // Saturation gain, blended between the hue anchors with a normalised gaussian
-          // kernel so there are no seams between families. `hi` is the gain for colours that
-          // are already saturated — a boost flame, item-box gold, a kart livery — which must
-          // keep their gradients rather than smear into a flat primary.
-          const hiC = ss(0.55, 0.85, chroma);
+          // kernel so there are no seams between families. Each family crossfades from `lo`
+          // to `hi` across its own chroma window: `hi` is the gain for colours that are
+          // already vivid — a boost flame, item-box gold, a kart livery — which must keep
+          // their gradients rather than smear into a flat primary, and for green it is a
+          // compressor that keeps a sunlit prickly pear from going fluorescent.
           let wSum = 0, gSum = 0;
           for (let a = 0; a < HUE_ANCHORS.length; a++) {
             const A = HUE_ANCHORS[a];
             const t = hueDist(h2, A.h) / A.sigma;
             const w = Math.exp(-t * t);
             wSum += w;
-            gSum += w * (A.lo + (A.hi - A.lo) * hiC);
+            gSum += w * (A.lo + (A.hi - A.lo) * ss(A.c0 ?? 0.55, A.c1 ?? 0.85, chroma));
           }
           const gain = wSum > 1e-6 ? gSum / wSum : 1;
 

@@ -143,6 +143,13 @@ export function buildRoadTextures(p) {
   const RG = (U, V, f, sd, oct = 3) =>
     ridged(U * f, V * f, Math.max(1, Math.round(f * p.total)), Math.max(1, Math.round(f * p.vMetres)), sd, oct);
 
+  /* The highest spatial frequency this texture can actually carry, in cycles per metre.
+   * Value noise needs ~2.4 texels per lattice cell before it turns to hash, and the U axis is
+   * always the tighter of the two here. Every aggregate frequency below is expressed as a
+   * fraction of `FMAX` so a 96-texel footpath and a 640-texel circuit both land on the
+   * finest grain they can hold instead of one aliasing and the other going smooth. */
+  const FMAX = Math.min(W / p.total, H / p.vMetres) / 2.4;
+
   for (let j = 0; j < H; j++) {
     const V = j * my;                            // metres along
     for (let i = 0; i < W; i++) {
@@ -160,12 +167,18 @@ export function buildRoadTextures(p) {
       let r = base[0], g = base[1], b = base[2], rough = sealed ? 0.74 : 0.92, h = 0;
 
       if (!sealed) {
-        // village farm track / footpath: pale limestone, ruts, a weed strip
+        // village farm track / footpath: pale limestone, ruts, a weed strip. The loose
+        // gravel gets the same treatment as the sealed aggregate — scattered stones at the
+        // texture's finest usable frequency, not a soft fbm haze.
         const dust = NF(U, V, 0.85, seed + 3, 4);
-        const grit = NF(U, V, 5.0, seed + 19, 3);
-        const tone = 0.90 + dust * 0.20 + (grit - 0.5) * 0.22;
+        const grit = VN(U, V, FMAX, seed + 19) * 0.6 + VN(U, V, FMAX * 0.55, seed + 23) * 0.4;
+        const stones = clamp((VN(U + (grit - 0.5) * 0.06, V, FMAX * 0.72, seed + 29) - 0.60) * 3.0, 0, 1);
+        const tone = 0.88 + dust * 0.20 + (grit - 0.5) * 0.34;
         r *= tone; g *= tone * 0.99; b *= tone * 0.95;
-        h = dust * 0.5 + grit * 0.35;
+        r = lerp(r, r * 1.30 + 0.030, stones * 0.8);
+        g = lerp(g, g * 1.29 + 0.028, stones * 0.8);
+        b = lerp(b, b * 1.26 + 0.024, stones * 0.8);
+        h = dust * 0.5 + (grit - 0.5) * 1.9 + stones * 2.2;
         let rut = 0;
         for (const bd of polish) rut = Math.max(rut, Math.exp(-((au - bd.at) ** 2) / (2 * bd.w * bd.w)) * (bd.k ?? 1));
         r = lerp(r, r * 0.80, rut); g = lerp(g, g * 0.79, rut); b = lerp(b, b * 0.80, rut);
@@ -181,32 +194,69 @@ export function buildRoadTextures(p) {
         if (st > 0.90) { const q = (st - 0.90) * 10; r += q * 0.20; g += q * 0.19; b += q * 0.17; h += q * 1.3; }
       } else {
         /* ---- sealed racing surface: chip-seal tarmac ------------------------------
-         * Binder is near-black; the read comes from the limestone chippings bedded in it,
-         * from the macro sun-bleaching, and from the polished wheel paths. Frequencies are
-         * kept under the U-axis Nyquist (W / total texels per metre) so nothing aliases into
-         * the low-frequency smudge the previous surface had. */
-        const macro = NF(U, V, 0.32, seed + 71, 4);            // sun-bleach / age drift
-        const grain = NF(U, V, 3.2, seed + 5, 2, 0.6);         // binder grain
-        const tone = 0.88 + macro * 0.22 + (grain - 0.5) * 0.24;
+         * A chip seal is not a tinted plane: it is a bed of 8-14 mm limestone chippings
+         * rolled into black bitumen. Nearly all of the surface's read — at every distance —
+         * comes from the value step between the pale stone tops and the near-black binder
+         * between them, so that step is authored as high and as fine as the texture can
+         * carry (see `FMAX`) rather than as the gentle 12 % tint the old surface used.
+         *
+         * Three decorrelated stone fields are unioned, then the whole sample point is domain
+         * warped. Warping matters: a thresholded value-noise lattice makes *axis-aligned
+         * rectangles*, which is exactly why the previous aggregate read as square blotches
+         * following the road direction instead of as stones. The warp field tiles on the
+         * same lattice, so the V repeat is still seamless. */
+        const macro = NF(U, V, 0.30, seed + 71, 4);            // sun-bleach / age drift
+        const tone = 0.90 + macro * 0.20;
         r *= tone; g *= tone; b *= tone * 1.03;
-        h = grain * 1.1 + macro * 0.4;
-        rough = (chip ? 0.93 : 0.885) + (grain - 0.5) * 0.10 + macro * 0.05;
 
-        // pale limestone chippings sitting proud of the binder
-        const cf = chip ? 6.4 : 5.4;
-        const c1 = VN(U, V, cf, seed + 401), c2 = VN(U, V, cf * 1.7, seed + 733);
-        const chipT = clamp((Math.max(c1, c2 * 0.94) - (chip ? 0.72 : 0.79)) * (chip ? 2.9 : 3.8), 0, 1);
-        const chipCol = chip ? [0.126, 0.118, 0.100] : [0.092, 0.089, 0.083];
-        r = lerp(r, chipCol[0], chipT * 0.72); g = lerp(g, chipCol[1], chipT * 0.72); b = lerp(b, chipCol[2], chipT * 0.72);
-        h += chipT * 0.42; rough = lerp(rough, 0.90, chipT * 0.6);
+        const wu = (NF(U, V, 1.7, seed + 1201, 2) - 0.5) * 0.115 + (NF(U, V, 5.5, seed + 1213, 2) - 0.5) * 0.045;
+        const wv = (NF(U, V, 1.7, seed + 1307, 2) - 0.5) * 0.115 + (NF(U, V, 5.5, seed + 1319, 2) - 0.5) * 0.045;
+        const Uw = U + wu, Vw = V + wv;
 
-        // tyre-polished wheel paths: lighter, smoother, and the surface's racing line
+        /* Stone fields. The FINEST field carries the aggregate — a chipping is ~1 cm, and
+         * anything coarser reads as cobblestones rather than tarmac. The medium field only
+         * thins and thickens the pack, and the coarse field is used purely to vary stone
+         * colour and to drop the occasional bigger pebble in. */
+        const fA = FMAX * 0.30, fB = FMAX * 0.62, fC = FMAX;
+        const a1 = VN(Uw, Vw, fA, seed + 401);
+        const a2 = VN(Uw, Vw, fB, seed + 733);
+        const a3 = VN(Uw, Vw, fC, seed + 915);
+        // sand fines and binder grain filling the gaps between the stones
+        const fines = VN(Uw, Vw, fC * 1.03, seed + 1471) * 0.64 + VN(Uw, Vw, fB * 0.83, seed + 1499) * 0.36;
+        const un = a3 * 0.80 + a2 * 0.20;
+        const cov = (chip ? 0.470 : 0.500) + (0.5 - a1) * 0.10;   // chip-seal packs tighter
+        let agg = clamp((un - cov) * 3.6, 0, 1);
+        agg = agg * agg * (3 - 2 * agg);
+        const pebble = clamp((Math.max(a1, a2) - 0.885) * 7, 0, 1);
+
+        // black bitumen with its sand fines, then the stones bedded into it
+        const binderK = 0.82 + (fines - 0.5) * 0.26;
+        r *= binderK; g *= binderK; b *= binderK * 1.02;
+        const cHi = chip ? [0.132, 0.126, 0.111] : [0.118, 0.114, 0.107];
+        // every stone reads a different value — some are freshly fractured and bright,
+        // some are tar-glazed and nearly as dark as the binder
+        const stone = clamp(0.62 + a1 * 0.72 + (a3 - 0.5) * 0.26, 0.28, 1.42);
+        const ak = agg * 0.88 + pebble * 0.35;
+        r = lerp(r, cHi[0] * stone, ak);
+        g = lerp(g, cHi[1] * stone, ak);
+        b = lerp(b, cHi[2] * stone, ak);
+
+        // Height is what the sobel below turns into the normal map, so the stones are given
+        // real relief: a chipping stands ~4 mm proud of the binder and that shadow line is
+        // most of what the eye uses to call a surface "rough" under a hard sun.
+        h = agg * 1.15 + pebble * 0.8 + (fines - 0.5) * 0.62 + macro * 0.35;
+        rough = (chip ? 0.90 : 0.875) + agg * 0.055 - (fines - 0.5) * 0.10;
+
+        // tyre-polished wheel paths: lighter, smoother, and the surface's racing line.
+        // The tyre polishes the STONE TOPS, not the binder in between, so the wear is
+        // weighted by aggregate coverage instead of being an airbrushed band of pale grey.
         let pol = 0;
         for (const bd of polish) pol = Math.max(pol, Math.exp(-((au - bd.at) ** 2) / (2 * bd.w * bd.w)) * (bd.k ?? 1));
         pol *= 0.72 + NF(U, V, 0.22, seed + 617, 3) * 0.55;
         const wear = clamp(pol, 0, 1);
-        r = lerp(r, r * 1.44 + 0.017, wear); g = lerp(g, g * 1.43 + 0.0165, wear); b = lerp(b, b * 1.40 + 0.0155, wear);
-        rough -= wear * 0.10; h -= wear * 0.30;
+        const wk = clamp(wear * (0.34 + agg * 0.90), 0, 1);
+        r = lerp(r, r * 1.62 + 0.014, wk); g = lerp(g, g * 1.61 + 0.0135, wk); b = lerp(b, b * 1.57 + 0.0128, wk);
+        rough -= wear * 0.13; h -= wear * 0.45;
 
         // repair patches: half are fresh dark seal, half are old bleached ones
         for (const pa of patches) {
@@ -217,11 +267,17 @@ export function buildRoadTextures(p) {
           const inU = clamp((pa.wid + wb - Math.abs(U - pa.u)) / 0.22, 0, 1);
           const m = inU * inV;
           if (m <= 0) continue;
+          /* A patch is a different BATCH of the same chip seal, not a hole in it: tint what
+           * is already there rather than lerping to a flat base colour, so the aggregate
+           * survives inside the patch. Lerping to base is what turned patches into rounded
+           * dark rectangles that read as puddles. */
           const pt = pa.tone * (0.92 + NF(U, V, 1.4, pa.seed, 3) * 0.20);
-          r = lerp(r, base[0] * pt, m * 0.9); g = lerp(g, base[1] * pt, m * 0.9); b = lerp(b, base[2] * pt, m * 0.9);
-          rough = lerp(rough, 0.87, m);
+          const pm = m * 0.85, pk = lerp(1, pt, pm);
+          r *= pk; g *= pk; b *= pk;
+          rough = lerp(rough, 0.87, m * 0.7);
+          h = lerp(h, h * 0.72 + 0.5, pm);
           const seam = m * (1 - m) * 4;
-          r -= seam * 0.022; g -= seam * 0.022; b -= seam * 0.022; h -= seam * 0.9;
+          r -= seam * 0.012; g -= seam * 0.012; b -= seam * 0.012; h -= seam * 1.4;
         }
         // transverse construction joints across the full width
         for (const jv of joints) {
@@ -235,8 +291,8 @@ export function buildRoadTextures(p) {
         // crack network
         const cx = RG(U, V, 0.85, seed + 211, 3);
         const crack = clamp((cx - 0.855) * 8, 0, 1) * clamp(0.25 + macro * 0.9, 0, 1);
-        r = lerp(r, base[0] * 0.45, crack); g = lerp(g, base[1] * 0.45, crack); b = lerp(b, base[2] * 0.45, crack);
-        h -= crack * 2.0; rough = lerp(rough, 0.93, crack);
+        r = lerp(r, r * 0.30, crack); g = lerp(g, g * 0.30, crack); b = lerp(b, b * 0.32, crack);
+        h -= crack * 3.0; rough = lerp(rough, 0.93, crack);
         // oil marks down the middle
         for (const s of stains) {
           let dv = Math.abs(V - s.v); dv = Math.min(dv, p.vMetres - dv);

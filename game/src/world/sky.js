@@ -228,6 +228,7 @@ uniform float uHorizonChroma;   // air-mass excess the in-scatter term is allowe
 uniform vec3  uHazeTint;          // unit-luminance dust *hue*, not an absolute colour
 uniform float uHazeGain;
 uniform float uSkySat;
+uniform float uSkyAzure;        // cyan -> azure hue tilt, weighted by the pixel's own blueness
 uniform float uExposure;
 uniform float uToneExposure;      // renderer.toneMappingExposure, mirrored in here
 
@@ -446,6 +447,12 @@ void main() {
   {
     float sl = dot( sky, vec3( 0.2126, 0.7152, 0.0722 ) );
     sky = max( mix( vec3( sl ), sky, uSkySat ), 0.0 );
+
+    // Azure tilt. Rayleigh alone lands the dome at hue 200 — cyan-blue; MK8's sky is 212,
+    // a true azure. Pull green down in proportion to how blue the pixel already is, so the
+    // gradient rotates toward azure while anything neutral (every cloud top, the haze band,
+    // the ground cap below the skyline) has B - R near zero and is left exactly as it was.
+    sky.g = max( sky.g - uSkyAzure * max( sky.b - sky.r, 0.0 ), 0.0 );
   }
   // Same curve, same exposure knob, same order as every lit surface in the scene.
   sky = katACES( sky * uToneExposure / 0.6 );
@@ -486,6 +493,9 @@ const DEFAULTS = {
   // which the LUT's saturation push turns into a proper Mediterranean blue.
   exposure: 0.215,
   skySaturation: 1.42,
+  // Hue tilt toward azure; 0 = raw Rayleigh cyan-blue (hue 200), 0.10 lands the graded
+  // frames near hue 210 without touching cloud tops. Above ~0.18 the sky reads violet.
+  skyAzure: 0.10,
   // How much air mass *over* the zenith column the in-scatter term is allowed to accumulate.
   // The skyline asymptotes to (1 + this) zenith depths instead of Preetham's ~38, which is
   // what keeps chroma in the bottom 20 deg — the only part of the dome a chase camera sees.
@@ -538,6 +548,7 @@ export function createSky(engine, world, opts = {}) {
     uHazeTint:    { value: new THREE.Color(1.03, 1.0, 0.95) },   // unit-luminance dust hue
     uHazeGain:    { value: 1.0 },
     uSkySat:      { value: o.skySaturation },
+    uSkyAzure:    { value: o.skyAzure },
     uExposure:    { value: o.exposure },
     uToneExposure:{ value: engine.renderer.toneMappingExposure || 1 },
     uCloudTex:    { value: cloudTex },
