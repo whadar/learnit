@@ -569,31 +569,67 @@ export function createLighting(engine, world, sky, opts = {}) {
   const receiveAll = opts.receiveShadows !== false;
 
   /**
-   * Which side of a caster goes into the depth map. Open shells (karts, cats, foliage cards,
-   * signage) must write their FRONT faces or they write nothing; closed solids keep three's
-   * BackSide default so they cannot self-shadow. A material shared between the two takes the
-   * FrontSide branch, because a missing occluder is worse than a soft self-shadow.
+   * Which side of a caster goes into the depth map.
+   *
+   * THIS IS THE FUNCTION THAT EMPTIED THE SHADOW MAP. Leaving `shadowSide` at `null` hands the
+   * caster to three's acne dodge, which renders a FrontSide material's depth pass with BACK
+   * faces only — and in this scene that writes nothing at all for most of the world. Measured
+   * directly by sampling `sun.shadow.map.depthTexture` with a sampler2DShadow ramp over the
+   * gridStart fit: **81.9 % of the 2048² map was still at the cleared depth of 1.0**, i.e. no
+   * occluder, while the shadow pass was submitting 1.35 M triangles in 366 draw calls — they
+   * were all being back-face culled. Forcing FrontSide (or DoubleSide) on every caster took the
+   * empty fraction to 0.0 %. That single flag is why a fifteen-metre pine, a start gantry, a
+   * hay bale, a house and eight karts all cast nothing onto ground that was demonstrably
+   * receiving: verified with a 14 m debug cube dropped on the start straight with
+   * castShadow = true, which cast no shadow before this change.
+   *
+   * The BackSide branch is still right for the case it was written for — a small closed solid
+   * like a jaffa orange, whose near surface sits within a bias of itself and snaps the terminator
+   * along a straight chord. But that argument only holds while the solid is small enough that
+   * near and far surfaces are a bias apart. Above that it is the difference between an occluder
+   * and no occluder, so the size gate below decides: sub-metre closed solids keep three's
+   * default, everything else writes its front faces and is actually in the map.
    */
+  const SOLID_BACKSIDE_RADIUS = 0.9;   // metres; a jaffa is 0.28, a hay bale 0.9, a kart 1.4
+
   function fitShadowSide(mesh, mat) {
     if (!shadows || !mat || mat.isShadowMaterial) return;
     const ud = mat.userData;
     if (ud.__ktShadowAuthored === undefined) ud.__ktShadowAuthored = mat.shadowSide != null;
     if (ud.__ktShadowAuthored) return;                 // the material's owner chose; respect it
-    if (!ud.__ktOpenShell && !isClosedSolid(mesh.geometry)) ud.__ktOpenShell = true;
+    if (!ud.__ktOpenShell && !isSmallClosedSolid(mesh)) ud.__ktOpenShell = true;
     const want = ud.__ktOpenShell ? THREE.FrontSide : null;
     if (mat.shadowSide !== want) mat.shadowSide = want;   // read per draw; no recompile needed
+  }
+
+  /** Closed AND small enough that its far surface is only a bias deeper than its near one. */
+  function isSmallClosedSolid(mesh) {
+    const geo = mesh && mesh.geometry;
+    if (!geo || !isClosedSolid(geo)) return false;
+    if (!geo.boundingSphere) { try { geo.computeBoundingSphere(); } catch (e) { return false; } }
+    const r = geo.boundingSphere ? geo.boundingSphere.radius : Infinity;
+    const m = mesh.matrixWorld.elements;
+    // Largest column length of the world matrix — the mesh's biggest axis scale.
+    const s = Math.sqrt(Math.max(
+      m[0] * m[0] + m[1] * m[1] + m[2] * m[2],
+      m[4] * m[4] + m[5] * m[5] + m[6] * m[6],
+      m[8] * m[8] + m[9] * m[9] + m[10] * m[10])) || 1;
+    return r * s <= SOLID_BACKSIDE_RADIUS;
   }
 
   let dirty = false;
   function scan(root = scene) {
     root.traverse(o => {
       if (o.isMesh) {
+        // Opt terrain in FIRST: fitShadowSide() only looks at meshes that already cast, so
+        // doing this second left the landscape a caster with an unfitted shadowSide for a
+        // whole scan interval.
+        if (terrainShadows && o.receiveShadow && !o.castShadow && TERRAIN_RE.test(o.name)) {
+          o.castShadow = true; dirty = true;
+        }
         if (o.castShadow) {
           const ms = Array.isArray(o.material) ? o.material : [o.material];
           for (const mm of ms) fitShadowSide(o, mm);
-        }
-        if (terrainShadows && o.receiveShadow && !o.castShadow && TERRAIN_RE.test(o.name)) {
-          o.castShadow = true; dirty = true;
         }
         if (receiveAll && shadows && !o.receiveShadow) {
           // Every mesh drawn with a lit material opts in, transparent ones included. three
