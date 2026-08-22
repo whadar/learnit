@@ -549,12 +549,12 @@ function buildStandard(G, M, add, seg) {
   add(G, xf(sbox(0.62, 0.11, 0.46, 3.2, seg), { pos: [0, 0.548, 0.44], rot: [-0.12, 0, 0] }), M.paint2);
   // nose
   add(G, xf(sbox(0.78, 0.31, 0.64, 3.6, seg, { taperF: 0.68, ky: 0.40 }), { pos: [0, 0.300, 0.79] }), M.paint);
-  add(G, xf(sbox(0.56, 0.17, 0.24, 3.0, seg), { pos: [0, 0.252, 1.02] }), M.trim);
+  add(G, xf(sbox(0.64, 0.115, 0.24, 5.5, seg), { pos: [0, 0.243, 1.02] }), M.trim);
   add(G, xf(new THREE.CapsuleGeometry(0.055, 0.84, 4, 10), { pos: [0, 0.212, 1.05], rot: [0, 0, Math.PI / 2] }), M.chrome);
   // side pods: flat outer face so the livery decal sits on bodywork, fat chamfer, crowned rail
   for (const s of [-1, 1]) {
     add(G, xf(box(0.30, 0.38, 1.08, 0.14, 0.055), { pos: [s * 0.475, 0.300, -0.06] }), M.paint);
-    add(G, xf(sbox(0.255, 0.062, 0.94, 5.2, seg), { pos: [s * 0.474, 0.478, -0.06] }), M.paint2);
+    add(G, xf(sbox(0.300, 0.100, 1.075, 9.0, seg), { pos: [s * 0.475, 0.455, -0.06] }), M.paint2);
     add(G, xf(box(0.06, 0.20, 0.62, 0.03), { pos: [s * 0.630, 0.270, -0.06] }), M.dark, false);
   }
   // engine + airbox
@@ -574,12 +574,12 @@ function buildSport(G, M, add, seg) {
   // sculpted nose: three tapering moulded volumes, each crowned
   add(G, xf(sbox(0.82, 0.30, 0.62, 4.0, seg, { taperF: 0.92 }), { pos: [0, 0.290, 0.44] }), M.paint);
   add(G, xf(sbox(0.66, 0.26, 0.56, 3.6, seg, { taperF: 0.80, ky: 0.45 }), { pos: [0, 0.268, 0.90] }), M.paint);
-  add(G, xf(sbox(0.42, 0.18, 0.30, 3.0, seg, { taperF: 0.72 }), { pos: [0, 0.250, 1.20] }), M.trim);
+  add(G, xf(sbox(0.50, 0.125, 0.30, 5.0, seg, { taperF: 0.74 }), { pos: [0, 0.243, 1.20] }), M.trim);
   add(G, xf(sbox(0.98, 0.05, 0.28, 5.0, seg), { pos: [0, 0.126, 1.06], rot: [0.05, 0, 0] }), M.dark);
   add(G, xf(sbox(0.56, 0.11, 0.38, 3.4, seg), { pos: [0, 0.432, 0.48], rot: [-0.16, 0, 0] }), M.paint2);
   for (const s of [-1, 1]) {
     add(G, xf(box(0.30, 0.32, 1.14, 0.13, 0.055), { pos: [s * 0.495, 0.270, -0.10] }), M.paint);
-    add(G, xf(sbox(0.255, 0.055, 1.00, 5.2, seg), { pos: [s * 0.495, 0.424, -0.10] }), M.paint2);
+    add(G, xf(sbox(0.300, 0.092, 1.135, 9.0, seg), { pos: [s * 0.495, 0.396, -0.10] }), M.paint2);
     add(G, xf(sbox(0.32, 0.18, 0.54, 4.0, seg, { taperF: 0.78 }), { pos: [s * 0.585, 0.415, 0.70] }), M.paint);
     add(G, xf(sbox(0.36, 0.20, 0.62, 4.2, seg, { taperB: 0.80 }), { pos: [s * 0.615, 0.460, -0.66] }), M.paint);
   }
@@ -596,10 +596,10 @@ function buildBuggy(G, M, add, seg) {
   add(G, xf(plate(rr(1.00, 1.72, 0.24), 0.10), { pos: [0, 0.185, -0.02] }), M.dark);
   add(G, xf(sbox(0.96, 0.40, 1.14, 4.6, seg), { pos: [0, 0.396, -0.14] }), M.paint);
   add(G, xf(sbox(0.82, 0.26, 0.56, 3.6, seg, { taperF: 0.80 }), { pos: [0, 0.400, 0.72] }), M.paint);
-  add(G, xf(sbox(1.00, 0.11, 0.24, 4.0, seg), { pos: [0, 0.338, 0.96] }), M.trim);
+  add(G, xf(sbox(1.00, 0.095, 0.24, 5.5, seg), { pos: [0, 0.334, 0.96] }), M.trim);
   for (const s of [-1, 1]) {
     add(G, xf(box(0.18, 0.28, 0.92, 0.07, 0.04), { pos: [s * 0.545, 0.430, -0.10] }), M.paint);
-    add(G, xf(sbox(0.155, 0.05, 0.86, 5.2, seg), { pos: [s * 0.545, 0.560, -0.10] }), M.paint2);
+    add(G, xf(sbox(0.180, 0.082, 0.915, 9.0, seg), { pos: [s * 0.545, 0.534, -0.10] }), M.paint2);
     // exposed A-arms
     for (const z of [0.68, -0.64]) {
       add(G, xf(new THREE.CylinderGeometry(0.028, 0.028, 0.42, 6), { pos: [s * 0.42, 0.26, z], rot: [0, 0, Math.PI / 2 + s * 0.22] }), M.chrome);
@@ -643,7 +643,7 @@ function buildPipe(G, M, add, seg) {
   add(G, mergeSimple(frame), M.chrome);
   for (const s of [-1, 1]) {
     add(G, xf(box(0.24, 0.34, 0.88, 0.10, 0.05), { pos: [s * 0.545, 0.330, -0.02] }), M.paint);
-    add(G, xf(sbox(0.205, 0.055, 0.78, 5.2, seg), { pos: [s * 0.545, 0.482, -0.02] }), M.paint2);
+    add(G, xf(sbox(0.240, 0.086, 0.875, 9.0, seg), { pos: [s * 0.545, 0.462, -0.02] }), M.paint2);
   }
   add(G, xf(sbox(0.64, 0.26, 0.50, 3.6, seg, { taperF: 0.78 }), { pos: [0, 0.300, 0.70] }), M.paint);
   add(G, xf(sbox(0.50, 0.11, 0.32, 3.2, seg), { pos: [0, 0.422, 0.52], rot: [-0.18, 0, 0] }), M.paint2);
@@ -668,7 +668,7 @@ function seatAndHoop(G, M, add, y, z, back, seg, tall) {
   add(G, xf(sbox(0.58, back, 0.15, 4.2, seg, { taperF: 0.86 }), { pos: [0, y + back * 0.46, z - 0.245], rot: [0.20, 0, 0] }), M.paint2);
   add(G, xf(sbox(0.44, back * 0.86, 0.10, 3.4, seg), { pos: [0, y + back * 0.44, z - 0.195], rot: [0.20, 0, 0] }), M.seat);
   for (const s of [-1, 1]) {
-    add(G, xf(sbox(0.10, back * 0.80, 0.32, 3.6, seg), { pos: [s * 0.252, y + back * 0.42, z - 0.16], rot: [0.16, 0, 0] }), M.paint2);
+    add(G, xf(sbox(0.10, back * 0.80, 0.32, 3.6, seg), { pos: [s * 0.252, y + back * 0.42, z - 0.16], rot: [0.16, 0, 0] }), M.paint);
   }
   // headrest
   add(G, xf(sbox(0.32, 0.16, 0.13, 3.2, seg), { pos: [0, y + back + 0.05, z - 0.30], rot: [0.20, 0, 0] }), M.seat);

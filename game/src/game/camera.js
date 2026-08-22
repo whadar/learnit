@@ -47,14 +47,14 @@ export const DEFAULTS = {
      which is the colour in the shot — the same size in frame, in fact a little bigger, so
      the cat is not paid for out of the composition. The eye also rises with it, which brings
      the far kerb and the verge down into frame instead of leaving them out past the edge. */
-  back: 4.55,             // distance behind the kart's centre of mass at rest
-  backSpeed: 0.85,        // extra distance at top speed
+  back: 4.30,             // distance behind the kart's centre of mass at rest
+  backSpeed: 0.74,        // extra distance at top speed
   backBoost: 0.45,        // … and while boosting (the kart pulls away from the lens)
   backMin: 1.95,          // the boom never tucks in closer than this — see boxTuck()
   height: 2.05,           // above the CoM, which is itself ~0.56 m above the road
   heightSpeed: 0.32,
   lookAhead: 6.6,
-  lookHeight: 0.87,       // metres over the CoM the aim rides — this is the shot's PITCH
+  lookHeight: 0.91,       // metres over the CoM the aim rides — this is the shot's PITCH
   /* the corner ahead — see roadAim() */
   cornerAhead: 34,        // metres down the centre line the lens reads the next corner from
   cornerLead: 0.62,       // how much of that corner's offset the aim takes …
@@ -85,8 +85,9 @@ export const DEFAULTS = {
   /* rivals in the lens — see rivalNear() */
   kartClear: 6.4,         // a rival this close to the eye starts moving the rig …
   kartFull: 4.3,          // … and by this close the move is at full strength
-  kartBack: 2.10,         // metres the rig drops back off it — this is what un-slices the kart
+  kartBack: 2.35,         // metres the rig drops back off it — this is what un-slices the kart
   kartSink: 0.70,         // … and metres the eye sinks, which is worth three times its size
+  kartAim: 0.40,          // … and metres the aim drops, which lifts the whole frame off it
   /* item boxes in the lens — see boxTuck() */
   boxClear: 9.0,          // look this far behind the kart for a row the eye has to clear
   boxFade: 1.20,          // depth at which itemMeshes' near-fade has fully dissolved a box
@@ -432,14 +433,17 @@ export function createCamera(engine, world, opts = {}) {
     let back = back0 + near * O.kartBack;
     let hgt = O.height + O.heightSpeed * st.speed + O.airHeight * st.air - near * O.kartSink;
     // …and an item-box row between the eye and the kart gets ducked past, not climbed over.
-    // Coming in shortens the boom hard, so the rest of the pose comes in with it — lower,
-    // flatter and aiming nearer — or the kart the tuck exists to show would be cropped by the
-    // bottom of the frame instead of the boxes. sqrt() because the framing goes wrong faster
-    // than the boom shortens: it is the *ratio* of height to boom that holds the kart in shot.
-    let lookH = O.lookHeight, aheadK = 1;
+    // Coming in shortens the boom, so the rest of the pose comes in with it — lower, flatter
+    // and aiming nearer — or the kart the tuck exists to show would be cropped by the bottom
+    // of the frame instead of the boxes. The curve is steeper than linear because it is the
+    // *ratio* of height to boom that holds the kart in shot, not the boom on its own, but not
+    // as steep as a square root: a shallow tuck must stay a shallow move, or the pose swings
+    // the lens down at the tarmac and hands back the grey frame the shot was rebuilt to lose.
+    let lookH = O.lookHeight - near * O.kartAim;
+    let aheadK = 1;
     const tuck = boxTuck(s.pos, dirX, dirZ, back, dt);
     if (tuck > 0.02) {
-      const k = Math.sqrt(clamp(tuck / Math.max(back, 0.5), 0, 1));
+      const k = Math.pow(clamp(tuck / Math.max(back, 0.5), 0, 1), 0.75);
       back -= tuck;
       hgt = lerp(hgt, O.tuckHeight, k);
       lookH = lerp(lookH, O.tuckLook, k);
