@@ -396,8 +396,8 @@ function lathe(profile, seg = 22) {
  * Shapes stay per-cat distinct (that is how you tell the roster apart at range) but every
  * variant keeps the same tall triangular mass.
  */
-const EAR_W = { round: 0.090, fold: 0.084, curl: 0.078 };
-const EAR_H = { round: 0.218, tuft: 0.256, fold: 0.192, curl: 0.226, notch: 0.230 };
+const EAR_W = { round: 0.074, fold: 0.076, curl: 0.072 };
+const EAR_H = { round: 0.232, tuft: 0.256, fold: 0.206, curl: 0.226, notch: 0.230 };
 function earShape(kind) {
   const s = new THREE.Shape();
   const w = EAR_W[kind] ?? 0.078;                 // half-width at the base
@@ -465,7 +465,12 @@ function numberTexture(n, fg = '#1b1b20', bg = '#f4f1e6') {
 function furLift(spec) {
   const [r, g, b] = hex2rgb(spec.base);
   const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-  return clamp(1 + (0.46 - lum) * 1.5, 1, 1.85);
+  // R3: "a featureless dark ovoid — no face, ears or eyes". A 1.85x ceiling was nowhere near
+  // enough for a 0x24242a coat sitting in a shaded seat under ACES; Shuki and Layla crushed to
+  // a single black mass with no internal form at all. Pale coats are untouched (the term goes
+  // to ~1.1 at lum 0.48); genuinely black cats now get nearly 3x, which under the tonemapper
+  // lands them as very dark charcoal that still shades.
+  return clamp(1 + (0.52 - lum) * 3.4, 1, 3.0);
 }
 function furMaterial(spec, part, size, extra = {}) {
   const { nrep = [5, 5], ...rest } = extra;
@@ -474,6 +479,13 @@ function furMaterial(spec, part, size, extra = {}) {
   let nrm = null;
   if (base) { nrm = base.clone(); nrm.needsUpdate = true; nrm.wrapS = nrm.wrapT = THREE.RepeatWrapping; nrm.repeat.set(nrep[0], nrep[1]); }
   const k = furLift(spec);
+  // Ambient floor for dark coats. The back of a driver's head faces away from the sun for the
+  // whole race, and albedo alone cannot rescue a 0x24242a coat there — Shuki read as a solid
+  // black egg with no ears and no form. A self-lift proportional to how much the coat needed
+  // lifting in the first place gives black cats an internal shading range; it evaluates to
+  // essentially nothing on a tabby or a white cat.
+  const amb = new THREE.Color(spec.base).lerp(new THREE.Color(0x8d8f9a), 0.22)
+    .multiplyScalar(clamp((k - 1) * 0.40, 0, 0.8));
   return new THREE.MeshPhysicalMaterial({
     color: map ? new THREE.Color(k, k, k) : new THREE.Color(spec.base).multiplyScalar(k),
     map, normalMap: nrm,
@@ -481,6 +493,7 @@ function furMaterial(spec, part, size, extra = {}) {
     roughness: 0.80, metalness: 0.0,
     sheen: 1.0, sheenRoughness: 0.30,
     sheenColor: new THREE.Color(0xfff0dc),
+    emissive: amb, emissiveIntensity: 1.0,
     ...rest,
   });
 }
@@ -571,10 +584,7 @@ export function createCat(id, opts = {}) {
   // A thin double-sided plate turned away from the sun crushes to black, and from the chase
   // camera the back of the ear is what you look at all race. A small self-lift keeps the coat
   // colour alive there without flattening the silhouette against the sky.
-  M.ear = furMaterial(spec, 'ear', 96, {
-    nrep: [2, 3], side: THREE.DoubleSide,
-    emissive: new THREE.Color(spec.base).multiplyScalar(0.11), emissiveIntensity: 1.0,
-  });
+  M.ear = furMaterial(spec, 'ear', 96, { nrep: [2, 3], side: THREE.DoubleSide });
   M.limb = furMaterial(spec, 'arm', 96, { nrep: [2, 5] });
   M.tail = furMaterial(spec, 'tail', 96, { nrep: [2, 8] });
   M.suit = new THREE.MeshPhysicalMaterial({
@@ -582,7 +592,12 @@ export function createCat(id, opts = {}) {
     emissive: new THREE.Color(spec.suit[0]).multiplyScalar(0.14), emissiveIntensity: 1.0,
     envMapIntensity: 1.2,
   });
-  M.trim = new THREE.MeshPhysicalMaterial({ color: spec.suit[1], roughness: 0.66, metalness: 0.0, clearcoat: 0.08 });
+  M.trim = new THREE.MeshPhysicalMaterial({
+    color: spec.suit[1], roughness: 0.60, metalness: 0.0, clearcoat: 0.18,
+    // The crown stripe and the collar are always on the shaded side from the chase camera; with
+    // no self-lift they read as olive-grey rather than the cream/gold they are on the sunlit side.
+    emissive: new THREE.Color(spec.suit[1]).multiplyScalar(0.16), emissiveIntensity: 1.0,
+  });
   // The helmet is the driver's identity badge at 40 m — lacquered, at full chroma, with a
   // touch of self-colour emissive so it still reads on the shaded side of the seat.
   M.gear = new THREE.MeshPhysicalMaterial({
@@ -634,12 +649,23 @@ export function createCat(id, opts = {}) {
   suitProfile.push([suitProfile[suitProfile.length - 1][0] * 0.97, 0.10]);
   const suitGeo = cylUV(lathe(suitProfile, Math.round(24 * seg) + 4));
   add(B.chest, suitGeo, M.suit);
+  // Stand-up collar at the neck. R3: "the body below is a single continuous egg with no
+  // shoulders or neck". A racing collar is the cheapest, most legible way to say where the head
+  // stops and the driver starts, and it reads at 15 px.
   add(B.chest, xform(new THREE.TorusGeometry(0.152, 0.020, 8, Math.round(20 * seg) + 6), { pos: [0, 0.085, 0], rot: [Math.PI / 2, 0, 0] }), M.trim);
+  add(B.neck, xform(new THREE.CylinderGeometry(0.136, 0.150, 0.062, Math.round(18 * seg) + 6, 1, true), { pos: [0, 0.006, 0.004], scale: [1, 1, 1.04] }), M.suit);
+  add(B.neck, xform(new THREE.TorusGeometry(0.136, 0.017, 7, Math.round(18 * seg) + 6), { pos: [0, 0.036, 0.004], rot: [Math.PI / 2, 0, 0], scale: [1, 1, 1.04] }), M.trim, false);
   add(B.chest, xform(new THREE.TorusGeometry(0.191, 0.011, 6, Math.round(20 * seg) + 6), { pos: [0, -0.055, 0], rot: [Math.PI / 2, 0, 0], scale: [1, 1, 0.55] }), M.trim);
   // chest number, hugging the torso
   if (DOM) {
     const nGeo = new THREE.CylinderGeometry(0.216, 0.212, 0.125, 14, 1, true, -0.36, 0.72);
-    const nMat = new THREE.MeshStandardMaterial({ map: numberTexture(spec.num, '#1b1b20', '#f4f1e6'), transparent: true, alphaTest: 0.35, roughness: 0.5, side: THREE.DoubleSide });
+    // Albedo pushed past 1. Everything else the driver wears carries a self-lift, so a plain
+    // white roundel next to it photographs as a grey disc. Boosting the map instead of adding
+    // emissive keeps the numeral black — a uniform emissive would grey that out too.
+    const nMat = new THREE.MeshStandardMaterial({
+      map: numberTexture(spec.num, '#1b1b20', '#f4f1e6'), color: new THREE.Color(1.45, 1.45, 1.45),
+      transparent: true, alphaTest: 0.35, roughness: 0.5, side: THREE.DoubleSide,
+    });
     add(B.chest, xform(nGeo, { pos: [0, 0.028, 0] }), nMat, false);
   }
 
@@ -655,7 +681,7 @@ export function createCat(id, opts = {}) {
   // Head fur is kept short. Six 3.4 mm shells added a 20 mm alpha-tested halo that both softened
   // the silhouette at range and pushed the fur out through every hat, which is the other half of
   // the "two overlapping heads" read.
-  const headShells = shellMesh(headGeo, spec, 'head', tex, Math.min(shells, 3), 0.0022, [26, 17]);
+  const headShells = shellMesh(headGeo, spec, 'head', tex, Math.min(shells, 2), 0.0018, [26, 17]);
   for (const s of headShells) B.head.add(s);
 
   // muzzle: whisker pads + snout bridge + chin
@@ -845,58 +871,63 @@ export function createCat(id, opts = {}) {
     helmetShell = hg;
     hg.position.set(0, 0.028, -0.012);
     gear.add(hg);
-    const RAD = 0.226, TH = 1.12;
+    const RAD = 0.238, TH = 1.12;
     add(hg, new THREE.SphereGeometry(RAD, Math.round(20 * seg) + 8, Math.round(15 * seg) + 5, 0, TAU, 0, TH), M.gear).name = 'helmetShell';
     const ry = RAD * Math.cos(TH), rr = RAD * Math.sin(TH);
     // Rim gasket. It used to be cream trim: a big bright ellipse round the whole lower edge of
     // the shell that, seen from behind under two dark ears, drew the *jaw line of a face*. Real
     // lids have a black rubber beading there, and black adds no feature.
-    add(hg, xform(new THREE.TorusGeometry(rr, 0.0125, 6, 26), { pos: [0, ry, 0], rot: [Math.PI / 2, 0, 0] }), M.dark, false);
+    const gask = new THREE.TorusGeometry(rr, 0.0125, 6, 22, 2.10);
+    gask.rotateZ(Math.PI / 2 - 1.05);                       // arc centred on the FACE opening
+    add(hg, xform(gask, { pos: [0, ry, 0], rot: [Math.PI / 2, 0, 0] }), M.dark, false);
     // Crown stripe. R3 ran it over the front half only, so it stopped dead at the pole and from
     // the chase camera it was a pale wedge sitting point-down between the ears — the "nose" of
     // the phantom face. It now runs the full sagittal line, front rim to back rim, which is what
     // a racing stripe actually is, and from behind reads as a vertical: the opposite of a face.
     for (const phiC of [Math.PI / 2, -Math.PI / 2]) {
-      add(hg, new THREE.SphereGeometry(RAD * 1.018, 18, 14, phiC - 0.185, 0.37, 0, TH * 0.995), M.trim, false);
+      const end = phiC < 0 ? 0.98 - 0.25 : TH * 0.995;     // the back half runs into the roundel
+      add(hg, new THREE.SphereGeometry(RAD * 1.010, 18, 14, phiC - 0.185, 0.37, 0, end), M.trim, false);
     }
     // Brow peak — FRONT. CylinderGeometry puts theta 0 at +Z, so R3's `thetaStart = PI - 0.8`
     // hung the peak off the BACK of the skull. Same maths error put the cap's brim and the
     // visor's glass behind their wearers' heads. All three now span [-half, +half] about 0.
-    const peak = new THREE.CylinderGeometry(rr * 1.05, rr * 1.05, 0.015, 16, 1, false, -0.80, 1.60);
-    add(hg, xform(peak, { pos: [0, ry + 0.026, 0.030], rot: [-0.34, 0, 0], scale: [1, 1, 1.18] }), M.trim, false);
+    const peak = new THREE.CylinderGeometry(rr * 0.84, rr * 0.84, 0.013, 16, 1, false, -0.62, 1.24);
+    add(hg, xform(peak, { pos: [0, ry + 0.006, 0.040], rot: [-0.28, 0, 0], scale: [1, 1, 1.08] }), M.trim, false);
     // Occipital skirt. A cap that stopped at 64 deg left a big bare fur nape under it, so the
     // helmet read as perched on the back of a head rather than worn on it. The skirt wraps the
     // back and sides down past the ear line — the MK8 silhouette — while the face stays open.
     add(hg, new THREE.SphereGeometry(RAD, Math.round(20 * seg) + 8, 8, -Math.PI / 2 - 1.62, 3.24, TH - 0.03, 0.56), M.gear, false);
     // Small rear spoiler lip. Kept small on purpose: a wide one photographs as a dark bar right
     // across the back of the lid, which is worse than no spoiler at all.
-    const duck = new THREE.CylinderGeometry(rr * 0.60, rr * 0.50, 0.011, 12, 1, false, Math.PI - 0.46, 0.92);
-    add(hg, xform(duck, { pos: [0, ry + 0.062, -0.028], rot: [0.30, 0, 0], scale: [1, 1, 1.10] }), M.gear, false);
+    const duck = new THREE.CylinderGeometry(rr * 0.50, rr * 0.42, 0.010, 12, 1, false, Math.PI - 0.40, 0.80);
+    add(hg, xform(duck, { pos: [0, ry + 0.020, -0.052], rot: [0.26, 0, 0], scale: [1, 1, 1.06] }), M.gear, false);
     // side vents / ear ducts
     for (const s of [-1, 1]) {
       add(hg, xform(new THREE.CylinderGeometry(0.026, 0.026, 0.010, 10), { pos: [s * (rr * 0.95), ry + 0.070, 0.026], rot: [0, 0, Math.PI / 2], scale: [1, 1, 1.7] }), M.dark, false);
     }
-    badgeOn = { parent: hg, r: RAD, scale: [1, 1, 1], y: 0.086, hp: 0.245, ht: 0.205, dark: true };
+    badgeOn = { parent: hg, r: RAD, scale: [1, 1, 1], th: 0.98, hp: 0.30, ht: 0.25, dark: true };
   } else if (spec.gear === 'cap') {
-    const shell = new THREE.SphereGeometry(0.216, 20, 12, 0, TAU, 0, 0.88);
+    const shell = new THREE.SphereGeometry(0.216, 20, 12, 0, TAU, 0, 1.16);
     add(gear, xform(shell, { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.gear);
     // brim: FRONT (was drawn behind the head — see the helmet peak note)
     add(gear, xform(new THREE.CylinderGeometry(0.196, 0.196, 0.012, 14, 1, false, -0.85, 1.7), { pos: [0, 0.126, 0.062], rot: [-0.24, 0, 0], scale: [1, 1, 1.30] }), M.trim, false);
     // seam panels over the crown, front to back, so the cap is not one smooth ball from behind
     for (const phiC of [Math.PI / 2, -Math.PI / 2]) {
-      add(gear, xform(new THREE.SphereGeometry(0.219, 16, 12, phiC - 0.055, 0.11, 0, 0.86), { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.trim, false);
+      add(gear, xform(new THREE.SphereGeometry(0.2182, 16, 12, phiC - 0.060, 0.12, 0, phiC < 0 ? 0.75 : 1.14), { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.trim, false);
     }
+    // rear skirt over the nape, same job as the helmet's
+    add(gear, xform(new THREE.SphereGeometry(0.216, 20, 8, -Math.PI / 2 - 1.55, 3.10, 1.13, 0.46), { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.gear, false);
     add(gear, xform(new THREE.SphereGeometry(0.021, 8, 6), { pos: [0, 0.208, -0.024] }), M.trim, false);
-    badgeOn = { parent: gear, r: 0.216, scale: [1.03, 0.94, 1.0], y: 0.034, off: [0, 0.016, -0.026], hp: 0.36, ht: 0.30, dark: true };
+    badgeOn = { parent: gear, r: 0.216, scale: [1.03, 0.94, 1.0], th: 1.00, off: [0, 0.016, -0.026], hp: 0.30, ht: 0.25, dark: true };
   } else if (spec.gear === 'goggles') {
     // A goggle-only cat with a dark coat is a black egg from the chase camera — the R3 critics
     // called Shuki "a featureless dark ovoid, no face, ears or eyes". Goggles now come strapped
     // over a shorty flying cap in the suit colour, so the crown is always a saturated identity
     // mass with a number on it, whatever the coat underneath does.
-    const shell = new THREE.SphereGeometry(0.214, 20, 12, 0, TAU, 0, 1.02);
+    const shell = new THREE.SphereGeometry(0.214, 20, 12, 0, TAU, 0, 1.24);
     add(gear, xform(shell, { pos: [0, 0.020, -0.020], scale: [1.02, 0.92, 1.0] }), M.gear);
     for (const phiC of [Math.PI / 2, -Math.PI / 2]) {
-      add(gear, xform(new THREE.SphereGeometry(0.217, 16, 12, phiC - 0.16, 0.32, 0, 1.01), { pos: [0, 0.020, -0.020], scale: [1.02, 0.92, 1.0] }), M.trim, false);
+      add(gear, xform(new THREE.SphereGeometry(0.2162, 16, 12, phiC - 0.15, 0.30, 0, phiC < 0 ? 0.75 : 1.23), { pos: [0, 0.020, -0.020], scale: [1.02, 0.92, 1.0] }), M.trim, false);
     }
     const strap = new THREE.TorusGeometry(0.198, 0.019, 8, 24);
     add(gear, xform(strap, { pos: [0, 0.075, -0.010], rot: [1.30, 0, 0], scale: [1.03, 1.0, 1] }), M.dark, false);
@@ -904,7 +935,7 @@ export function createCat(id, opts = {}) {
       add(gear, xform(new THREE.CylinderGeometry(0.055, 0.050, 0.035, 14), { pos: [s * 0.083, 0.108, 0.128], rot: [1.28, 0, 0] }), M.trim, false);
       add(gear, xform(new THREE.CylinderGeometry(0.046, 0.046, 0.006, 14), { pos: [s * 0.083, 0.113, 0.146], rot: [1.28, 0, 0] }), M.glass, false);
     }
-    badgeOn = { parent: gear, r: 0.214, scale: [1.02, 0.92, 1.0], y: 0.030, off: [0, 0.020, -0.020], hp: 0.36, ht: 0.30, dark: true };
+    badgeOn = { parent: gear, r: 0.214, scale: [1.02, 0.92, 1.0], th: 1.00, off: [0, 0.020, -0.020], hp: 0.30, ht: 0.25, dark: true };
   } else if (spec.gear === 'bandana') {
     const shell = new THREE.SphereGeometry(0.218, 20, 12, 0, TAU, 0, 0.98);
     add(gear, xform(shell, { pos: [0, 0.008, -0.040], scale: [1.03, 0.90, 1.0] }), M.gear);
@@ -913,15 +944,15 @@ export function createCat(id, opts = {}) {
     for (let i = 0; i < 2; i++) {
       add(gear, xform(new THREE.ConeGeometry(0.030, 0.17, 6), { pos: [-0.085 - i * 0.036, 0.006 - i * 0.052, -0.245 - i * 0.030], rot: [0.34, 0.5 - i * 0.3, 1.85 + i * 0.30], scale: [1, 1, 0.45] }), M.trim, false);
     }
-    badgeOn = { parent: gear, r: 0.218, scale: [1.03, 0.90, 1.0], y: 0.040, off: [0, 0.008, -0.040], hp: 0.34, ht: 0.28, dark: true };
+    badgeOn = { parent: gear, r: 0.218, scale: [1.03, 0.90, 1.0], th: 0.86, off: [0, 0.008, -0.040], hp: 0.30, ht: 0.25, dark: true };
   } else { // visor
     add(gear, xform(new THREE.TorusGeometry(0.196, 0.016, 8, 22), { pos: [0, 0.088, -0.012], rot: [1.35, 0, 0], scale: [1.03, 1, 1] }), M.gear, false);
     // the tinted band belongs in FRONT of the eyes
     const v = new THREE.CylinderGeometry(0.185, 0.185, 0.085, 18, 1, true, -0.85, 1.7);
     add(gear, xform(v, { pos: [0, 0.075, 0.008], rot: [-0.10, 0, 0], scale: [1, 1, 1.03] }), M.glass, false);
     // shell over the crown so a visor cat is not a bare dome from behind either
-    add(gear, xform(new THREE.SphereGeometry(0.212, 18, 12, 0, TAU, 0, 0.72), { pos: [0, 0.022, -0.018], scale: [1.02, 0.96, 1.0] }), M.gear, false);
-    badgeOn = { parent: gear, r: 0.212, scale: [1.02, 0.96, 1.0], y: 0.044, off: [0, 0.022, -0.018], hp: 0.34, ht: 0.28, dark: true };
+    add(gear, xform(new THREE.SphereGeometry(0.212, 18, 12, 0, TAU, 0, 0.98), { pos: [0, 0.022, -0.018], scale: [1.02, 0.96, 1.0] }), M.gear, false);
+    badgeOn = { parent: gear, r: 0.212, scale: [1.02, 0.96, 1.0], th: 0.86, off: [0, 0.022, -0.018], hp: 0.30, ht: 0.25, dark: true };
   }
 
   // Racing number across the back of the head. The chase camera looks at the back of the driver
@@ -936,17 +967,22 @@ export function createCat(id, opts = {}) {
   // that covered it. It now lands on the outermost shell the cat actually wears, and it carries
   // its own emissiveMap, so the disc lifts with the shell instead of sinking away from it.
   if (DOM) {
-    const B0 = badgeOn || { parent: B.head, r: 0.198, scale: [1.05, 0.96, 1.00], y: 0.030, hp: 0.40, ht: 0.38, dark: false };
-    const thetaC = Math.acos(clamp(B0.y / B0.r, -1, 1));
+    const B0 = badgeOn || { parent: B.head, r: 0.198, scale: [1.05, 0.96, 1.00], th: 1.42, hp: 0.34, ht: 0.30, dark: false };
+    const thetaC = B0.th;
     const fg = B0.dark ? '#17171c' : '#f4f1e6', bg = B0.dark ? '#f6f2e6' : '#26262c';
     const nTex = numberTexture(spec.num, fg, bg);
     const bgeo = new THREE.SphereGeometry(B0.r, 16, 12, -Math.PI / 2 - B0.hp, B0.hp * 2, thetaC - B0.ht, B0.ht * 2);
+    // Plain map only. An emissiveMap on an alpha-tested patch silently killed the roundel on
+    // some drivers (Shuki and Kobi rendered a bare sliver of the ring and nothing else) — this
+    // graphic has to be bulletproof, so it stays a simple lit decal.
     const bm = new THREE.MeshStandardMaterial({
-      map: nTex, emissiveMap: nTex, emissive: new THREE.Color(0xffffff),
-      emissiveIntensity: 0.30,
-      transparent: true, alphaTest: 0.35, roughness: 0.34, metalness: 0.0, side: THREE.DoubleSide,
+      map: nTex, color: new THREE.Color(1.45, 1.45, 1.45),
+      transparent: true, alphaTest: 0.35, side: THREE.DoubleSide,
+      roughness: 0.34, metalness: 0.0,
     });
-    const sc = [B0.scale[0] * 1.016, B0.scale[1] * 1.016, B0.scale[2] * 1.016];
+    // Proud by 3.5%. At 1.6% it lost the depth fight with the crown stripe underneath it and
+    // vanished on every cat whose stripe ran through the same patch of shell.
+    const sc = [B0.scale[0] * 1.035, B0.scale[1] * 1.035, B0.scale[2] * 1.035];
     add(B0.parent, xform(bgeo, { pos: B0.off || [0, 0, 0], scale: sc }), bm, false);
   }
 
@@ -958,16 +994,25 @@ export function createCat(id, opts = {}) {
     const hd = s < 0 ? B.handL : B.handR;
     const upG = new THREE.CapsuleGeometry(0.062, 0.125, 4, Math.round(12 * seg) + 4);
     add(sh, xform(upG, { pos: [0, -0.086, 0] }), M.suit);
-    if (fine) add(sh, xform(new THREE.SphereGeometry(0.070, 12, 9), { pos: [0, 0.005, 0] }), M.suit, false);
+    // Deltoid cap — was fine-detail-only, so at race distance the arms grew straight out of the
+    // torso with no joint at all. It is now always built, and big enough to read as a shoulder.
+    add(sh, xform(new THREE.SphereGeometry(0.082, 12, 9), { pos: [0, 0.002, 0], scale: [1.0, 0.94, 1.0] }), M.suit, false);
+    add(sh, xform(new THREE.TorusGeometry(0.070, 0.013, 6, 14), { pos: [0, -0.020, 0], rot: [Math.PI / 2, 0, 0] }), M.trim, false);
     const foG = new THREE.CapsuleGeometry(0.052, 0.110, 4, Math.round(12 * seg) + 4);
     add(el, xform(foG, { pos: [0, -0.078, 0] }), M.limb);
     if (fine) add(el, xform(new THREE.TorusGeometry(0.056, 0.014, 6, 14), { pos: [0, -0.138, 0], rot: [Math.PI / 2, 0, 0] }), M.trim, false);
     // paw
+    // Gloved paw. R3: "two grey pom-poms with no fingers, gripping nothing". The toe bumps were
+    // all on the underside, invisible from the only angle the camera ever sees them from. It is
+    // now a mitten: a palm mass, three knuckles ridged across the front where the camera looks,
+    // and a thumb curled round the far side of the rim.
     const paw = mergeGeos([
-      xform(new THREE.SphereGeometry(0.052, 12, 9), { scale: [1.0, 1.15, 0.95] }),
-      xform(new THREE.SphereGeometry(0.021, 8, 6), { pos: [s * 0.026, -0.030, 0.030] }),
-      xform(new THREE.SphereGeometry(0.021, 8, 6), { pos: [-s * 0.004, -0.034, 0.034] }),
-      xform(new THREE.SphereGeometry(0.019, 8, 6), { pos: [-s * 0.030, -0.028, 0.026] }),
+      xform(new THREE.SphereGeometry(0.049, 12, 9), { scale: [1.06, 1.12, 1.0] }),
+      xform(new THREE.SphereGeometry(0.020, 8, 6), { pos: [s * 0.028, -0.014, 0.034], scale: [0.95, 1.05, 1.25] }),
+      xform(new THREE.SphereGeometry(0.021, 8, 6), { pos: [0, -0.018, 0.038], scale: [0.95, 1.05, 1.25] }),
+      xform(new THREE.SphereGeometry(0.020, 8, 6), { pos: [-s * 0.028, -0.016, 0.034], scale: [0.95, 1.05, 1.25] }),
+      xform(new THREE.SphereGeometry(0.022, 8, 6), { pos: [s * 0.044, 0.014, 0.006], scale: [1.15, 0.95, 1.35] }),
+      xform(new THREE.SphereGeometry(0.017, 7, 6), { pos: [0, -0.040, 0.020], scale: [1.5, 0.7, 1.0] }),
     ]);
     paw.computeVertexNormals();
     add(hd, xform(paw, { pos: [0, -0.014, 0.006] }), M.trim);
@@ -1002,8 +1047,14 @@ export function createCat(id, opts = {}) {
     if (i === B.tail.length - 1) add(B.tail[i], xform(new THREE.SphereGeometry(0.050, 10, 8), { pos: [0, 0.118, 0], scale: [1, 1.25, 1] }), M.tail, false);
     else if (fine) add(B.tail[i], xform(new THREE.SphereGeometry(0.058 - i * 0.006, 10, 8), { pos: [0, 0.120, 0] }), M.tail, false);
   }
-  B.tail[0].rotation.set(-0.55, 0, 0);
-  for (let i = 1; i < B.tail.length; i++) B.tail[i].rotation.set(0.22, 0, 0);
+  // The tail used to rear straight up behind the skull, tip at head height dead on the
+  // centreline: from the chase camera it was a striped furry column growing out of the back of
+  // the driver's head, and it buried the racing-number badge completely. The lean is a ROLL,
+  // not a yaw — a near-vertical tail barely moves when you yaw its root — so the whole tail now
+  // stands up and out over one flank, clear of both the skull and the seat back.
+  const tailSide = ((spec.seed / 101) | 0) % 2 ? 1 : -1;
+  B.tail[0].rotation.set(-0.60, 0, tailSide * 0.52);
+  for (let i = 1; i < B.tail.length; i++) B.tail[i].rotation.set(0.24, 0, tailSide * 0.05);
   for (const b of B.tail) b.userData.rest = b.rotation.clone();
 
   /* ---- rest pose */

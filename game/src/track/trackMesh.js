@@ -259,22 +259,32 @@ function vergeTextures(px = 256, seed = 4242) {
  *     micro-normal that makes them catch the sun — at a spatial frequency far above anything
  *     a 640-texel cross-section could hold. It fades out past ~18 m so it never aliases.
  *
- * All colour uniforms are LINEAR albedo, authored cool: the scene's key light plus the warm
- * grade renders a neutral albedo at roughly R : G : B = 1 : 0.78 : 0.48, so anything that has
- * to come back grey or white has to be authored blue.
+ * Colour uniforms are LINEAR albedo. The scene's very warm key and grade are corrected for at
+ * the END of the shader instead of in the palette — see `uSat` / `uTint` below for why.
  */
 function createSurfaceMaterial(tex, o) {
   const uniforms = {
     uStartS: { value: o.startS },
     uLen: { value: o.length },
-    uPaint: { value: new THREE.Vector3(0.52, 0.72, 1.00) },
+    uPaint: { value: new THREE.Vector3(0.72, 0.80, 0.95) },
     uPaintGlow: { value: new THREE.Vector3(0.0, 0.012, 0.075) },
     uDark: { value: new THREE.Vector3(0.016, 0.020, 0.030) },
     uCell: { value: 1.25 },
     uBand: { value: 3.75 },
     uEdge: { value: new THREE.Vector2(0.62, 0.115) },
     uDash: { value: new THREE.Vector2(7.0, 0.44) },
-    uChipA: { value: new THREE.Vector3(0.150, 0.140, 0.128) },
+    uChipA: { value: new THREE.Vector3(0.150, 0.148, 0.140) },
+    /* The scene's key light and grade skew a neutral albedo hard to orange — a plain dark
+     * binder rendered as milk chocolate at R : G : B = 1 : 0.78 : 0.48. Tinting the ALBEDO
+     * cool fixes the sunlit road and ruins everything else: albedo multiplies the light, so
+     * under the blue sky-fill of a tree shadow a blue-biased tarmac went electric royal blue.
+     *
+     * The correction therefore happens on the lit result and is anchored to LUMINANCE:
+     * pull the pixel towards `luma * uTint`, keeping `uSat` of its original chroma. The
+     * neutral point it is pulled towards scales with how bright the pixel already is, so a
+     * dim shadow gets a proportionally dim correction and simply stays a cool dark grey. */
+    uSat: { value: 0.30 },
+    uTint: { value: new THREE.Vector3(0.93, 1.00, 1.18) },
     uDetail: { value: new THREE.Vector2(18.0, 0.85) },   // fade distance, strength
   };
   const m = new THREE.MeshStandardMaterial({
@@ -312,7 +322,8 @@ varying vec3 vAxX;
 varying vec3 vAxZ;
 varying float vSurfD;
 uniform float uStartS, uLen, uCell, uBand;
-uniform vec3 uPaint, uPaintGlow, uDark, uChipA;
+uniform vec3 uPaint, uPaintGlow, uDark, uChipA, uTint;
+uniform float uSat;
 uniform vec2 uEdge, uDash, uDetail;
 float gPaint = 0.0;      // white-paint coverage (lines + chequer whites)
 float gChequer = 0.0;    // inside the start/finish band
@@ -362,7 +373,7 @@ float kChecker(vec2 p, vec2 w){ return 0.5 + 0.5 * kSq(p.x, w.x) * kSq(p.y, w.y)
     float a3 = kdN(wp * 74.0);
     float chips = smoothstep(0.60, 0.95, max(a1, a2 * 0.94));
     gGrain = (chips * 0.8 + (a3 - 0.5) * 0.5 + (a1 - 0.5) * 0.35) * dfade;
-    diffuseColor.rgb = mix(diffuseColor.rgb, uChipA, chips * 0.42 * dfade);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uChipA, chips * 0.34 * dfade);
     diffuseColor.rgb *= 1.0 + ((a3 - 0.5) * 0.26 + (a1 - 0.5) * 0.16) * dfade;
   }
 
@@ -409,6 +420,20 @@ float kChecker(vec2 p, vec2 w){ return 0.5 + 0.5 * kSq(p.x, w.x) * kSq(p.y, w.y)
     float k = (1.0 - gPaint * 0.8) * uDetail.y * (1.0 - smoothstep(uDetail.x * 0.35, uDetail.x, vSurfD));
     normal = normalize(normal - (gx * vAxX + gz * vAxZ) * 0.55 * k);
   }`);
+
+    // Luminance-anchored chroma correction on the LIT result (see uSat/uTint above).
+    const grade = ch => `
+{
+  float l = dot(outgoingLight, vec3(0.2126, 0.7152, 0.0722));
+  outgoingLight = mix(l * uTint, outgoingLight, uSat);
+}
+#include <${ch}>`;
+    for (const ch of ['opaque_fragment', 'output_fragment']) {
+      if (sh.fragmentShader.includes(`#include <${ch}>`)) {
+        sh.fragmentShader = sh.fragmentShader.replace(`#include <${ch}>`, grade(ch));
+        break;
+      }
+    }
   };
   return m;
 }
@@ -488,9 +513,9 @@ export function createTrackMesh(engine, world, track, opts = {}) {
    * asphalt with a visible seam mid-frame where the two overlapped. A race circuit is one
    * surface: this is a moshav chip-seal, dark limestone-chipped binder end to end.
    *
-   * The palette is authored COOL. The scene's key light and grade render a neutral albedo at
-   * roughly R : G : B = 1 : 0.78 : 0.48, which is exactly why the old near-neutral binder came
-   * back as milk chocolate. Authoring blue is what lands it on grey in the frame.
+   * The palette stays NEUTRAL here. The scene's key light and grade skew a neutral albedo hard
+   * to orange, but the correction for that belongs on the lit result, not on the albedo — see
+   * `uSat` / `uTint` in `createSurfaceMaterial`.
    *
    * Markings are NOT baked here (`centre: null, edge: false`) — the material draws them
    * analytically so they survive to the horizon.
@@ -500,9 +525,9 @@ export function createTrackMesh(engine, world, track, opts = {}) {
     centre: null, edge: false,
     seed: 771, normalStrength: 1.05, W: 640, H: 1536,
     edgeInset: 0.62, edgeHalf: 0.115, dustWidth: 0.50,
-    base: [0.052, 0.079, 0.180],
-    shoulder: [0.150, 0.142, 0.118],
-    polish: [{ at: 0, w: 3.05, k: 0.92 }, { at: 4.95, w: 0.95, k: 0.42 }],
+    base: [0.045, 0.0445, 0.047],
+    shoulder: [0.150, 0.140, 0.112],
+    polish: [{ at: 0, w: 3.05, k: 0.78 }, { at: 4.95, w: 0.95, k: 0.34 }],
   });
   for (const t of [surfTex.map, surfTex.normalMap, surfTex.roughnessMap]) t.anisotropy = 16;
   const matSurface = createSurfaceMaterial(surfTex, { startS: track.startS, length: track.length });
@@ -663,8 +688,8 @@ export function createTrackMesh(engine, world, track, opts = {}) {
    *
    * Starts *under* the outer face of the kerb (so the kerb's drop face has something to land
    * on and never floats), sits a clear step below the racing surface, then drapes onto the
-   * real hillside. The tint runs dark at the kerb and brightens to roughly hillside albedo at
-   * the outer lip, which feathers the polygon boundary instead of leaving a straight seam.
+   * real hillside. The tint runs dark at the road edge and brightens to roughly hillside albedo
+   * at the outer lip, which feathers the polygon boundary instead of leaving a straight seam.
    */
   const runoffLanes = side => sm => {
     const hw = sm.width * 0.5, R = o.runoff;
@@ -679,8 +704,8 @@ export function createTrackMesh(engine, world, track, opts = {}) {
     };
     return fr.map(f => {
       const off = side * (inner + f * R);
-      // Sit 5 cm ABOVE the bottom edge of the kerb's drop face, so the face buries into the
-      // verge instead of stopping short of it and leaving a sliver of daylight underneath.
+      // Sit 5 cm ABOVE the bottom edge of a kerb's drop face, so where there IS a kerb its
+      // face buries into the verge instead of stopping short and leaving a sliver of daylight.
       const up = (o.kerbRise - o.kerbDrop) + 0.05 - f * 0.20;
       return [off, up, side * (inner + f * R) / 3.2, f < 0.02 ? 0 : f * f * (3 - 2 * f), tint(f)];
     }).concat([[side * (inner + R + 1.6), -1.0, side * (inner + R + 1.6) / 3.2, 1, tint(1.35)]]);
@@ -862,7 +887,9 @@ export function createTrackMesh(engine, world, track, opts = {}) {
  *
  * Six lanes give a real MK-style extrusion instead of a painted stripe: a shallow ramp off the
  * racing surface, a steep front chamfer, a flat rumble top, an outer chamfer and a vertical
- * drop face onto the verge. `colOf(i)` picks the atlas column (0 = red/white, 1 = stone).
+ * drop face onto the verge. `mask` is the corner mask, so an isolated run tapers its rise and
+ * drop back to zero over four stations and the kerb grows out of the road at a corner entry
+ * instead of starting with a step. `colOf` is vestigial — there is only one livery now.
  */
 function kerbStrip(samples, side, mask, o, colOf) {
   const N = samples.length - 1;
