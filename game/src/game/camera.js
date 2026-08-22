@@ -31,17 +31,35 @@ export const DEFAULTS = {
      paws on the wheel and lean into a corner have to be legible in every gameplay frame, or
      the game may as well ship empty karts. The old rig sat 1.00 m over the centre of mass —
      about 1.56 m over the road, which is the height of the seat back — so the seat ate the
-     cat and all that cleared it was a helmet band and two ear tips. The lens now sits
-     ~2.2 m up and looks *down* the road rather than along it, which is where MK8 puts it:
-     the kart fills the bottom third, the driver reads against the tarmac, and you can still
-     see far enough ahead to place the kart for the next corner. */
-  back: 3.50,             // distance behind the kart's centre of mass at rest
-  backSpeed: 0.60,        // extra distance at top speed
+     cat and all that cleared it was a helmet band and two ear tips.
+
+     Round 4 then caught the opposite failure: the rig sat 2.36 m over the tarmac on a 5.9 m
+     aim that dropped almost to road level, which pitched the lens about nine degrees DOWN.
+     A nine-degree nose-down lens on a 13 m road puts the horizon a third of the way from the
+     top and fills everything under it with the nearest, flattest, greyest asphalt there is —
+     `villageStreet` came back with 60% of the frame bare tarmac and the lowest mean chroma
+     in the set. The near ground is the part of a racing shot worth the least: it is out of
+     the driver's decision horizon, it carries no trackside content and it is a single grey.
+
+     So the aim rides UP (0.87 m over the CoM instead of 0.20) and the boom goes OUT (4.55 m
+     instead of 3.50). Levelling the lens rolls that dead near-tarmac off the bottom of the
+     frame and buys sky, canopy and hillside at the top; the longer boom keeps the kart —
+     which is the colour in the shot — the same size in frame, in fact a little bigger, so
+     the cat is not paid for out of the composition. The eye also rises with it, which brings
+     the far kerb and the verge down into frame instead of leaving them out past the edge. */
+  back: 4.55,             // distance behind the kart's centre of mass at rest
+  backSpeed: 0.85,        // extra distance at top speed
   backBoost: 0.45,        // … and while boosting (the kart pulls away from the lens)
-  height: 1.80,           // above the CoM, which is itself ~0.56 m above the road
-  heightSpeed: 0.20,
-  lookAhead: 5.9,
-  lookHeight: 0.20,       // aim past the driver's ears at the road, not over the scenery
+  backMin: 1.95,          // the boom never tucks in closer than this — see boxTuck()
+  height: 2.05,           // above the CoM, which is itself ~0.56 m above the road
+  heightSpeed: 0.32,
+  lookAhead: 6.6,
+  lookHeight: 0.87,       // metres over the CoM the aim rides — this is the shot's PITCH
+  /* the corner ahead — see roadAim() */
+  cornerAhead: 34,        // metres down the centre line the lens reads the next corner from
+  cornerLead: 0.62,       // how much of that corner's offset the aim takes …
+  cornerMax: 4.8,         // … capped, so the kart never leaves the middle of frame
+  cornerLambda: 3.0,
   /* responsiveness */
   posFreq: 2.90,          // Hz of the position spring
   posDamping: 1.02,       // 1 = critically damped
@@ -64,16 +82,20 @@ export const DEFAULTS = {
   airBack: 0.80,
   landKick: 0.34,
   hopLambda: 12.0,
-  /* rivals in the lens */
-  kartClear: 4.6,         // a rival this close to the eye backs the rig off and lifts it …
-  kartLift: 0.80,         // … by up to this much, instead of being sliced open by the frame
-  kartBack: 1.15,
-  /* item boxes in the lens — see nearProps() */
-  boxClear: 7.6,          // an item box within this of the kart gets the rig out of its way
-  boxFull: 3.0,           // … at full strength once it is this close
-  boxLift: 2.55,          // metres the eye climbs over the row
-  boxBack: 3.70,          // … and metres it drops back, so the row swings out to the edges
-  boxSpan: 2.6,           // vertical half-window: only boxes on the kart's own deck count
+  /* rivals in the lens — see rivalNear() */
+  kartClear: 6.4,         // a rival this close to the eye starts moving the rig …
+  kartFull: 4.3,          // … and by this close the move is at full strength
+  kartBack: 2.10,         // metres the rig drops back off it — this is what un-slices the kart
+  kartSink: 0.70,         // … and metres the eye sinks, which is worth three times its size
+  /* item boxes in the lens — see boxTuck() */
+  boxClear: 9.0,          // look this far behind the kart for a row the eye has to clear
+  boxFade: 1.20,          // depth at which itemMeshes' near-fade has fully dissolved a box
+  boxSpan: 2.8,           // vertical half-window: only boxes on the kart's own deck count
+  boxHalf: 0.80,          // half-extent of a box, cage and rim included
+  /* the pose the rig tucks into while it is ducking a box row — see chase() */
+  tuckHeight: 0.75,       // metres over the CoM at full tuck …
+  tuckLook: -0.55,        // … aiming this far over it, i.e. at the tarmac …
+  tuckAhead: 0.62,        // … and this much of the usual look-ahead, so the kart stays framed
   /* fixed cinematic plates: keeping the subject legible — see plateFrame() */
   plateFill: 0.210,       // fraction of frame height a head-on subject should occupy
   plateSubjH: 1.55,       // metres of kart + driver that has to fill it
@@ -135,7 +157,7 @@ export function createCamera(engine, world, opts = {}) {
   const st = {
     yaw: 0, fov: O.fov, roll: 0, drift: 0, driftDir: 0, air: 0, hop: 0,
     speed: 0, boost: 0, lookBack: 0, shake: 0, shakeT: 0, first: true,
-    height: 0, side: 0, kartLift: 0, boxNear: 0,
+    height: 0, side: 0, kartLift: 0, boxNear: 0, corner: 0,
   };
   let elapsed = 0;
 
@@ -176,60 +198,92 @@ export function createCamera(engine, world, opts = {}) {
   }
 
   /**
-   * Ride over a rival that has climbed into the lens.
+   * Get out from over a rival that is drafting the player.
    *
-   * The rig sits a bare 3.9 m behind the kart, so a rival drafting the player passes within
-   * arm's length of the eye and the frame cuts it open — bodywork and half a cat pasted over
-   * the HUD, which is what the review caught in villageStreet. Rather than shove the rig
-   * (which fights the spring and swings the whole shot), the eye lifts over the intruder and
-   * settles straight back down: a pass close enough to touch reads as a pass, not a glitch.
+   * The rig trails the kart by about five metres, so a rival on the player's bumper sits two
+   * to four metres off the lens, under the sight line, and the bottom of the frame cuts it
+   * clean in half — a sliced kart and half a cat pasted across the position badge and the coin
+   * pill. R1 found it in `villageStreet`, R4 found it again in `driftCorner`.
+   *
+   * Rounds 2 and 3 answered it by LIFTING the eye over the intruder, and that is backwards.
+   * A rival stands on the road, so what decides whether the frame cuts it is the depression
+   * angle to its wheels, atan((eyeY - road) / d), against the frame's bottom edge at pitch +
+   * half-fov. Raising the eye raises that depression by 1/d per metre — the intruder is close,
+   * so d is small and the term is huge — while the pitch it also steepens only grows by
+   * 1/(boom + look-ahead), over a distance three times longer. Lifting therefore pushes a
+   * near kart DOWN the frame about three times faster than it drags the frame down after it.
+   * Every metre of `kartLift` made the slicing worse.
+   *
+   * So the rig does the opposite of what it did: it drops and it backs off. Backing off is
+   * what actually works — it is pure gain on both terms, more distance under the depression
+   * and a flatter pitch — and sinking a little converts the rest. Together they turn a kart
+   * cut open on the frame edge into a whole kart filling your mirrors, which is the shot the
+   * moment is about.
+   *
+   * Distances are measured from the kart, not from the eye: the eye is what this function
+   * moves, and measuring the trigger at the thing being moved is a feedback loop that hunts.
+   * A rival AHEAD of the player is not an intruder — it is the race — and is left alone.
    */
-  function rivalNear(v, dt) {
+  function rivalNear(v, kart, dirX, dirZ, back0, dt) {
     let want = 0;
     const rivals = v && v.rivals;
+    const fade = Math.max(O.kartClear - O.kartFull, 0.3);
     if (rivals && rivals.length) {
       for (const o of rivals) {
         const s = o && (o.state || (o.vehicle && o.vehicle.state));
         if (!s || !s.pos) continue;
-        if (Math.abs(s.pos.y - pos.y) > 3.5) continue;
-        const dx = s.pos.x - pos.x, dz = s.pos.z - pos.z;
-        const d = Math.hypot(dx, dz);
+        if (Math.abs(s.pos.y - kart.y) > 3.5) continue;         // another deck of the circuit
+        const ex = s.pos.x - kart.x, ez = s.pos.z - kart.z;
+        const a = -(ex * dirX + ez * dirZ);                     // metres behind the kart
+        if (a < -1.2) continue;                                 // out in front: that is the race
+        const lat = ex * dirZ - ez * dirX;
+        const d = Math.hypot(back0 - a, lat);                   // … from the untucked eye
         if (d >= O.kartClear) continue;
-        const w = 1 - d / O.kartClear;
+        const w = clamp((O.kartClear - d) / fade, 0, 1);
         if (w > want) want = w;
       }
     }
-    st.kartLift = damp(st.kartLift, want, want > st.kartLift ? 9 : 3.5, dt);
+    st.kartLift = damp(st.kartLift, want, want > st.kartLift ? 9 : 3.0, dt);
     return st.kartLift;
   }
 
   /* ---- near-field props: the item-box rows ---------------------------------- */
 
   /**
-   * Item boxes are 1.5 m cubes floating at windscreen height, and the rig rides barely 2.3 m
-   * over the tarmac, so driving through a box row put two of them *inside* the near volume —
-   * a metre and a half off the lens, flanking the player, filling the bottom half of the frame
-   * and burying the kart behind them (review R2, itemChaos).
+   * Item boxes in the lens — the occlusion pull-IN.
    *
-   * Two objects at the same depth cannot be separated by moving the lens, so the rig does the
-   * only thing that works: it climbs over the row and drops back off it. Higher puts the line
-   * of sight to the driver's head *above* the box tops; further back drops the boxes to half
-   * the subject's depth, which throws them out towards the frame edges at twice the parallax.
-   * Both decay away the moment the row is behind you, so the ordinary road is filmed from the
-   * ordinary place.
+   * The course lays its item boxes five abreast across a 13 m road, so the player does not
+   * drive *past* a row, the player drives *through* it. The kart clears the row about a fifth
+   * of a second before the lens trailing it does, and for that fifth of a second there are
+   * 1.3 m glass cubes sitting between the eye and the subject. Rounds 2 and 4 both caught it:
+   * a gold cage and a pomegranate glyph across the bottom quarter of `itemChaos`, washing out
+   * the road and the hero kart behind it.
    *
-   * Each box is measured from whichever is nearer, the kart or the lens. The kart's distance
-   * is what gives the move its anticipation — the rig is already up when the row arrives
-   * instead of reacting to a box that is by then filling the frame — and the lens's distance
-   * is what holds it there, because the kart clears the row a good four metres before the eye
-   * trailing it does. Measuring at the lens alone would also fight itself, the move it
-   * triggers being the move that ends it.
+   * Rounds 2 and 3 tried to solve it by lifting the eye over the row and dropping it back off
+   * it, and R4 shot the proof that this cannot work. A box top rides 2.27 m over the tarmac;
+   * for a box 4 m in front of the eye to fall under the bottom of a 54-degree frame the lens
+   * would have to climb past 6 m, and every metre it climbs steepens the pitch and raises the
+   * bar again — the solve diverges. Dropping BACK is worse than useless: it increases the
+   * box's depth, which swings it *up* toward the horizon and further into frame.
    *
-   * The box list is found once and cached: they are direct children of the items root, which
-   * carries no transform, so `o.position` is already world space and no matrix walk is needed.
+   * There is only one direction that removes an object from a frame outright, and it is the
+   * one a third-person rig has always used for a wall between it and its subject: come IN.
+   * A box `a` metres behind the kart is in front of the eye only while the boom is longer
+   * than `a`; tuck the boom to just inside `a` and the whole row — all five of it, they share
+   * one arc length — falls behind the lens and out of the shot. The move is self-limiting:
+   * `a` grows as the player drives on, so the boom is back out inside a quarter of a second,
+   * and what it costs in the meantime is a brief close-up on the kart punching through the
+   * row, which is a shot a kart racer wants anyway.
+   *
+   * A box too close to tuck inside of (the boom will not come in past `backMin`) is left to
+   * itemMeshes.js's near-fade, which dissolves anything under ~2 m of the lens; between the
+   * two there is no window where a box can sit in the frame at readable opacity.
+   *
+   * The box list is found once and cached; the boxes are children of a group that carries no
+   * transform, so `o.position` is already world space and no matrix walk is needed.
    */
   let boxCache = null, boxScan = -1e9, boxScans = 0;
-  function nearProps(kart, dt) {
+  function boxTuck(kart, dirX, dirZ, back, dt) {
     if ((!boxCache || !boxCache.length) && boxScans < 6 && elapsed - boxScan > 1.5) {
       // items.js builds its boxes after the rig exists; look a few times, then give up
       // rather than walk the whole scene graph forever on a course that has none.
@@ -238,25 +292,72 @@ export function createCamera(engine, world, opts = {}) {
       const scene = engine && engine.scene;
       if (scene && scene.traverse) scene.traverse(o => { if (o.name === 'itembox') boxCache.push(o); });
     }
-    let want = 0;
     const list = boxCache;
-    if (list) {
-      const fade = Math.max(O.boxClear - O.boxFull, 0.5);
+    let cut = Infinity;
+    if (list && list.length) {
+      // half-width of the frame's cone, per metre of depth
+      const spread = Math.tan(THREE.MathUtils.degToRad(st.fov) * 0.5) * (camera.aspect || 16 / 9);
+      const reach = Math.min(back, O.boxClear);
       for (let i = 0; i < list.length; i++) {
         const o = list[i];
         if (o.visible === false) continue;
         const p = o.position;
-        if (Math.abs(p.y - kart.y) > O.boxSpan && Math.abs(p.y - pos.y) > O.boxSpan + 2) continue;
-        const kx = p.x - kart.x, kz = p.z - kart.z;
-        const ex = p.x - pos.x, ez = p.z - pos.z;
-        const d2 = Math.min(kx * kx + kz * kz, ex * ex + ez * ez);
-        if (d2 >= O.boxClear * O.boxClear) continue;
-        const w = clamp((O.boxClear - Math.sqrt(d2)) / fade, 0, 1);
-        if (w > want) want = w;
+        if (Math.abs(p.y - kart.y) > O.boxSpan) continue;          // a row on another deck
+        const ex = p.x - kart.x, ez = p.z - kart.z;
+        const a = -(ex * dirX + ez * dirZ);            // metres BEHIND the kart (+ve = passed)
+        if (a <= 0.15 || a >= reach) continue;         // still ahead of the kart, or behind the eye
+        if (a >= cut) continue;
+        // would it actually be in the frame, seen from the untucked eye?
+        const lat = Math.abs(ex * dirZ - ez * dirX);
+        if (lat > (back - a) * spread + O.boxHalf) continue;
+        cut = a;
       }
     }
-    st.boxNear = damp(st.boxNear, want, want > st.boxNear ? 8 : 2.4, dt);
+    // The eye does not have to get *past* the row — it only has to get close enough to it that
+    // itemMeshes' near-fade has already dissolved it. That is a far gentler move than tucking
+    // in behind the boxes outright, and it leaves the shot recognisable.
+    const want = cut < Infinity ? Math.max(0, back - Math.max(O.backMin, cut + O.boxFade)) : 0;
+    st.boxNear = damp(st.boxNear, want, want > st.boxNear ? 16 : 3.4, dt);
     return st.boxNear;
+  }
+
+  /* ---- the corner ahead ----------------------------------------------------- */
+
+  /**
+   * Aim at the road, not at the nose.
+   *
+   * Aiming a fixed distance straight off the kart's nose builds a one-point perspective with
+   * the vanishing point pinned to the middle of the frame, and R4 called it: `oliveGrove` came
+   * back a symmetric corridor, `villageStreet` a wall of tarmac with a single house in it,
+   * because the corner both of them are about was outside the shot. MK8's lens leads the road.
+   *
+   * So the aim slides toward the centre line ~34 m on, which is where the driver is looking:
+   * on a straight the two points coincide and nothing happens, and in a corner the aim swings
+   * to the inside, which puts the apex, the kerb and whatever stands beside it in frame and
+   * takes the kart off dead centre. Capped at `cornerMax` so the kart stays in the middle
+   * third, and eased, so a kink does not snap the lens.
+   */
+  function roadAim(kartPos, dirX, dirZ, ahead, dt) {
+    let want = 0;
+    if (track && track.nearest && track.sample) {
+      try {
+        const n = track.nearest(kartPos);
+        if (n && n.distance < 34) {
+          const sm = track.sample(n.s + O.cornerAhead);
+          const rx = sm.pos.x - kartPos.x, rz = sm.pos.z - kartPos.z;
+          const along = rx * dirX + rz * dirZ;
+          if (along > 6) {
+            // Point the aim AT the far road mark, then bring it back to the aim's own, much
+            // shorter, reach: the swing is an angle, so it is lat/along that carries it, and
+            // `ahead` that turns the angle back into the metres the aim point moves sideways.
+            const lat = rx * dirZ - rz * dirX;
+            want = clamp(ahead * (lat / along) * O.cornerLead, -O.cornerMax, O.cornerMax);
+          }
+        }
+      } catch (e) { want = 0; }
+    }
+    st.corner = damp(st.corner, want, O.cornerLambda, dt);
+    return st.corner;
   }
 
   function applyLook(p, at, fov, roll = 0) {
@@ -326,12 +427,24 @@ export function createCamera(engine, world, opts = {}) {
     // A rival inside the rig's own volume gets the lens out of its way first: back off and lift
     // over it, so a pass close enough to touch is a pass in frame and not a sliced-open kart
     // pasted across the HUD.
-    const near = rivalNear(v, dt);
-    const clutter = nearProps(s.pos, dt);
-    const back = O.back + O.backSpeed * st.speed + O.backBoost * st.boost + O.airBack * st.air
-      + near * O.kartBack + clutter * O.boxBack;
-    const hgt = O.height + O.heightSpeed * st.speed + O.airHeight * st.air + near * O.kartLift
-      + clutter * O.boxLift;
+    const back0 = O.back + O.backSpeed * st.speed + O.backBoost * st.boost + O.airBack * st.air;
+    const near = rivalNear(v, s.pos, dirX, dirZ, back0, dt);
+    let back = back0 + near * O.kartBack;
+    let hgt = O.height + O.heightSpeed * st.speed + O.airHeight * st.air - near * O.kartSink;
+    // …and an item-box row between the eye and the kart gets ducked past, not climbed over.
+    // Coming in shortens the boom hard, so the rest of the pose comes in with it — lower,
+    // flatter and aiming nearer — or the kart the tuck exists to show would be cropped by the
+    // bottom of the frame instead of the boxes. sqrt() because the framing goes wrong faster
+    // than the boom shortens: it is the *ratio* of height to boom that holds the kart in shot.
+    let lookH = O.lookHeight, aheadK = 1;
+    const tuck = boxTuck(s.pos, dirX, dirZ, back, dt);
+    if (tuck > 0.02) {
+      const k = Math.sqrt(clamp(tuck / Math.max(back, 0.5), 0, 1));
+      back -= tuck;
+      hgt = lerp(hgt, O.tuckHeight, k);
+      lookH = lerp(lookH, O.tuckLook, k);
+      aheadK = lerp(1, O.tuckAhead, k);
+    }
     const side = -st.driftDir * O.driftSide * st.drift * (1 - st.lookBack);
     st.side = damp(st.side, side, 7, dt);
     st.hop = damp(st.hop, 0, O.hopLambda, dt);
@@ -344,11 +457,12 @@ export function createCamera(engine, world, opts = {}) {
     );
 
     /* --- aim point: ahead of the kart, biased into the corner --- */
-    const ahead = O.lookAhead * (0.72 + 0.42 * st.speed);
+    const ahead = O.lookAhead * (0.72 + 0.42 * st.speed) * aheadK;
+    const corner = roadAim(s.pos, dirX, dirZ, ahead, dt) * (1 - st.lookBack);
     aim.set(
-      s.pos.x + dirX * ahead * (1 - 2 * st.lookBack) + rgtX * st.side * 0.4,
-      s.pos.y + O.lookHeight + st.air * 0.5,
-      s.pos.z + dirZ * ahead * (1 - 2 * st.lookBack) + rgtZ * st.side * 0.4,
+      s.pos.x + dirX * ahead * (1 - 2 * st.lookBack) + rgtX * (st.side * 0.4 + corner),
+      s.pos.y + lookH + st.air * 0.5,
+      s.pos.z + dirZ * ahead * (1 - 2 * st.lookBack) + rgtZ * (st.side * 0.4 + corner),
     );
 
     if (st.first) { pos.copy(desired); look.copy(aim); posVel.set(0, 0, 0); st.first = false; }
@@ -416,10 +530,11 @@ export function createCamera(engine, world, opts = {}) {
       const u = smoothstep(0, 1, (k - 0.72) / 0.28);
       const a = sample(startS - lerp(38, 18.4, u));
       const b = sample(startS + lerp(26, -11.6, u));
-      // 2.18 m over the tarmac and a 51.5-degree lens is exactly where the chase rig rests
-      // (CoM 0.56 m up + O.height 1.62), so the hand-off is a dissolve, not a jump.
-      p = V(a.pos.x + a.normal.x * lerp(9, 0.25, u), a.pos.y + lerp(12.0, 2.18, u), a.pos.z + a.normal.z * lerp(9, 0.25, u));
-      at = V(b.pos.x, b.pos.y + lerp(1.6, 0.84, u), b.pos.z);
+      // 2.61 m over the tarmac on a 1.43 m aim and a 51.5-degree lens is exactly where the
+      // chase rig rests (CoM 0.56 m + O.height 2.05, aiming O.lookHeight 0.87 over the CoM),
+      // so the hand-off to gameplay is a dissolve, not a jump.
+      p = V(a.pos.x + a.normal.x * lerp(9, 0.25, u), a.pos.y + lerp(12.0, 2.61, u), a.pos.z + a.normal.z * lerp(9, 0.25, u));
+      at = V(b.pos.x, b.pos.y + lerp(1.6, 1.43, u), b.pos.z);
       fov = lerp(50, 51.5, u);
     }
     clearGround(p, at);
@@ -724,6 +839,10 @@ export function createCamera(engine, world, opts = {}) {
     setTarget(v) { if (v !== target) { target = v; st.first = true; } return api; },
     get target() { return target; },
     setTrack(t) { track = t; return api; },
+    /** Patch the rig's geometry live. The review harness sweeps framings with this. */
+    tune(patch) { Object.assign(O, patch || {}); return api; },
+    /** The rig's tuning, for the harness to read back. */
+    get opts() { return O; },
     setFixed(p, l, f) {
       tmp2.set(l[0], l[1], l[2]);
       const eye = resolveFixed(V(p[0], p[1], p[2]), tmp2);
