@@ -55,21 +55,48 @@ for (const f of ['villageStreet.png', 'driftCorner.png', 'oliveGrove.png']) {
 // one is deliberately absent until it can be done properly — e.g. by rendering a known frame
 // twice with the shadow pass forced on and off and diffing, rather than by sampling pixels.
 
-// ---- drift VFX: present, but not a blown blob ------------------------------------------------
-// driftCorner is shot mid-drift. Require some bright/saturated effect pixels near the kart, and
-// require that they do NOT form a large near-white mass — that is the blob failure mode.
+// ---- drift VFX: present, but not a blown blob -----------------------------------------------
+// driftCorner is shot mid-drift. Two things must hold at once, because this effect has swung
+// between opposite failure modes five times: some lit effect pixels must exist near the kart,
+// AND they must not form one large near-white mass.
+//
+// Counting the *fraction* of near-white pixels does not work: white kart liveries and the
+// red-and-white kerb stripes are legitimately near-white and put the total over any useful
+// threshold, which produced a false alarm on a frame whose drift smoke was perfectly fine.
+// A blowout is distinguished by being ONE CONTIGUOUS MASS, so measure the largest connected
+// component instead of the total.
 if (fs.existsSync(`${DIR}/driftCorner.png`)) {
   const p = read('driftCorner.png');
-  let effect = 0, blown = 0, n = 0;
-  for (let y = p.height * 0.55 | 0; y < p.height * 0.98; y += 2)
-    for (let x = p.width * 0.30 | 0; x < p.width * 0.75; x += 2) {
-      const c = px(p, x, y), L = luma(c), { sat, blueBias } = chroma(c);
-      n++;
-      if (L > 150 && (sat > 0.22 || blueBias > 22)) effect++;   // sparks / lit smoke
-      if (L > 243 && sat < 0.10) blown++;                        // flat near-white mass
+  const x0 = p.width * 0.28 | 0, x1 = p.width * 0.78 | 0;
+  const y0 = p.height * 0.50 | 0, y1 = p.height * 0.99 | 0;
+  const w = x1 - x0, h = y1 - y0;
+  const white = new Uint8Array(w * h);
+  let effect = 0, n = 0;
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    const c = px(p, x, y), L = luma(c), { sat, blueBias } = chroma(c);
+    n++;
+    if (L > 150 && (sat > 0.22 || blueBias > 22)) effect++;      // sparks / lit smoke
+    if (L > 243 && sat < 0.10) white[(y - y0) * w + (x - x0)] = 1;
+  }
+  // Largest connected component of near-white, 4-connected, iterative flood fill.
+  let biggest = 0;
+  const stack = [];
+  for (let i = 0; i < white.length; i++) {
+    if (white[i] !== 1) continue;
+    let size = 0; stack.length = 0; stack.push(i); white[i] = 2;
+    while (stack.length) {
+      const j = stack.pop(); size++;
+      const jx = j % w, jy = (j / w) | 0;
+      if (jx > 0     && white[j - 1] === 1) { white[j - 1] = 2; stack.push(j - 1); }
+      if (jx < w - 1 && white[j + 1] === 1) { white[j + 1] = 2; stack.push(j + 1); }
+      if (jy > 0     && white[j - w] === 1) { white[j - w] = 2; stack.push(j - w); }
+      if (jy < h - 1 && white[j + w] === 1) { white[j + w] = 2; stack.push(j + w); }
     }
+    if (size > biggest) biggest = size;
+  }
   check('drift VFX present', effect / n > 0.004, `${(effect / n * 100).toFixed(2)}% effect pixels (>0.40%)`);
-  check('drift VFX not blown', blown / n < 0.030, `${(blown / n * 100).toFixed(2)}% flat-white pixels (<3.0%)`);
+  check('drift VFX not blown', biggest / n < 0.020,
+    `largest contiguous white mass ${(biggest / n * 100).toFixed(2)}% of the region (<2.0%)`);
 }
 
 // ---- global exposure: no large clipped region in any frame -----------------------------------
