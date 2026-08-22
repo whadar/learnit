@@ -737,21 +737,29 @@ export function createCat(id, opts = {}) {
     // Every kind stands up. R2 laid the fold ears 35° forward and the curl ears 17° back, and
     // from the chase camera — which looks slightly down on the driver — both vanished into the
     // skull. Variety now comes from the outline, never from folding the ear out of silhouette.
-    const baseTilt = earKind === 'fold' ? 0.24 : earKind === 'curl' ? -0.10 : -0.04;
-    // Splayed OUTWARD. R2 (and the first pass of this fix) tilted them inward, so the two tips
-    // converged over the centreline into a single bump — which is precisely why a round-eared
-    // white cat like Shelly still read as a plain ball. A cat's ears open into a V.
-    b.rotation.set(baseTilt, s * 0.26, -s * (earKind === 'round' ? 0.30 : 0.24));
+    // Ears stand UP. R3 splayed them out and down by 0.24–0.30 rad in z and 0.26 in y, which
+    // from directly behind laid two dark wedges across the skull at eye height — and the eye
+    // is very good at reading two dark wedges over a pale wedge as a FACE. Every R3 critic
+    // reported "the face is painted on the back of his head". It never was; this was the
+    // pareidolia. Near-vertical ears cannot make that shape.
+    const baseTilt = earKind === 'fold' ? 0.20 : earKind === 'curl' ? -0.08 : -0.03;
+    b.rotation.set(baseTilt, s * 0.15, -s * (earKind === 'round' ? 0.15 : 0.11));
     b.userData.rest = b.rotation.clone();
     const shape = earShape(earKind);
-    const outer = planarUV(extrudeShape(shape, 0.026, 0.005));
+    // Thicker and cupped: a 26 mm slab read as a card from three-quarters. The plate is
+    // deeper, the bevel bigger, and a fur ridge runs up the back so the rear face has a
+    // highlight of its own instead of being one flat silhouette.
+    const outer = planarUV(extrudeShape(shape, 0.040, 0.009));
     add(b, outer, M.ear);
     const inner = planarUV(extrudeShape(shape, 0.010, 0.004));
-    add(b, xform(inner, { pos: [0, 0.012, 0.016], scale: [0.66, 0.74, 1] }), M.pink, false);
+    add(b, xform(inner, { pos: [0, 0.012, 0.026], scale: [0.62, 0.72, 1] }), M.pink, false);
+    // spine down the back of the ear — the light catch that makes it read as a cone, not a card
+    add(b, xform(new THREE.CapsuleGeometry(0.011, EAR_H[earKind] ?? 0.238, 3, 7),
+      { pos: [0, (EAR_H[earKind] ?? 0.238) * 0.46, -0.021], scale: [1, 1, 0.7] }), M.ear, false);
     // base wedge: fairs the flat plate's root into whatever it emerges from, so there is no
     // floating card edge from any angle
-    add(b, xform(new THREE.SphereGeometry(earW * 0.98, 10, 7),
-      { pos: [0, 0.008, 0], scale: [1.0, domed ? 0.52 : 0.66, 0.82] }), M.ear, false);
+    add(b, xform(new THREE.SphereGeometry(earW * 1.05, 10, 7),
+      { pos: [0, 0.010, 0], scale: [1.0, domed ? 0.58 : 0.70, 1.0] }), M.ear, false);
     if (earKind === 'tuft' && fine) {
       for (let i = 0; i < 3; i++) {
         const g = new THREE.CylinderGeometry(0.0012, 0.006, 0.060, 4);
@@ -759,10 +767,13 @@ export function createCat(id, opts = {}) {
         add(b, xform(g, { pos: [(i - 1) * 0.014, 0.238, 0], rot: [0, 0, (i - 1) * 0.34 + s * 0.1] }), M.whisker, false);
       }
     }
-    // ear-slot collar — sells "the ear came through the shell" and hides the seam
+    // Ear-slot collar — sells "the ear came through the shell" and hides the seam. It used to
+    // be cream trim, which drew a bright elliptical outline round the base of each dark ear:
+    // from behind, two spectacle frames. It is now moulded in the shell colour and thinner, so
+    // it reads as a port in the helmet and adds no false feature.
     if (domed) {
-      add(B.head, xform(new THREE.TorusGeometry(earW * 1.22, 0.013, 6, 14),
-        { pos: [s * earX, earY + 0.004, -0.006], rot: [0.06, 0, s * 0.28], scale: [1, 1, 0.8] }), M.trim, false);
+      add(B.head, xform(new THREE.TorusGeometry(earW * 1.16, 0.0085, 6, 14),
+        { pos: [s * earX, earY + 0.002, -0.006], rot: [0.06, 0, s * 0.16], scale: [1, 1, 0.8] }), M.gear, false);
     }
   }
 
@@ -816,6 +827,9 @@ export function createCat(id, opts = {}) {
   /* ---- headgear */
   const gear = new THREE.Group(); B.head.add(gear);
   let helmetShell = null;
+  // Where the racing number goes: the outermost shell this cat actually wears, so the badge
+  // never ends up buried a centimetre inside a cap.
+  let badgeOn = null;
   if (spec.gear === 'helmet') {
     // R2's helmet was built from two half-shells with the phi gaps at the FRONT and BACK (the
     // comment claimed "sides", the maths did not), and it was 4 mm narrower than the fur head
@@ -834,58 +848,106 @@ export function createCat(id, opts = {}) {
     const RAD = 0.226, TH = 1.12;
     add(hg, new THREE.SphereGeometry(RAD, Math.round(20 * seg) + 8, Math.round(15 * seg) + 5, 0, TAU, 0, TH), M.gear).name = 'helmetShell';
     const ry = RAD * Math.cos(TH), rr = RAD * Math.sin(TH);
-    add(hg, xform(new THREE.TorusGeometry(rr, 0.017, 6, 26), { pos: [0, ry, 0], rot: [Math.PI / 2, 0, 0] }), M.trim, false);
-    // crown stripe front-to-back: the strongest identity mark on a 15 px helmet
-    const stripe = new THREE.SphereGeometry(RAD * 1.022, 18, 16, Math.PI / 2 - 0.26, 0.52, 0, TH * 0.97);
-    add(hg, stripe, M.trim, false);
-    const peak = new THREE.CylinderGeometry(rr * 1.04, rr * 1.04, 0.016, 16, 1, false, Math.PI - 0.80, 1.60);
-    add(hg, xform(peak, { pos: [0, ry + 0.024, 0.026], rot: [-0.30, 0, 0], scale: [1, 1, 1.16] }), M.trim, false);
+    // Rim gasket. It used to be cream trim: a big bright ellipse round the whole lower edge of
+    // the shell that, seen from behind under two dark ears, drew the *jaw line of a face*. Real
+    // lids have a black rubber beading there, and black adds no feature.
+    add(hg, xform(new THREE.TorusGeometry(rr, 0.0125, 6, 26), { pos: [0, ry, 0], rot: [Math.PI / 2, 0, 0] }), M.dark, false);
+    // Crown stripe. R3 ran it over the front half only, so it stopped dead at the pole and from
+    // the chase camera it was a pale wedge sitting point-down between the ears — the "nose" of
+    // the phantom face. It now runs the full sagittal line, front rim to back rim, which is what
+    // a racing stripe actually is, and from behind reads as a vertical: the opposite of a face.
+    for (const phiC of [Math.PI / 2, -Math.PI / 2]) {
+      add(hg, new THREE.SphereGeometry(RAD * 1.018, 18, 14, phiC - 0.185, 0.37, 0, TH * 0.995), M.trim, false);
+    }
+    // Brow peak — FRONT. CylinderGeometry puts theta 0 at +Z, so R3's `thetaStart = PI - 0.8`
+    // hung the peak off the BACK of the skull. Same maths error put the cap's brim and the
+    // visor's glass behind their wearers' heads. All three now span [-half, +half] about 0.
+    const peak = new THREE.CylinderGeometry(rr * 1.05, rr * 1.05, 0.015, 16, 1, false, -0.80, 1.60);
+    add(hg, xform(peak, { pos: [0, ry + 0.026, 0.030], rot: [-0.34, 0, 0], scale: [1, 1, 1.18] }), M.trim, false);
+    // Occipital skirt. A cap that stopped at 64 deg left a big bare fur nape under it, so the
+    // helmet read as perched on the back of a head rather than worn on it. The skirt wraps the
+    // back and sides down past the ear line — the MK8 silhouette — while the face stays open.
+    add(hg, new THREE.SphereGeometry(RAD, Math.round(20 * seg) + 8, 8, -Math.PI / 2 - 1.62, 3.24, TH - 0.03, 0.56), M.gear, false);
+    // Small rear spoiler lip. Kept small on purpose: a wide one photographs as a dark bar right
+    // across the back of the lid, which is worse than no spoiler at all.
+    const duck = new THREE.CylinderGeometry(rr * 0.60, rr * 0.50, 0.011, 12, 1, false, Math.PI - 0.46, 0.92);
+    add(hg, xform(duck, { pos: [0, ry + 0.062, -0.028], rot: [0.30, 0, 0], scale: [1, 1, 1.10] }), M.gear, false);
+    // side vents / ear ducts
+    for (const s of [-1, 1]) {
+      add(hg, xform(new THREE.CylinderGeometry(0.026, 0.026, 0.010, 10), { pos: [s * (rr * 0.95), ry + 0.070, 0.026], rot: [0, 0, Math.PI / 2], scale: [1, 1, 1.7] }), M.dark, false);
+    }
+    badgeOn = { parent: hg, r: RAD, scale: [1, 1, 1], y: 0.086, hp: 0.245, ht: 0.205, dark: true };
   } else if (spec.gear === 'cap') {
     const shell = new THREE.SphereGeometry(0.216, 20, 12, 0, TAU, 0, 0.88);
     add(gear, xform(shell, { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.gear);
-    add(gear, xform(new THREE.CylinderGeometry(0.196, 0.196, 0.012, 14, 1, false, Math.PI - 0.85, 1.7), { pos: [0, 0.126, 0.062], rot: [-0.22, 0, 0], scale: [1, 1, 1.25] }), M.trim, false);
-    add(gear, xform(new THREE.SphereGeometry(0.021, 8, 6), { pos: [0, 0.216, -0.020] }), M.trim, false);
+    // brim: FRONT (was drawn behind the head — see the helmet peak note)
+    add(gear, xform(new THREE.CylinderGeometry(0.196, 0.196, 0.012, 14, 1, false, -0.85, 1.7), { pos: [0, 0.126, 0.062], rot: [-0.24, 0, 0], scale: [1, 1, 1.30] }), M.trim, false);
+    // seam panels over the crown, front to back, so the cap is not one smooth ball from behind
+    for (const phiC of [Math.PI / 2, -Math.PI / 2]) {
+      add(gear, xform(new THREE.SphereGeometry(0.219, 16, 12, phiC - 0.055, 0.11, 0, 0.86), { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.trim, false);
+    }
+    add(gear, xform(new THREE.SphereGeometry(0.021, 8, 6), { pos: [0, 0.208, -0.024] }), M.trim, false);
+    badgeOn = { parent: gear, r: 0.216, scale: [1.03, 0.94, 1.0], y: 0.034, off: [0, 0.016, -0.026], hp: 0.36, ht: 0.30, dark: true };
   } else if (spec.gear === 'goggles') {
-    const strap = new THREE.TorusGeometry(0.196, 0.017, 8, 24);
-    add(gear, xform(strap, { pos: [0, 0.075, -0.010], rot: [1.30, 0, 0], scale: [1.03, 1.0, 1] }), M.gear, false);
+    // A goggle-only cat with a dark coat is a black egg from the chase camera — the R3 critics
+    // called Shuki "a featureless dark ovoid, no face, ears or eyes". Goggles now come strapped
+    // over a shorty flying cap in the suit colour, so the crown is always a saturated identity
+    // mass with a number on it, whatever the coat underneath does.
+    const shell = new THREE.SphereGeometry(0.214, 20, 12, 0, TAU, 0, 1.02);
+    add(gear, xform(shell, { pos: [0, 0.020, -0.020], scale: [1.02, 0.92, 1.0] }), M.gear);
+    for (const phiC of [Math.PI / 2, -Math.PI / 2]) {
+      add(gear, xform(new THREE.SphereGeometry(0.217, 16, 12, phiC - 0.16, 0.32, 0, 1.01), { pos: [0, 0.020, -0.020], scale: [1.02, 0.92, 1.0] }), M.trim, false);
+    }
+    const strap = new THREE.TorusGeometry(0.198, 0.019, 8, 24);
+    add(gear, xform(strap, { pos: [0, 0.075, -0.010], rot: [1.30, 0, 0], scale: [1.03, 1.0, 1] }), M.dark, false);
     for (const s of [-1, 1]) {
-      add(gear, xform(new THREE.CylinderGeometry(0.055, 0.050, 0.035, 14), { pos: [s * 0.083, 0.108, 0.128], rot: [1.28, 0, 0] }), M.gear, false);
+      add(gear, xform(new THREE.CylinderGeometry(0.055, 0.050, 0.035, 14), { pos: [s * 0.083, 0.108, 0.128], rot: [1.28, 0, 0] }), M.trim, false);
       add(gear, xform(new THREE.CylinderGeometry(0.046, 0.046, 0.006, 14), { pos: [s * 0.083, 0.113, 0.146], rot: [1.28, 0, 0] }), M.glass, false);
     }
+    badgeOn = { parent: gear, r: 0.214, scale: [1.02, 0.92, 1.0], y: 0.030, off: [0, 0.020, -0.020], hp: 0.36, ht: 0.30, dark: true };
   } else if (spec.gear === 'bandana') {
     const shell = new THREE.SphereGeometry(0.218, 20, 12, 0, TAU, 0, 0.98);
     add(gear, xform(shell, { pos: [0, 0.008, -0.040], scale: [1.03, 0.90, 1.0] }), M.gear);
-    add(gear, xform(new THREE.SphereGeometry(0.038, 8, 6), { pos: [-0.150, 0.055, -0.135], scale: [1, 0.8, 1] }), M.gear, false);
+    // knot sits at the BACK of the head — the tails then stream behind, which is the whole point
+    add(gear, xform(new THREE.SphereGeometry(0.040, 8, 6), { pos: [-0.062, 0.028, -0.196], scale: [1, 0.85, 1] }), M.trim, false);
     for (let i = 0; i < 2; i++) {
-      add(gear, xform(new THREE.ConeGeometry(0.030, 0.16, 6), { pos: [-0.190 - i * 0.030, -0.015 - i * 0.045, -0.185 - i * 0.02], rot: [0.3, 0, 1.9 + i * 0.35], scale: [1, 1, 0.45] }), M.gear, false);
+      add(gear, xform(new THREE.ConeGeometry(0.030, 0.17, 6), { pos: [-0.085 - i * 0.036, 0.006 - i * 0.052, -0.245 - i * 0.030], rot: [0.34, 0.5 - i * 0.3, 1.85 + i * 0.30], scale: [1, 1, 0.45] }), M.trim, false);
     }
+    badgeOn = { parent: gear, r: 0.218, scale: [1.03, 0.90, 1.0], y: 0.040, off: [0, 0.008, -0.040], hp: 0.34, ht: 0.28, dark: true };
   } else { // visor
     add(gear, xform(new THREE.TorusGeometry(0.196, 0.016, 8, 22), { pos: [0, 0.088, -0.012], rot: [1.35, 0, 0], scale: [1.03, 1, 1] }), M.gear, false);
-    const v = new THREE.CylinderGeometry(0.185, 0.185, 0.085, 18, 1, true, Math.PI - 0.85, 1.7);
+    // the tinted band belongs in FRONT of the eyes
+    const v = new THREE.CylinderGeometry(0.185, 0.185, 0.085, 18, 1, true, -0.85, 1.7);
     add(gear, xform(v, { pos: [0, 0.075, 0.008], rot: [-0.10, 0, 0], scale: [1, 1, 1.03] }), M.glass, false);
+    // shell over the crown so a visor cat is not a bare dome from behind either
+    add(gear, xform(new THREE.SphereGeometry(0.212, 18, 12, 0, TAU, 0, 0.72), { pos: [0, 0.022, -0.018], scale: [1.02, 0.96, 1.0] }), M.gear, false);
+    badgeOn = { parent: gear, r: 0.212, scale: [1.02, 0.96, 1.0], y: 0.044, off: [0, 0.022, -0.018], hp: 0.34, ht: 0.28, dark: true };
   }
 
-  // Racing number across the back of the head. The chase camera looks at the back of the
-  // driver for the entire race and there was nothing there but a bare dome, which is most of
-  // why the R1 critics read the grid as "pale blobs in the seats". Same identity badge MK8
-  // paints on its helmets. Modelled as a spherical patch cut from the SAME sphere as whatever
-  // it sits on (the helmet shell, otherwise the head itself) and pushed out 1.5%, so it hugs
-  // the surface instead of floating or clipping.
+  // Racing number across the back of the head. The chase camera looks at the back of the driver
+  // for the entire race, so this is the one graphic that is on screen the whole time. It is a
+  // spherical patch cut from the SAME sphere as whatever it sits on and pushed out 1.5%, so it
+  // hugs the surface instead of floating or clipping.
+  //
+  // R3: it read as "a grey disc with a wobbly numeral". Two reasons. The sun is ahead of the
+  // karts, so the back of the head is always in shade and a plain MeshStandard roundel dropped
+  // to ambient grey while the shell beside it kept the self-lift every other material got — and
+  // for a goggles/visor cat the patch was cut from the *fur head*, a centimetre inside the gear
+  // that covered it. It now lands on the outermost shell the cat actually wears, and it carries
+  // its own emissiveMap, so the disc lifts with the shell instead of sinking away from it.
   if (DOM) {
-    const helm = spec.gear === 'helmet';
-    // radius, non-uniform scale and parent of the surface the badge lies on
-    const bR = helm ? 0.226 : 0.198;
-    const bS = helm ? [1.0, 1.0, 1.0] : [1.05, 0.96, 1.00];
-    const bParent = helm ? helmetShell : B.head;
-    const yLocal = helm ? 0.150 : 0.030;                 // on the cap for a helmet, nape otherwise
-    const thetaC = Math.acos(clamp(yLocal / bR, -1, 1));
-    const hp = helm ? 0.34 : 0.40, ht = helm ? 0.28 : 0.38;
-    const bg = new THREE.SphereGeometry(bR, 14, 10, -Math.PI / 2 - hp, hp * 2, thetaC - ht, ht * 2);
+    const B0 = badgeOn || { parent: B.head, r: 0.198, scale: [1.05, 0.96, 1.00], y: 0.030, hp: 0.40, ht: 0.38, dark: false };
+    const thetaC = Math.acos(clamp(B0.y / B0.r, -1, 1));
+    const fg = B0.dark ? '#17171c' : '#f4f1e6', bg = B0.dark ? '#f6f2e6' : '#26262c';
+    const nTex = numberTexture(spec.num, fg, bg);
+    const bgeo = new THREE.SphereGeometry(B0.r, 16, 12, -Math.PI / 2 - B0.hp, B0.hp * 2, thetaC - B0.ht, B0.ht * 2);
     const bm = new THREE.MeshStandardMaterial({
-      map: numberTexture(spec.num, helm ? '#1b1b20' : '#f4f1e6', helm ? '#f4f1e6' : '#2b2b32'),
-      transparent: true, alphaTest: 0.35, roughness: 0.32, metalness: 0.0, side: THREE.DoubleSide,
+      map: nTex, emissiveMap: nTex, emissive: new THREE.Color(0xffffff),
+      emissiveIntensity: 0.30,
+      transparent: true, alphaTest: 0.35, roughness: 0.34, metalness: 0.0, side: THREE.DoubleSide,
     });
-    add(bParent, xform(bg, { scale: [bS[0] * 1.015, bS[1] * 1.015, bS[2] * 1.015] }), bm, false);
+    const sc = [B0.scale[0] * 1.016, B0.scale[1] * 1.016, B0.scale[2] * 1.016];
+    add(B0.parent, xform(bgeo, { pos: B0.off || [0, 0, 0], scale: sc }), bm, false);
   }
 
   /* ---- arms */
@@ -979,10 +1041,17 @@ export function createCat(id, opts = {}) {
     if (hit && !S.prevHit) S.flinch = 1;
     S.prevHit = hit;
 
+    // Celebration poses are for the *end* of the race only.
+    // R3 bug: this used to fire on `st.place != null`, and main.js passes `place` every single
+    // frame with `finished: undefined`. So all eight drivers spent the whole race either
+    // cheering (top three) or slumping (rest) — arms up off the wheel in a permanent shrug,
+    // chin raised so the chase camera looked up into the face, mouth hanging open. That one
+    // condition is most of what the R3 critics saw as "hands float free of the wheel" and
+    // "the head is a mask on a stick". Nothing but an explicit `finished: true` triggers it.
     let cheerT = 0, slumpT = 0;
-    if (st.finished || st.place != null) {
+    if (st.finished === true) {
       const pl = st.place || 99;
-      if (st.finished !== false) { cheerT = pl <= 3 ? 1 : 0; slumpT = pl > 3 ? 1 : 0; }
+      cheerT = pl <= 3 ? 1 : 0; slumpT = pl > 3 ? 1 : 0;
     }
     if (poseOverride) {
       if (poseOverride.name === 'cheer') cheerT = poseOverride.w;
