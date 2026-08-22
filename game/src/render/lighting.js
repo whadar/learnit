@@ -125,6 +125,109 @@ function installFogChunks() {
 
 // ---------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------
+// Shadow filter surgery.
+//
+// three's PCF path takes FIVE Vogel-disk taps and rotates the disk per pixel with interleaved
+// gradient noise. Five rotated taps only ever return 0, 0.2, 0.4, 0.6, 0.8 or 1.0, and the
+// rotation scatters which of those a given pixel lands on — so at any radius wide enough to
+// read as a penumbra the boundary is *stipple*, not a gradient. That is the dithered, speckled
+// shadow edge on the tan verge in itemChaos and the aliased crawl on the olive-grove shadows in
+// hilltopVista; a hard-edged look (radius 1) is the only way to hide it, which is the jagged
+// stair-stepping on the building shadows in introFlythrough. The same scene therefore showed
+// both failure modes at once.
+//
+// Sixteen taps give 17 quantisation levels — below the 8-bit quantisation of the frame — so the
+// radius can finally be opened to a real world-space penumbra. It is one loop over the same
+// hardware-compared sampler; the taps are the only extra cost, and the disk is still rotated
+// deterministically from gl_FragCoord so screenshots stay reproducible.
+// ---------------------------------------------------------------------------------------
+
+let shadowChunkInstalled = false;
+
+function installShadowChunk(taps) {
+  if (shadowChunkInstalled) return;
+  shadowChunkInstalled = true;
+  try {
+    const src = THREE.ShaderChunk.shadowmap_pars_fragment;
+    if (typeof src !== 'string') return;
+    // Match ONLY the directional/spot 2D block: the point-light one below it builds its taps
+    // into named `sampleN` variables and must be left alone.
+    const re = /shadow = \(\s*\n(?:[^\n]*vogelDiskSample\([^\n]*\n){5}\s*\) \* 0\.2;/;
+    if (!re.test(src)) {
+      console.warn('[lighting] three\'s PCF chunk was not recognised; keeping the stock 5-tap filter');
+      return;
+    }
+    const n = Math.max(5, Math.round(taps));
+    THREE.ShaderChunk.shadowmap_pars_fragment = src.replace(re, `shadow = 0.0;
+				for ( int ktTap = 0; ktTap < ${n}; ktTap ++ ) {
+					shadow += texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( ktTap, ${n}, phi ) * radius, shadowCoord.z ) );
+				}
+				shadow *= ${(1 / n).toFixed(7)};`);
+  } catch (e) {
+    console.warn('[lighting] shadow filter patch failed:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// Closed-solid detection.
+//
+// `setupMaterial` forces `shadowSide = FrontSide` because three defaults a FrontSide material's
+// depth pass to BackSide, and every kart panel, cat, foliage card and sign here is an open
+// single-sided shell with no back faces — with BackSide they write nothing at all and the field
+// floats. But that dodge is only *needed* for open shells, and it is actively harmful on a
+// closed solid: a sphere that writes its own near surface into the shadow map then compares
+// against it, so the whole lit half sits within a bias of its own occluder and the shadow term
+// snaps off along a straight chord. That is the razor terminator across the jaffa oranges — a
+// 0.28 m sphere cannot survive a bias sized for 0.09 m terrain texels. three's BackSide default
+// is exactly right for those: the far surface is a whole diameter deeper, so nothing self-
+// shadows and the item still casts correctly.
+//
+// So: decide per geometry. Weld positions onto a coarse lattice (SphereGeometry and friends
+// duplicate their UV-seam vertices, so index equality is not enough) and count how many edges
+// are used by only one triangle. A watertight solid has none.
+// ---------------------------------------------------------------------------------------
+
+const CLOSED_TRI_LIMIT = 6000;   // terrain chunks and merged building batches are never solids
+
+function isClosedSolid(geo) {
+  if (!geo || !geo.isBufferGeometry) return false;
+  const ud = geo.userData;
+  if (ud.__ktClosed !== undefined) return ud.__ktClosed;
+  let closed = false;
+  try {
+    const pos = geo.attributes && geo.attributes.position, idx = geo.index;
+    const tris = idx ? idx.count / 3 : pos ? pos.count / 3 : 0;
+    if (pos && tris >= 4 && tris <= CLOSED_TRI_LIMIT && Number.isInteger(tris)) {
+      const weld = new Map(), id = new Int32Array(pos.count);
+      const Q = 1e4;    // 0.1 mm lattice — finer than any seam gap, coarser than float noise
+      for (let i = 0; i < pos.count; i++) {
+        const k = `${Math.round(pos.getX(i) * Q)},${Math.round(pos.getY(i) * Q)},${Math.round(pos.getZ(i) * Q)}`;
+        let v = weld.get(k);
+        if (v === undefined) { v = weld.size; weld.set(k, v); }
+        id[i] = v;
+      }
+      const edges = new Map();
+      const bump = (a, b) => {
+        if (a === b) return;                                  // degenerate (pole fans)
+        const k = a < b ? a * 8388608 + b : b * 8388608 + a;
+        edges.set(k, (edges.get(k) || 0) + 1);
+      };
+      for (let t = 0; t < tris; t++) {
+        const a = id[idx ? idx.getX(t * 3) : t * 3];
+        const b = id[idx ? idx.getX(t * 3 + 1) : t * 3 + 1];
+        const c = id[idx ? idx.getX(t * 3 + 2) : t * 3 + 2];
+        bump(a, b); bump(b, c); bump(c, a);
+      }
+      let open = 0;
+      for (const n of edges.values()) if (n < 2) open++;
+      closed = edges.size > 0 && open === 0;
+    }
+  } catch (e) { closed = false; }
+  ud.__ktClosed = closed;
+  return closed;
+}
+
 const LIT = m => !!(m.isMeshStandardMaterial || m.isMeshPhysicalMaterial || m.isMeshLambertMaterial ||
                     m.isMeshPhongMaterial || m.isMeshToonMaterial);
 
@@ -135,6 +238,7 @@ const LIT = m => !!(m.isMeshStandardMaterial || m.isMeshPhysicalMaterial || m.is
  */
 export function createLighting(engine, world, sky, opts = {}) {
   installFogChunks();
+  installShadowChunk(opts.shadowTaps ?? 16);
 
   const scene = engine.scene, renderer = engine.renderer;
   const pal = sky.palette;
@@ -174,8 +278,8 @@ export function createLighting(engine, world, sky, opts = {}) {
   //   no back faces facing the sun, so with BackSide it writes *nothing* into the shadow
   //   map. Probing cascade 0 at a kart's own texel returned depth 1.0 (empty) — the karts
   //   were literally not occluders. Forcing `shadowSide = FrontSide` puts the kart roof in
-  //   the map at the right depth, which is the actual fix and is applied in setupMaterial()
-  //   below to every material this rig adopts.
+  //   the map at the right depth, which is the actual fix and is applied by fitShadowSide()
+  //   below — to open shells only; see the closed-solid note at the top of the file.
   //
   // With that fixed, three cascades bought nothing but two extra depth passes and a large
   // surface of cascade-selection maths, so the rig is now ONE directional light whose
@@ -206,13 +310,20 @@ export function createLighting(engine, world, sky, opts = {}) {
   if (shadows) {
     sun.castShadow = true;
     sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
-    // three's PCF filter is a 5-tap Vogel disk scaled by `shadow.radius` *in texels*, with a
-    // per-pixel rotation. At the default radius of 1 the disk collapses onto one texel and
-    // every boundary is a hard stair-step. 2.2 texels gives a real penumbra for free (the
-    // taps are hardware-compared), and the rotation is a deterministic function of
+    // `shadow.radius` is in TEXELS, and the texel is a different size in every view — 0.09 m
+    // behind a kart, 0.25 m from the hilltop. A constant radius therefore means a penumbra
+    // that is three times wider on the vista than in the chase, which is why the same build
+    // showed razor-hard building shadows in one plate and shapeless blobs in another. It is
+    // re-derived from `penumbraMetres` in fitShadow() so the softness is a fixed distance on
+    // the ground in every frame. The disk rotation is a deterministic function of
     // gl_FragCoord, so screenshots stay reproducible.
-    sun.shadow.radius = opts.shadowRadius ?? 2.2;
+    sun.shadow.radius = 3;
   }
+  // Half-width of the shadow penumbra on the ground, in metres. The sun's angular diameter
+  // puts a real one at ~0.5% of the caster's height above the receiver — 5 cm under a kart,
+  // 20 cm under a 4 m olive. Sold here as one constant that reads soft on foliage without
+  // dissolving the gantry.
+  const penumbraMetres = opts.penumbraMetres ?? 0.26;
 
   const _lightBasis = new THREE.Matrix4();
   const _lightBasisInv = new THREE.Matrix4();
@@ -334,17 +445,9 @@ export function createLighting(engine, world, sky, opts = {}) {
       wantAP = mat.isRawShaderMaterial ? false : shaderMaterialWants(mat).ap;
     }
 
-    // THE contact-shadow fix. three defaults a FrontSide material's shadow pass to BackSide
-    // (see WebGLShadowMap.getDepthMaterial), which is only safe for closed solids. Karts,
-    // cats, item boxes, signage and every foliage card here are open single-sided shells, so
-    // their back faces do not exist and they wrote nothing at all into the shadow map — the
-    // whole field floated. Rendering the FRONT faces records the surface the sun actually
-    // hits, at the height it actually is, which is what a contact shadow is made of.
-    // `shadowSide` is honoured per draw, so a material that has deliberately chosen one is
-    // left alone.
-    if (shadows && mat.shadowSide == null && !mat.isShadowMaterial) {
-      mat.shadowSide = THREE.FrontSide;
-    }
+    // The shadowSide decision used to live here, blind to geometry, and forced FrontSide on
+    // everything. It now needs to know whether the mesh is an open shell or a closed solid,
+    // so it moved to fitShadowSide() in the scan below, which sees the mesh.
 
     if (!wantAP) return;
 
@@ -386,10 +489,30 @@ export function createLighting(engine, world, sky, opts = {}) {
   // the sky receives; unlit chrome — the sky dome, additive VFX, sprites — is left alone.
   const receiveAll = opts.receiveShadows !== false;
 
+  /**
+   * Which side of a caster goes into the depth map. Open shells (karts, cats, foliage cards,
+   * signage) must write their FRONT faces or they write nothing; closed solids keep three's
+   * BackSide default so they cannot self-shadow. A material shared between the two takes the
+   * FrontSide branch, because a missing occluder is worse than a soft self-shadow.
+   */
+  function fitShadowSide(mesh, mat) {
+    if (!shadows || !mat || mat.isShadowMaterial) return;
+    const ud = mat.userData;
+    if (ud.__ktShadowAuthored === undefined) ud.__ktShadowAuthored = mat.shadowSide != null;
+    if (ud.__ktShadowAuthored) return;                 // the material's owner chose; respect it
+    if (!ud.__ktOpenShell && !isClosedSolid(mesh.geometry)) ud.__ktOpenShell = true;
+    const want = ud.__ktOpenShell ? THREE.FrontSide : null;
+    if (mat.shadowSide !== want) mat.shadowSide = want;   // read per draw; no recompile needed
+  }
+
   let dirty = false;
   function scan(root = scene) {
     root.traverse(o => {
       if (o.isMesh) {
+        if (o.castShadow) {
+          const ms = Array.isArray(o.material) ? o.material : [o.material];
+          for (const mm of ms) fitShadowSide(o, mm);
+        }
         if (terrainShadows && o.receiveShadow && !o.castShadow && TERRAIN_RE.test(o.name)) {
           o.castShadow = true; dirty = true;
         }

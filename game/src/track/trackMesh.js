@@ -11,7 +11,7 @@
 import * as THREE from 'three';
 import { clamp, lerp, rng } from '../core/mathx.js';
 import { hash2i } from '../render/materials/noise.js';
-import { buildRoadTextures, createRoadMaterial, mergeGeoms } from '../world/roads.js';
+import { createRoadMaterial, mergeGeoms } from '../world/roads.js';
 import { createFurniture } from './furniture.js';
 
 /* ================================================================ helpers === */
@@ -175,6 +175,229 @@ function boostTexture(px = 128) {
   return t;
 }
 
+/**
+ * The circuit's chip-seal cross-section.
+ *
+ * This used to come out of `world/roads.js:buildRoadTextures`, which is the right generator
+ * for the *village* road network and the wrong one for the racing surface. That generator
+ * authors its aggregate at `FMAX = (texels per metre) / 2.4` and then runs its finest stone
+ * field at `1.15 * FMAX` — about **two texels per stone**. Two texels per cell is not a
+ * stone, it is a hash: it cannot survive a mip reduction, and with `anisotropy = 16` at the
+ * grazing angles a race camera lives at, the hardware keeps re-sharpening it along the view
+ * direction. That is exactly what the critics saw — 1-2 px salt-and-pepper that never
+ * attenuates with distance, plus directional streaking, plus a visible 24 m tile.
+ *
+ * So the circuit authors its own, and the split is by SPATIAL FREQUENCY:
+ *
+ *   - this texture carries only what a 3.5 cm texel can actually hold — the macro bleach,
+ *     the paving-batch mottle, the polished racing line, oil, cracks, joints, patches and
+ *     the shoulder. Nothing here has a feature smaller than ~15 cm, i.e. four texels, so it
+ *     mips and filters cleanly all the way to the horizon.
+ *   - the chippings themselves are drawn by the surface shader from world coordinates, with
+ *     every octave band-limited against the pixel footprint, so the aggregate is *present*
+ *     at 2 m and *gone* at 60 m instead of crawling at a constant screen frequency.
+ *
+ * Colour is a real chip seal, not a grey: warm limestone chippings (r > g > b) bedded in a
+ * cool, near-black bitumen (b > r). That hue split is what stops the road being a neutral
+ * hole in a Mediterranean palette, and it is why the material's chroma grade can now keep
+ * most of the pixel's own colour (see `uSat`).
+ *
+ * @param {object} p  total, road, vMetres, W, H, seed, normalStrength
+ */
+function tarmacTextures(p) {
+  const W = p.W || 384, H = p.H || 960;
+  const total = p.total, vM = p.vMetres, half = total * 0.5, roadHalf = p.road * 0.5;
+  const seed = p.seed | 0;
+  const mx = total / W, my = vM / H;
+
+  const sm5 = t => t * t * t * (t * (t * 6 - 15) + 10);
+  /* Rectangular tileable value noise: separate lattice periods per axis so a field asked for
+   * `f` cycles per metre wraps exactly at the texture edge on both axes. */
+  const vn = (x, y, px, py, sd) => {
+    const xi = Math.floor(x), yi = Math.floor(y), fx = sm5(x - xi), fy = sm5(y - yi);
+    const wx = a => ((a % px) + px) % px, wy = a => ((a % py) + py) % py;
+    const x0 = wx(xi), x1 = wx(xi + 1), y0 = wy(yi), y1 = wy(yi + 1);
+    const a = hash2i(x0, y0, sd), b = hash2i(x1, y0, sd);
+    const c = hash2i(x0, y1, sd), d = hash2i(x1, y1, sd);
+    return lerp(lerp(a, b, fx), lerp(c, d, fx), fy);
+  };
+  const P = f => [Math.max(1, Math.round(f * total)), Math.max(1, Math.round(f * vM))];
+  const VN = (U, V, f, sd) => { const [px, py] = P(f); return vn(U * f, V * f, px, py, sd); };
+  const NF = (U, V, f, sd, oct = 3, gain = 0.5) => {
+    let s = 0, n = 0, a = 1, ff = 1;
+    for (let i = 0; i < oct; i++) {
+      const [px, py] = P(f * ff);
+      s += a * vn(U * f * ff, V * f * ff, px, py, sd + i * 71); n += a; a *= gain; ff *= 2;
+    }
+    return s / n;
+  };
+  const RG = (U, V, f, sd, oct = 3) => {
+    let s = 0, n = 0, a = 1, ff = 1;
+    for (let i = 0; i < oct; i++) {
+      const [px, py] = P(f * ff);
+      let v = vn(U * f * ff, V * f * ff, px, py, sd + i * 37);
+      v = 1 - Math.abs(v * 2 - 1); s += a * v * v; n += a; a *= 0.55; ff *= 2;
+    }
+    return s / n;
+  };
+
+  const R = rng(seed * 7919 + 13);
+  // hand-cut repair patches: deliberately soft-edged (0.35 m ramp = ten texels), because the
+  // crumbly one-texel alpha edge is what made the old patches read as puddles.
+  const patches = [];
+  for (let i = 0; i < 4; i++) {
+    patches.push({
+      v: R() * vM, len: 1.3 + R() * 2.6, u: (R() - 0.5) * p.road * 0.66, wid: 1.0 + R() * 1.9,
+      tone: R() < 0.55 ? 0.80 + R() * 0.12 : 1.10 + R() * 0.16, sd: (R() * 1e6) | 0,
+    });
+  }
+  const joints = [];
+  { const n = Math.max(1, Math.round(vM / 9.0)); for (let i = 0; i < n; i++) joints.push(i * vM / n + R() * 0.8); }
+
+  /* LINEAR albedo. The scene runs a hot key through ACES plus a warm grade, so these come
+   * back a long way lifted; they were picked from rendered frames, not from a swatch. */
+  const BINDER = [0.0330, 0.0326, 0.0368];      // cool near-black bitumen
+  const STONE = [0.1180, 0.1090, 0.0905];       // warm limestone chipping
+  const DUST = [0.2450, 0.2140, 0.1520];        // wind-drifted shoulder dust
+
+  const alb = new Uint8ClampedArray(W * H * 4);
+  const rghA = new Uint8ClampedArray(W * H * 4);
+  const hgt = new Float32Array(W * H);
+  const enc = v => Math.round(clamp(Math.pow(clamp(v, 0, 1), 1 / 2.2), 0, 1) * 255);
+
+  for (let j = 0; j < H; j++) {
+    const V = (j + 0.5) * my;
+    for (let i = 0; i < W; i++) {
+      const U = (i + 0.5) * mx - half;
+      const k = j * W + i, au = Math.abs(U);
+
+      // ---- ragged hard-surface edge (0.30 m ramp, ~9 texels) ----------------
+      const wobble = (NF(au, V, 0.45, seed + 41, 3) - 0.5) * 0.55;
+      const onRoad = clamp((roadHalf + wobble - au) / 0.30 + 0.5, 0, 1);
+
+      // ---- chip-seal body ---------------------------------------------------
+      const macro = NF(U, V, 0.22, seed + 11, 4);        // 4.5 m sun-bleach drift
+      const batch = NF(U, V, 0.85, seed + 29, 3);        // 1.2 m paving batches
+      const coarse = NF(U, V, 3.1, seed + 53, 2);        // 32 cm surface texture (9 texels)
+
+      // `cov` is the *mean* stone coverage of the pack at this texel. The per-chipping
+      // contrast lives in the shader, where it can be band-limited; putting it here is what
+      // produced the sandpaper.
+      let cov = clamp(0.395 + (batch - 0.5) * 0.30 + (macro - 0.5) * 0.30 + (coarse - 0.5) * 0.20, 0.05, 0.94);
+      let rough = 0.905 - (coarse - 0.5) * 0.06;
+      let h = (coarse - 0.5) * 0.9 + (batch - 0.5) * 0.5 + macro * 0.3;
+
+      // ---- polished racing line --------------------------------------------
+      // The tyre polishes the stone tops: more exposed stone, lower roughness, a touch of
+      // grey as the limestone loses its fracture faces.
+      let pol = 0;
+      for (const bd of (p.polish || [])) {
+        pol = Math.max(pol, Math.exp(-((au - bd.at) ** 2) / (2 * bd.w * bd.w)) * (bd.k ?? 1));
+      }
+      pol *= 0.52 + NF(U, V, 0.17, seed + 617, 3) * 0.80;
+      const wear = clamp(pol, 0, 1);
+      cov = clamp(cov + wear * 0.30, 0, 0.97);
+      rough -= wear * 0.085;
+      h -= wear * 0.35;
+
+      let r = lerp(BINDER[0], STONE[0], cov);
+      let g = lerp(BINDER[1], STONE[1], cov);
+      let b = lerp(BINDER[2], STONE[2], cov);
+      // polished stone goes slightly grey-cool rather than just brighter
+      const pg = wear * 0.22, lum = (r + g + b) / 3;
+      r = lerp(r, lum * 0.99, pg); g = lerp(g, lum, pg); b = lerp(b, lum * 1.06, pg);
+
+      // ---- oil down the middle ---------------------------------------------
+      const oil = clamp((NF(U, V, 0.60, seed + 91, 3) - 0.56) * 3.2, 0, 1)
+        * Math.exp(-(U * U) / (2 * 1.35 * 1.35));
+      r = lerp(r, r * 0.62, oil); g = lerp(g, g * 0.60, oil); b = lerp(b, b * 0.64, oil);
+      rough = lerp(rough, 0.70, oil * 0.8); h -= oil * 0.25;
+
+      // ---- repair patches ---------------------------------------------------
+      for (const pa of patches) {
+        let dv = Math.abs(V - pa.v); dv = Math.min(dv, vM - dv);
+        const wb = (NF(U, V, 0.75, pa.sd + 7, 2) - 0.5) * 0.70;
+        const m = clamp((pa.len + wb - dv) / 0.35, 0, 1) * clamp((pa.wid + wb - Math.abs(U - pa.u)) / 0.35, 0, 1);
+        if (m <= 0) continue;
+        const pt = lerp(1, pa.tone * (0.94 + NF(U, V, 0.9, pa.sd, 3) * 0.14), m);
+        r *= pt; g *= pt; b *= pt;
+        rough = lerp(rough, 0.88, m * 0.6);
+        const seam = m * (1 - m) * 4;
+        r -= seam * 0.008; g -= seam * 0.008; b -= seam * 0.008; h -= seam * 1.1;
+      }
+
+      // ---- transverse construction joints ------------------------------------
+      for (const jv of joints) {
+        let dv = Math.abs(V - jv); dv = Math.min(dv, vM - dv);
+        const wob = (NF(U, V, 0.7, seed + 313, 2) - 0.5) * 0.12;
+        const m = clamp(1 - Math.abs(dv + wob) / 0.10, 0, 1);
+        if (m <= 0) continue;
+        r = lerp(r, r * 0.66, m); g = lerp(g, g * 0.65, m); b = lerp(b, b * 0.70, m);
+        h -= m * 1.5; rough = lerp(rough, 0.86, m);
+      }
+
+      // ---- crack network ------------------------------------------------------
+      // Most of a crack's read is the shadow inside it, so it is authored mainly into the
+      // height field; the albedo term stays gentle so a sub-texel crack cannot sparkle.
+      const cx = RG(U, V, 0.55, seed + 211, 3);
+      const crack = clamp((cx - 0.80) * 6.0, 0, 1) * clamp(0.30 + macro * 0.85, 0, 1);
+      r = lerp(r, r * 0.55, crack); g = lerp(g, g * 0.54, crack); b = lerp(b, b * 0.58, crack);
+      h -= crack * 2.4; rough = lerp(rough, 0.94, crack * 0.7);
+
+      // ---- shoulder: dust and grit outboard of the hard edge -------------------
+      if (onRoad < 0.999) {
+        const dust = NF(U, V, 0.9, seed + 133, 3);
+        const dr = DUST[0] * (0.80 + dust * 0.40), dg = DUST[1] * (0.80 + dust * 0.40), db = DUST[2] * (0.78 + dust * 0.42);
+        const f = 1 - onRoad;
+        // a thin drift of the same dust blows back over the edge of the tarmac
+        const drift = clamp((au - (roadHalf + wobble - 0.55)) / 0.55, 0, 1) * 0.55;
+        const m = Math.max(f, drift * (1 - f));
+        r = lerp(r, dr, m); g = lerp(g, dg, m); b = lerp(b, db, m);
+        rough = lerp(rough, 0.96, m); h = lerp(h, h * 0.4 + dust * 0.8, m);
+      }
+
+      const o4 = k * 4;
+      alb[o4] = enc(r); alb[o4 + 1] = enc(g); alb[o4 + 2] = enc(b); alb[o4 + 3] = 255;
+      const rv = Math.round(clamp(rough, 0, 1) * 255);
+      rghA[o4] = rv; rghA[o4 + 1] = rv; rghA[o4 + 2] = rv; rghA[o4 + 3] = 255;
+      hgt[k] = h;
+    }
+  }
+
+  /* Sobel the height field into a normal map. V wraps; U clamps, because the cross-section
+   * does not tile across — it ends in dirt. */
+  const nrm = new Uint8ClampedArray(W * H * 4);
+  const at = (x, y) => hgt[(((y % H) + H) % H) * W + clamp(x, 0, W - 1)];
+  const ns = p.normalStrength ?? 1.0;
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const gx = (at(i + 1, j) - at(i - 1, j)) / (2 * mx);
+    const gy = (at(i, j + 1) - at(i, j - 1)) / (2 * my);
+    let nx = -gx * 0.035 * ns, ny = -gy * 0.035 * ns;
+    const inv = 1 / Math.hypot(nx, ny, 1), o4 = (j * W + i) * 4;
+    nrm[o4] = Math.round((nx * inv * 0.5 + 0.5) * 255);
+    nrm[o4 + 1] = Math.round((ny * inv * 0.5 + 0.5) * 255);
+    nrm[o4 + 2] = Math.round((inv * 0.5 + 0.5) * 255);
+    nrm[o4 + 3] = 255;
+  }
+
+  const mk = (data, srgb) => {
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+    const img = ctx.createImageData(W, H);
+    img.data.set(data);
+    ctx.putImageData(img, 0, 0);
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = THREE.ClampToEdgeWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+    t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    t.anisotropy = 8;
+    t.needsUpdate = true;
+    return t;
+  };
+  return { map: mk(alb, true), normalMap: mk(nrm, false), roughnessMap: mk(rghA, false) };
+}
+
 /** Seamless run-off / verge surface: sun-bleached grit, dry grass and scattered stones. */
 function vergeTextures(px = 256, seed = 4242) {
   const sm5 = t => t * t * t * (t * (t * 6 - 15) + 10);
@@ -273,25 +496,33 @@ function createSurfaceMaterial(tex, o) {
     uBand: { value: 3.75 },
     uEdge: { value: new THREE.Vector2(0.62, 0.115) },
     uDash: { value: new THREE.Vector2(7.0, 0.44) },
-    uChipA: { value: new THREE.Vector3(0.150, 0.148, 0.140) },
-    /* The scene's key light and grade skew a neutral albedo hard to orange — a plain dark
-     * binder rendered as milk chocolate at R : G : B = 1 : 0.78 : 0.48. Tinting the ALBEDO
-     * cool fixes the sunlit road and ruins everything else: albedo multiplies the light, so
-     * under the blue sky-fill of a tree shadow a blue-biased tarmac went electric royal blue.
-     *
-     * The correction therefore happens on the lit result and is anchored to LUMINANCE:
-     * pull the pixel towards `luma * uTint`, keeping `uSat` of its original chroma. The
-     * neutral point it is pulled towards scales with how bright the pixel already is, so a
-     * dim shadow gets a proportionally dim correction and simply stays a cool dark grey. */
-    uSat: { value: 0.30 },
-    uTint: { value: new THREE.Vector3(0.93, 1.00, 1.18) },
-    uDetail: { value: new THREE.Vector2(18.0, 0.85) },   // fade distance, strength
+    /* Chipping tint, as a MULTIPLIER on what is already there — never an absolute colour.
+     * It used to be an absolute albedo of 0.150 that the detail layer mixed towards, over a
+     * binder authored at 0.033: the close-range road was therefore up to 2.6x brighter than
+     * the same tarmac fifteen metres further on, and a patch of sun landing on it inside a
+     * tree shadow blew straight through the tonemapper into a shapeless cream blob. A tint
+     * cannot do that: it is centred on 1, so the layer redistributes value instead of
+     * manufacturing it. */
+    uChipA: { value: new THREE.Vector3(1.34, 1.25, 1.05) },
+    /* The scene's key light and grade skew a neutral albedo warm. The correction happens on
+     * the LIT result and is anchored to LUMINANCE: pull the pixel towards `luma * uTint`,
+     * keeping `uSat` of its own chroma. It used to sit at 0.30, which threw away 70 % of the
+     * road's colour and left r = g = b across every probe — a grey hole in a Mediterranean
+     * palette. The albedo now carries a real hue split (warm limestone chippings in cool
+     * bitumen, see `tarmacTextures`) so the grade only has to take the edge off. */
+    uSat: { value: 0.62 },
+    uTint: { value: new THREE.Vector3(0.965, 1.00, 1.075) },
+    uDetail: { value: new THREE.Vector2(1.0, 0.85) },   // (unused, strength)
+    uDebug: { value: 0 },
   };
   const m = new THREE.MeshStandardMaterial({
     map: tex.map, normalMap: tex.normalMap, roughnessMap: tex.roughnessMap,
     roughness: 0.94, metalness: 0, color: 0xffffff,
-    envMapIntensity: 0.30,
-    normalScale: new THREE.Vector2(0.9, 0.9),
+    // The image-based specular is NOT shadowed, so at the grazing angles a chase camera
+    // lives at it is free to put sky-bright glare on tarmac that is standing in shade.
+    // Keep it to a whisper and let the sun do the work.
+    envMapIntensity: 0.11,
+    normalScale: new THREE.Vector2(0.85, 0.85),
     polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -14,
     side: THREE.FrontSide, dithering: true,
   });
@@ -323,7 +554,7 @@ varying vec3 vAxZ;
 varying float vSurfD;
 uniform float uStartS, uLen, uCell, uBand;
 uniform vec3 uPaint, uPaintGlow, uDark, uChipA, uTint;
-uniform float uSat;
+uniform float uSat, uDebug;
 uniform vec2 uEdge, uDash, uDetail;
 float gPaint = 0.0;      // white-paint coverage (lines + chequer whites)
 float gChequer = 0.0;    // inside the start/finish band
@@ -351,7 +582,22 @@ float kDash(float s, float period, float duty, float w){
    distance instead of shimmering. */
 float kTri(float x){ float u = fract(x*0.5)*2.0; return 1.0 - abs(1.0 - u); }
 float kSq(float x, float w){ w = max(w, 1e-5); return (kTri(x + 0.5*w) - kTri(x - 0.5*w)) / w; }
-float kChecker(vec2 p, vec2 w){ return 0.5 + 0.5 * kSq(p.x, w.x) * kSq(p.y, w.y); }`)
+float kChecker(vec2 p, vec2 w){ return 0.5 + 0.5 * kSq(p.x, w.x) * kSq(p.y, w.y); }
+
+/* --- band-limited procedural aggregate ------------------------------------------------
+ * Procedural noise evaluated per pixel has no mip chain, so an octave whose cell is smaller
+ * than a pixel does not fade — it turns into per-pixel hash that crawls when the camera
+ * moves and streaks along the view direction under anisotropic minification. The road is
+ * half of every frame, so that hash was the single loudest artefact in the build.
+ *
+ * kBL is the fix: a weight that goes to zero as an octave's cell approaches the pixel
+ * footprint, i.e. a hand-rolled mip. kFoot is the conservative world-space footprint of
+ * this pixel in metres (the larger of the two screen axes, so a road seen edge-on is
+ * band-limited by its worst axis, not its best). Together they make the aggregate present
+ * at two metres and genuinely gone at sixty, with nothing in between to shimmer. */
+float kFoot(vec3 wp){ return max(max(abs(dFdx(wp.x)), abs(dFdy(wp.x))),
+                                 max(abs(dFdx(wp.z)), abs(dFdy(wp.z)))) + 1e-5; }
+float kBL(float f, float foot){ return smoothstep(1.15, 3.0, 1.0 / (f * foot)); }`)
 
       .replace('#include <map_fragment>', `#include <map_fragment>
 {
@@ -360,22 +606,31 @@ float kChecker(vec2 p, vec2 w){ return 0.5 + 0.5 * kSq(p.x, w.x) * kSq(p.y, w.y)
   float wLat = fwidth(lat) + 1e-5;
   float wS   = fwidth(s) + 1e-5;
 
-  /* --- de-tile the 24 m cross-section repeat ------------------------------- */
-  float dt = kdN(vSurfW.xz * 0.085) * 0.45 + kdN(vSurfW.xz * 0.34) * 0.35 + kdN(vSurfW.xz * 1.7) * 0.20;
-  diffuseColor.rgb *= 0.945 + 0.115 * dt;
+  vec2 wp = vSurfW.xz;
+  float foot = kFoot(vSurfW);
 
-  /* --- close-range aggregate ----------------------------------------------- */
-  float dfade = (1.0 - smoothstep(uDetail.x * 0.35, uDetail.x, vSurfD)) * uDetail.y;
-  if (dfade > 0.002) {
-    vec2 wp = vSurfW.xz;
-    float a1 = kdN(wp * 33.0);
-    float a2 = kdN(wp * 12.5);
-    float a3 = kdN(wp * 74.0);
-    float chips = smoothstep(0.60, 0.95, max(a1, a2 * 0.94));
-    gGrain = (chips * 0.8 + (a3 - 0.5) * 0.5 + (a1 - 0.5) * 0.35) * dfade;
-    diffuseColor.rgb = mix(diffuseColor.rgb, uChipA, chips * 0.34 * dfade);
-    diffuseColor.rgb *= 1.0 + ((a3 - 0.5) * 0.26 + (a1 - 0.5) * 0.16) * dfade;
-  }
+  /* --- de-tile the cross-section repeat ------------------------------------ */
+  // Two slow octaves only, both far above the pixel footprint at any playable distance, so
+  // the de-tiling itself can never become the thing that sparkles.
+  float dt = (kdN(wp * 0.071) - 0.5) * 0.62 + (kdN(wp * 0.29) - 0.5) * 0.38;
+  diffuseColor.rgb *= 1.0 + dt * 0.15;
+
+  /* --- chip-seal aggregate, three band-limited octaves ---------------------- */
+  // 38 cm binder patchiness / 13 cm stone clusters / 4.8 cm individual chippings. All three
+  // are zero-mean, so the pack redistributes light rather than adding it, and the road holds
+  // the same average value from the front bumper to the horizon.
+  float f1 = 2.6, f2 = 7.5, f3 = 21.0;
+  float w1 = kBL(f1, foot), w2 = kBL(f2, foot), w3 = kBL(f3, foot);
+  float dstr = uDetail.y;
+  float n1 = (kdN(wp * f1) - 0.5) * w1;
+  float n2 = (kdN(wp * f2 + 17.3) - 0.5) * w2;
+  float n3 = (kdN(wp * f3 + 41.7) - 0.5) * w3;
+  float agg = (n1 * 0.42 + n2 * 0.62 + n3 * 0.86) * dstr;
+  gGrain = (n2 * 0.55 + n3 * 1.0) * dstr;
+  diffuseColor.rgb *= 1.0 + agg * 0.90;
+  // stone tops catch the warm limestone; the binder between them stays cool
+  float chips = smoothstep(0.045, 0.30, agg);
+  diffuseColor.rgb *= mix(vec3(1.0), uChipA, chips * 0.45);
 
   /* --- start / finish chequer, laid on the road axis ----------------------- */
   float ds = s - uStartS;
@@ -405,20 +660,28 @@ float kChecker(vec2 p, vec2 w){ return 0.5 + 0.5 * kSq(p.x, w.x) * kSq(p.y, w.y)
 }`)
 
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-  roughnessFactor = mix(roughnessFactor, 0.60, gPaint * 0.85);
-  roughnessFactor = clamp(roughnessFactor - gGrain * 0.06, 0.05, 1.0);`)
+  roughnessFactor = mix(roughnessFactor, 0.66, gPaint * 0.85);
+  // A hard floor: tarmac is never glossier than this, and the specular term is not shadowed,
+  // so a dip here is a licence to put sky-bright glare on road that is standing in shade.
+  roughnessFactor = clamp(roughnessFactor - gGrain * 0.05, 0.62, 1.0);`)
 
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
   totalEmissiveRadiance += uPaintGlow * gPaint;`)
 
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-  if (gGrain != 0.0) {
+  {
+    // The aggregate's micro-relief, differenced at the octave's own scale and faded by the
+    // same band limit as its albedo, so the normal cannot outlive the detail it belongs to.
     vec2 wp = vSurfW.xz;
-    float e = 0.008;
-    float gx = kdN((wp + vec2(e, 0.0)) * 33.0) - kdN((wp - vec2(e, 0.0)) * 33.0);
-    float gz = kdN((wp + vec2(0.0, e)) * 33.0) - kdN((wp - vec2(0.0, e)) * 33.0);
-    float k = (1.0 - gPaint * 0.8) * uDetail.y * (1.0 - smoothstep(uDetail.x * 0.35, uDetail.x, vSurfD));
-    normal = normalize(normal - (gx * vAxX + gz * vAxZ) * 0.55 * k);
+    float foot = kFoot(vSurfW);
+    float wA = kBL(7.5, foot), wB = kBL(21.0, foot);
+    float eA = 0.5 / 7.5, eB = 0.5 / 21.0;
+    float gx = (kdN((wp + vec2(eA, 0.0)) * 7.5 + 17.3) - kdN((wp - vec2(eA, 0.0)) * 7.5 + 17.3)) * wA * 0.55
+             + (kdN((wp + vec2(eB, 0.0)) * 21.0 + 41.7) - kdN((wp - vec2(eB, 0.0)) * 21.0 + 41.7)) * wB;
+    float gz = (kdN((wp + vec2(0.0, eA)) * 7.5 + 17.3) - kdN((wp - vec2(0.0, eA)) * 7.5 + 17.3)) * wA * 0.55
+             + (kdN((wp + vec2(0.0, eB)) * 21.0 + 41.7) - kdN((wp - vec2(0.0, eB)) * 21.0 + 41.7)) * wB;
+    float k = (1.0 - gPaint * 0.85) * uDetail.y * 0.42;
+    normal = normalize(normal - (gx * vAxX + gz * vAxZ) * k);
   }`);
 
     // Luminance-anchored chroma correction on the LIT result (see uSat/uTint above).
@@ -513,23 +776,19 @@ export function createTrackMesh(engine, world, track, opts = {}) {
    * asphalt with a visible seam mid-frame where the two overlapped. A race circuit is one
    * surface: this is a moshav chip-seal, dark limestone-chipped binder end to end.
    *
-   * The palette stays NEUTRAL here. The scene's key light and grade skew a neutral albedo hard
-   * to orange, but the correction for that belongs on the lit result, not on the albedo — see
-   * `uSat` / `uTint` in `createSurfaceMaterial`.
+   * The cross-section is authored by `tarmacTextures` in this file, NOT by the village road
+   * generator: see its header for why a shared generator cannot carry a racing surface.
+   * It holds only what a 3.5 cm texel can hold; the chippings come from the shader.
    *
-   * Markings are NOT baked here (`centre: null, edge: false`) — the material draws them
-   * analytically so they survive to the horizon.
+   * Markings are not baked either — the material draws them analytically from the road's own
+   * coordinates, so they survive to the horizon and cannot drift out of register.
    */
-  const surfTex = buildRoadTextures({
-    total: NOMW + MARGIN * 2, road: NOMW, vMetres: 24, kind: 'gravel',
-    centre: null, edge: false,
-    seed: 771, normalStrength: 1.05, W: 640, H: 1536,
-    edgeInset: 0.62, edgeHalf: 0.115, dustWidth: 0.50,
-    base: [0.045, 0.0445, 0.047],
-    shoulder: [0.150, 0.140, 0.112],
-    polish: [{ at: 0, w: 3.05, k: 0.78 }, { at: 4.95, w: 0.95, k: 0.34 }],
+  const SURF_V = 34;                       // metres of road per texture repeat along V
+  const surfTex = tarmacTextures({
+    total: NOMW + MARGIN * 2, road: NOMW, vMetres: SURF_V,
+    seed: 771, normalStrength: 1.15, W: 384, H: 960,
+    polish: [{ at: 0, w: 3.05, k: 0.72 }, { at: 4.95, w: 1.05, k: 0.34 }],
   });
-  for (const t of [surfTex.map, surfTex.normalMap, surfTex.roughnessMap]) t.anisotropy = 16;
   const matSurface = createSurfaceMaterial(surfTex, { startS: track.startS, length: track.length });
   const vergeTex = vergeTextures();
   const matVerge = createRoadMaterial(vergeTex, { normalScale: 1.15, offsetFactor: -1, offsetUnits: -2 });
@@ -713,7 +972,7 @@ export function createTrackMesh(engine, world, track, opts = {}) {
 
   const allMask = new Float32Array(N + 1).fill(1);
   {
-    const g = buildStrip(allMask, hardLanes, 1 / 24, false, { road: true });
+    const g = buildStrip(allMask, hardLanes, 1 / SURF_V, false, { road: true });
     if (g) {
       const m = new THREE.Mesh(g, matSurface);
       m.name = 'circuit:tarmac'; m.receiveShadow = o.shadows; m.renderOrder = 3;
