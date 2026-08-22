@@ -67,14 +67,22 @@ export const CAT_SPECS = {
   nofar:  { name: 'Nofar',  pattern: 'bicolor', base: 0xf1e6d6, dark: 0xc98a55, belly: 0xfaf4ea, nose: 0xe3969b, eye: 0x77c98a, ear: 'curl',    gear: 'goggles', suit: [0xd8577b, 0xf6ead2], num: 6,  seed: 1010 },
 };
 
+/** Guaranteed-dark graphic keyline for a coat: ear rims, ear tips, eye sockets. */
+function keyColour(spec) {
+  const d = hex2rgb(spec.dark), b = hex2rgb(spec.base);
+  const lum = (0.2126 * b[0] + 0.7152 * b[1] + 0.0722 * b[2]) / 255;
+  return mix3(d, [22, 18, 15], clamp(0.46 + 0.42 * lum, 0.46, 0.88));
+}
+
 /* --------------------------------------------------------- fur pattern bake */
 function patternFn(spec) {
   const N = makeFbm(spec.seed);
   const base = hex2rgb(spec.base), dark = hex2rgb(spec.dark), belly = hex2rgb(spec.belly);
   const white = [246, 242, 233];
   // Guaranteed-dark keyline. `spec.dark` is only "dark" for dark cats — Shelly's is 0xd8cfbe —
-  // so anything that has to read as a graphic edge at 15 px uses this instead.
-  const key = mix3(dark, [24, 19, 16], 0.58);
+  // so anything that has to read as a graphic edge at 15 px is pushed toward black, and pushed
+  // harder the paler the coat, so a white cat gets as much edge contrast as a black one.
+  const key = keyColour(spec);
   const R = rng(spec.seed + 7);
   const blobs = [];
   for (let i = 0; i < 10; i++) blobs.push([R(), R(), 0.08 + R() * 0.16, R() < 0.5 ? 0 : 1]);
@@ -163,8 +171,8 @@ function patternFn(spec) {
       // actual outline instead of flooding the whole triangle.
       const halfSpan = Math.max(0.12, (1 - v) * 0.5);
       const tEdge = clamp(Math.abs(u - 0.5) / halfSpan, 0, 1);
-      const rim = Math.max(smoothstep(0.60, 0.97, tEdge), smoothstep(0.76, 0.99, v));
-      c = mix3(c, key, clamp(rim, 0, 1) * 0.88);
+      const rim = Math.max(smoothstep(0.55, 0.95, tEdge), smoothstep(0.72, 0.99, v));
+      c = mix3(c, key, clamp(rim, 0, 1) * 0.95);
     }
 
     if (isLimb) c = mix3(c, [0, 0, 0], 0.04);
@@ -388,8 +396,8 @@ function lathe(profile, seg = 22) {
  * Shapes stay per-cat distinct (that is how you tell the roster apart at range) but every
  * variant keeps the same tall triangular mass.
  */
-const EAR_W = { round: 0.088, fold: 0.082, curl: 0.078 };
-const EAR_H = { round: 0.176, tuft: 0.256, fold: 0.150, curl: 0.206, notch: 0.226 };
+const EAR_W = { round: 0.090, fold: 0.084, curl: 0.078 };
+const EAR_H = { round: 0.218, tuft: 0.256, fold: 0.192, curl: 0.226, notch: 0.230 };
 function earShape(kind) {
   const s = new THREE.Shape();
   const w = EAR_W[kind] ?? 0.078;                 // half-width at the base
@@ -560,7 +568,13 @@ export function createCat(id, opts = {}) {
   M.head = furMaterial(spec, 'head', tex, { nrep: [4, 4] });
   M.body = furMaterial(spec, 'body', tex, { nrep: [5, 5] });
   M.muzzle = furMaterial(spec, 'muzzle', 96, { nrep: [3, 3] });
-  M.ear = furMaterial(spec, 'ear', 96, { nrep: [2, 3], side: THREE.DoubleSide });
+  // A thin double-sided plate turned away from the sun crushes to black, and from the chase
+  // camera the back of the ear is what you look at all race. A small self-lift keeps the coat
+  // colour alive there without flattening the silhouette against the sky.
+  M.ear = furMaterial(spec, 'ear', 96, {
+    nrep: [2, 3], side: THREE.DoubleSide,
+    emissive: new THREE.Color(spec.base).multiplyScalar(0.11), emissiveIntensity: 1.0,
+  });
   M.limb = furMaterial(spec, 'arm', 96, { nrep: [2, 5] });
   M.tail = furMaterial(spec, 'tail', 96, { nrep: [2, 8] });
   M.suit = new THREE.MeshPhysicalMaterial({
@@ -578,7 +592,7 @@ export function createCat(id, opts = {}) {
   });
   // Guaranteed-dark "key" colour for the graphic marks that carry the face at range. spec.dark
   // is only actually dark on dark cats (Shelly's is 0xd8cfbe), so it is pushed toward black.
-  const keyRGB = mix3(hex2rgb(spec.dark), [24, 19, 16], 0.58);
+  const keyRGB = keyColour(spec);
   M.socket = new THREE.MeshStandardMaterial({
     color: new THREE.Color().setRGB(keyRGB[0] / 255, keyRGB[1] / 255, keyRGB[2] / 255, THREE.SRGBColorSpace),
     roughness: 0.74, metalness: 0.0,
@@ -715,7 +729,7 @@ export function createCat(id, opts = {}) {
   // reading as two overlapping heads.
   const domed = spec.gear === 'helmet' || spec.gear === 'cap' || spec.gear === 'bandana';
   const earX = spec.gear === 'helmet' ? 0.098 : domed ? 0.100 : 0.104;
-  const earY = spec.gear === 'helmet' ? 0.212 : spec.gear === 'cap' ? 0.176 : spec.gear === 'bandana' ? 0.170 : 0.150;
+  const earY = spec.gear === 'helmet' ? 0.212 : spec.gear === 'cap' ? 0.176 : spec.gear === 'bandana' ? 0.170 : 0.158;
   const earW = EAR_W[earKind] ?? 0.078;
   for (const s of [-1, 1]) {
     const b = s < 0 ? B.earL : B.earR;
@@ -724,7 +738,10 @@ export function createCat(id, opts = {}) {
     // from the chase camera — which looks slightly down on the driver — both vanished into the
     // skull. Variety now comes from the outline, never from folding the ear out of silhouette.
     const baseTilt = earKind === 'fold' ? 0.24 : earKind === 'curl' ? -0.10 : -0.04;
-    b.rotation.set(baseTilt, s * 0.26, s * (earKind === 'round' ? 0.24 : 0.20));
+    // Splayed OUTWARD. R2 (and the first pass of this fix) tilted them inward, so the two tips
+    // converged over the centreline into a single bump — which is precisely why a round-eared
+    // white cat like Shelly still read as a plain ball. A cat's ears open into a V.
+    b.rotation.set(baseTilt, s * 0.26, -s * (earKind === 'round' ? 0.30 : 0.24));
     b.userData.rest = b.rotation.clone();
     const shape = earShape(earKind);
     const outer = planarUV(extrudeShape(shape, 0.026, 0.005));
@@ -804,17 +821,22 @@ export function createCat(id, opts = {}) {
     // comment claimed "sides", the maths did not), and it was 4 mm narrower than the fur head
     // once the shell layers were added — so the bare skull bulged out through both gaps and
     // through the flanks. That is the second dome the critics saw. It is now one closed shell,
-    // comfortably larger than the head all the way down to below the ear line.
+    // comfortably larger than the head everywhere it covers.
+    //
+    // And it only covers the crown. A dome that came all the way down to the brow left the
+    // chase camera — which looks down on the driver — nothing but one smooth ball of suit
+    // colour: the "unreadable orange sphere". As a skull cap the fur head, the cheeks and the
+    // ears all stay in the silhouette and the helmet is the identity badge on top of them.
     const hg = new THREE.Group();
     helmetShell = hg;
-    hg.position.set(0, 0.020, -0.012);
+    hg.position.set(0, 0.028, -0.012);
     gear.add(hg);
-    const RAD = 0.226, TH = 1.36;
-    add(hg, new THREE.SphereGeometry(RAD, Math.round(20 * seg) + 8, Math.round(15 * seg) + 5, 0, TAU, 0, TH), M.gear);
+    const RAD = 0.226, TH = 1.12;
+    add(hg, new THREE.SphereGeometry(RAD, Math.round(20 * seg) + 8, Math.round(15 * seg) + 5, 0, TAU, 0, TH), M.gear).name = 'helmetShell';
     const ry = RAD * Math.cos(TH), rr = RAD * Math.sin(TH);
     add(hg, xform(new THREE.TorusGeometry(rr, 0.017, 6, 26), { pos: [0, ry, 0], rot: [Math.PI / 2, 0, 0] }), M.trim, false);
     // crown stripe front-to-back: the strongest identity mark on a 15 px helmet
-    const stripe = new THREE.SphereGeometry(RAD * 1.022, 18, 16, Math.PI / 2 - 0.20, 0.40, 0, TH * 0.97);
+    const stripe = new THREE.SphereGeometry(RAD * 1.022, 18, 16, Math.PI / 2 - 0.26, 0.52, 0, TH * 0.97);
     add(hg, stripe, M.trim, false);
     const peak = new THREE.CylinderGeometry(rr * 1.04, rr * 1.04, 0.016, 16, 1, false, Math.PI - 0.80, 1.60);
     add(hg, xform(peak, { pos: [0, ry + 0.024, 0.026], rot: [-0.30, 0, 0], scale: [1, 1, 1.16] }), M.trim, false);
@@ -855,9 +877,9 @@ export function createCat(id, opts = {}) {
     const bR = helm ? 0.226 : 0.198;
     const bS = helm ? [1.0, 1.0, 1.0] : [1.05, 0.96, 1.00];
     const bParent = helm ? helmetShell : B.head;
-    const yLocal = helm ? 0.072 : 0.030;                 // below a cap brim, above the collar
+    const yLocal = helm ? 0.150 : 0.030;                 // on the cap for a helmet, nape otherwise
     const thetaC = Math.acos(clamp(yLocal / bR, -1, 1));
-    const hp = 0.40, ht = 0.38;
+    const hp = helm ? 0.34 : 0.40, ht = helm ? 0.28 : 0.38;
     const bg = new THREE.SphereGeometry(bR, 14, 10, -Math.PI / 2 - hp, hp * 2, thetaC - ht, ht * 2);
     const bm = new THREE.MeshStandardMaterial({
       map: numberTexture(spec.num, helm ? '#1b1b20' : '#f4f1e6', helm ? '#f4f1e6' : '#2b2b32'),
@@ -1009,16 +1031,25 @@ export function createCat(id, opts = {}) {
 
     /* ears */
     const flick = Math.pow(Math.max(0, Math.sin(t * 0.9 + phase)), 24);
+    // A tucked driver leans the whole spine→head chain forward, and the chase camera already
+    // looks down on the crown; stacked, that laid the ears flat back over the helmet at speed
+    // and the head went spherical again — exactly the R2 complaint. The ears counter most of
+    // the accumulated lean so they stay near world-vertical and hold the silhouette. Cheating
+    // one bone against its parents is the standard character-art fix and it is invisible.
+    const lean = clamp(B.spine.rotation.x + B.chest.rotation.x + B.neck.rotation.x + B.head.rotation.x, -0.9, 0.9);
     for (const s of [-1, 1]) {
       const b = s < 0 ? B.earL : B.earR;
       const rest = b.userData.rest;
       // Clamped hard: an ear laid flat is an ear you cannot see, and the ears are the only
       // thing that says "cat" from the chase camera. Full flatten is reserved for a hit.
-      const back = clamp(S.speed * 0.20 + tuck * 0.12 + fl * 0.62 + sl * 0.30 - ch * 0.14, -0.20, 0.66);
+      const back = clamp(S.speed * 0.20 + tuck * 0.12 + fl * 0.62 + sl * 0.30 - ch * 0.14, -0.20, 0.66)
+        - lean * 0.72;
       const splay = clamp(Math.abs(dr) * 0.26 * (dr * s > 0 ? 1.25 : 0.6) + S.air * 0.10, 0, 0.34);
+      // Rest tilt is already outward (-s). Drift splay must add to it, not cancel it, or a
+      // drifting cat's ears fold back over the helmet and the head goes spherical again.
       b.rotation.set(rest.x + back + flick * 0.30 * (s > 0 ? 1 : 0.4) + Math.sin(t * 5.3 + s) * 0.02 * S.speed,
         rest.y + s * splay * 0.4 - S.lookYaw * 0.12,
-        rest.z + s * (splay + fl * 0.35 - ch * 0.18) + Math.sin(t * 4.1 + s * 2) * 0.015);
+        rest.z - s * (splay - fl * 0.35 + ch * 0.18) + Math.sin(t * 4.1 + s * 2) * 0.015);
     }
 
     /* eyes: blink, squint, look */
