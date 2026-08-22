@@ -55,48 +55,32 @@ for (const f of ['villageStreet.png', 'driftCorner.png', 'oliveGrove.png']) {
 // one is deliberately absent until it can be done properly — e.g. by rendering a known frame
 // twice with the shadow pass forced on and off and diffing, rather than by sampling pixels.
 
-// ---- drift VFX: present, but not a blown blob -----------------------------------------------
-// driftCorner is shot mid-drift. Two things must hold at once, because this effect has swung
-// between opposite failure modes five times: some lit effect pixels must exist near the kart,
-// AND they must not form one large near-white mass.
+// ---- drift VFX -------------------------------------------------------------------------------
+// PRESENT: sound. Counts bright, saturated or blue-biased pixels near the kart — sparks and lit
+// smoke. White bodywork does not qualify (low saturation), so this measures the effect itself.
 //
-// Counting the *fraction* of near-white pixels does not work: white kart liveries and the
-// red-and-white kerb stripes are legitimately near-white and put the total over any useful
-// threshold, which produced a false alarm on a frame whose drift smoke was perfectly fine.
-// A blowout is distinguished by being ONE CONTIGUOUS MASS, so measure the largest connected
-// component instead of the total.
+// NOT BLOWN: REMOVED, after three failed attempts. The blob failure mode is "a large near-white
+// mass swallows the kart", but near-white is not diagnostic:
+//   1. fraction-of-near-white  -> tripped by white kart liveries and kerb stripes (6.7% on a good frame)
+//   2. largest contiguous mass -> tripped by a single large kerb stripe (3.2% on a good frame)
+//   3. same, narrowed to a kart-centred box -> tripped by the kart's own white bodywork (4.7%)
+// Each version cried wolf on a frame whose drift smoke was fine, and acting on any of them would
+// have sent an agent to break a working effect — the exact oscillation this guard exists to stop.
+//
+// Doing it properly needs the effect isolated from the scene, not inferred from it: shoot
+// driftCorner twice, once with VFX disabled via a shoot flag, and diff the two frames. The
+// difference IS the effect, and its area and peak luminance can then be measured honestly.
+// Until that exists, this dimension is checked by eye and stated as such.
 if (fs.existsSync(`${DIR}/driftCorner.png`)) {
   const p = read('driftCorner.png');
-  const x0 = p.width * 0.28 | 0, x1 = p.width * 0.78 | 0;
-  const y0 = p.height * 0.50 | 0, y1 = p.height * 0.99 | 0;
-  const w = x1 - x0, h = y1 - y0;
-  const white = new Uint8Array(w * h);
   let effect = 0, n = 0;
-  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-    const c = px(p, x, y), L = luma(c), { sat, blueBias } = chroma(c);
-    n++;
-    if (L > 150 && (sat > 0.22 || blueBias > 22)) effect++;      // sparks / lit smoke
-    if (L > 243 && sat < 0.10) white[(y - y0) * w + (x - x0)] = 1;
-  }
-  // Largest connected component of near-white, 4-connected, iterative flood fill.
-  let biggest = 0;
-  const stack = [];
-  for (let i = 0; i < white.length; i++) {
-    if (white[i] !== 1) continue;
-    let size = 0; stack.length = 0; stack.push(i); white[i] = 2;
-    while (stack.length) {
-      const j = stack.pop(); size++;
-      const jx = j % w, jy = (j / w) | 0;
-      if (jx > 0     && white[j - 1] === 1) { white[j - 1] = 2; stack.push(j - 1); }
-      if (jx < w - 1 && white[j + 1] === 1) { white[j + 1] = 2; stack.push(j + 1); }
-      if (jy > 0     && white[j - w] === 1) { white[j - w] = 2; stack.push(j - w); }
-      if (jy < h - 1 && white[j + w] === 1) { white[j + w] = 2; stack.push(j + w); }
+  for (let y = p.height * 0.55 | 0; y < p.height * 0.97; y += 2)
+    for (let x = p.width * 0.30 | 0; x < p.width * 0.75; x += 2) {
+      const c = px(p, x, y), L = luma(c), { sat, blueBias } = chroma(c);
+      n++;
+      if (L > 150 && (sat > 0.22 || blueBias > 22)) effect++;
     }
-    if (size > biggest) biggest = size;
-  }
   check('drift VFX present', effect / n > 0.004, `${(effect / n * 100).toFixed(2)}% effect pixels (>0.40%)`);
-  check('drift VFX not blown', biggest / n < 0.020,
-    `largest contiguous white mass ${(biggest / n * 100).toFixed(2)}% of the region (<2.0%)`);
 }
 
 // ---- global exposure: no large clipped region in any frame -----------------------------------
