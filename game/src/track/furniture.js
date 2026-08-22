@@ -330,7 +330,7 @@ function buildStrawTextures() {
   const W = 512, H = 512;
   const R = rng(770311);
   const { c, x } = makeCanvas(W, H);
-  x.fillStyle = '#c39a44'; x.fillRect(0, 0, W, H);
+  x.fillStyle = '#c0a061'; x.fillRect(0, 0, W, H);
   // broad tonal bands: sun-bleached crown, damp shadowed core
   for (let i = 0; i < 90; i++) {
     const y = R() * H, hh = 8 + R() * 40, t = R();
@@ -341,7 +341,7 @@ function buildStrawTextures() {
   const { c: bc, x: bx } = makeCanvas(W, H);
   bx.fillStyle = '#808080'; bx.fillRect(0, 0, W, H);
   // fibres — drawn on both canvases so albedo and bump agree exactly
-  const fibre = ['#e8cd85', '#d3ae5c', '#b58c3c', '#9a742c', '#f0dda8', '#8c6a26'];
+  const fibre = ['#ecd79c', '#d6b573', '#bb9855', '#a08040', '#f4e6c0', '#8d7440'];
   for (let i = 0; i < 5200; i++) {
     const px = R() * W, py = R() * H;
     const ang = (R() - 0.5) * 0.55;                    // straw lies broadly along the bale axis
@@ -474,6 +474,29 @@ export function createFurniture(engine, world, track, opts = {}) {
 
   const len = track.length;
   const at = s => track.sample(((s % len) + len) % len);
+
+  /**
+   * Verge occupancy register.
+   *
+   * Everything in this file used to place itself blind, so the new roadside programme
+   * happily grew a delineator post straight through a hay bale. Anything that stands within
+   * ~7 m of the road edge now books its slice of verge here, and the two continuous passes
+   * (delineators and the prop kit) skip a slot that is already taken. `k` is 0 = left,
+   * 1 = right, 2 = both sides.
+   */
+  const busy = [];
+  const markBusy = (s, half, k) => busy.push({ s: ((s % len) + len) % len, half, k });
+  const isBusy = (s, k) => {
+    const ss = ((s % len) + len) % len;
+    for (let i = 0; i < busy.length; i++) {
+      const b = busy[i];
+      if (b.k !== 2 && b.k !== k) continue;
+      let d = Math.abs(ss - b.s);
+      if (d > len * 0.5) d = len - d;
+      if (d < b.half) return true;
+    }
+    return false;
+  };
   const side = (sm, off) => ({
     x: sm.pos.x + sm.normal.x * off,
     y: sm.pos.y + Math.tan(sm.banking) * off,
@@ -503,7 +526,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       const arr = need[k], src = Uint8Array.from(arr);
       for (let i = 0; i < n; i++) { let m = 0; for (let d = -3; d <= 3; d++) m |= src[((i + d) % n + n) % n]; arr[i] = m; }
     }
-    const steel = [0.56, 0.57, 0.585], postC = [0.40, 0.41, 0.43];
+    const steel = [0.50, 0.52, 0.545], postC = [0.35, 0.36, 0.385];
     for (let k = 0; k < 2; k++) {
       const sgn = k ? 1 : -1;
       let run = [];
@@ -586,13 +609,32 @@ export function createFurniture(engine, world, track, opts = {}) {
         const tint = ((d / 2) | 0) % 2 ? [0.62, 0.10, 0.09] : [0.80, 0.78, 0.74];
         tyreStack(p.x, Math.min(p.y, gy + 0.1), p.z, 3, tint);
       }
+      markBusy(c.s, spread + 5, sgn > 0 ? 1 : 0);
     }
   }
 
   /* ------------------------------------------------- hay bales & crates ---- */
   // 24-sided barrel: at 3 m from the lens a 12-gon showed every facet on the silhouette.
-  const baleGeo = () => geo('bale', () => new THREE.CylinderGeometry(0.66, 0.66, 1.32, 24, 1).rotateZ(Math.PI / 2));
-  const twineGeo = () => geo('twine', () => new THREE.CylinderGeometry(0.672, 0.672, 0.035, 20, 1).rotateZ(Math.PI / 2));
+  // Three cached variants, each with its radius pushed about by a little noise, so a row of
+  // bales does not share one perfectly straight shading terminator across every barrel.
+  const baleGeo = (v) => geo('bale' + v, () => {
+    const g = new THREE.CylinderGeometry(0.66, 0.66, 1.32, 24, 4);
+    const pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const px = pos.getX(i), py = pos.getY(i), pz = pos.getZ(i);
+      const r = Math.hypot(px, pz);
+      if (r < 1e-4) continue;
+      const a = Math.atan2(pz, px);
+      const n = Math.sin(a * 5 + v * 2.1 + py * 3.7) * 0.020
+              + Math.sin(a * 11 - v * 1.3 + py * 7.1) * 0.011
+              + Math.sin(py * 13.0 + v) * 0.010;
+      const k = (r + n) / r;
+      pos.setX(i, px * k); pos.setZ(i, pz * k);
+    }
+    g.computeVertexNormals();
+    return g.rotateZ(Math.PI / 2);
+  });
+  const twineGeo = () => geo('twine', () => new THREE.CylinderGeometry(0.673, 0.673, 0.011, 20, 1).rotateZ(Math.PI / 2));
   const crateGeo = () => geo('crate', () => new THREE.BoxGeometry(0.62, 0.34, 0.44));
   /**
    * One round bale: straw-mapped barrel, four turns of black baler twine, and a shallow tilt
@@ -603,12 +645,12 @@ export function createFurniture(engine, world, track, opts = {}) {
     const tint = 0.84 + R() * 0.30;
     const tilt = (R() - 0.5) * 0.075;
     const y = gy + 0.66 * sc - 0.05;                     // settled into the dirt, not perched on it
-    straw.add(baleGeo(), trs(x, y, z, ry, sc, sc, sc, tilt, (R() - 0.5) * 0.05),
+    straw.add(baleGeo((R() * 3) | 0), trs(x, y, z, ry, sc, sc, sc, tilt, (R() - 0.5) * 0.05),
       [1.02 * tint, 0.99 * tint, 0.93 * tint], [6, 2]);
     const ax = Math.cos(ry), az = -Math.sin(ry);
-    for (const d of [-0.46, -0.15, 0.15, 0.46]) {
-      rubber.add(twineGeo(), trs(x + ax * d * sc, y + Math.sin(tilt) * 0, z + az * d * sc, ry, sc, sc, sc, tilt),
-        [0.10, 0.10, 0.11]);
+    for (const d of [-0.52, -0.36, -0.18, 0, 0.18, 0.36, 0.52]) {
+      rubber.add(twineGeo(), trs(x + ax * d * sc, y, z + az * d * sc, ry, sc, sc, sc, tilt),
+        [0.20, 0.18, 0.13]);
     }
     // a wisp of loose straw shed at the foot of the bale
     if (R() < 0.7) {
@@ -626,6 +668,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       bale(p.x, Math.min(p.y + 0.05, gy), p.z, ry, 0.94 + R() * 0.13);
       void seedOff;
     }
+    markBusy((s0 + s1) * 0.5, Math.abs(s1 - s0) * 0.5 + 4, off > 0 ? 1 : 0);
   }
   if (o.bales) {
     // the bale chicane on the Narkis straight, plus the tight village corners
@@ -657,6 +700,7 @@ export function createFurniture(engine, world, track, opts = {}) {
             h === 2 ? [0.30 * t, 0.36 * t, 0.20 * t] : [0.52 * t, 0.38 * t, 0.22 * t]);
         }
       }
+      markBusy(spots[si] + 1.1, 6, sgn > 0 ? 1 : 0);
     }
   }
 
@@ -892,6 +936,7 @@ export function createFurniture(engine, world, track, opts = {}) {
         metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
           trs(lx, gy + legH + 3.20, lz, ry, 0.05, 0.85, 0.05), dark);
       }
+      markBusy(s, 7, 2);
     }
   }
 
@@ -914,6 +959,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       metal.add(geo('signpost', () => new THREE.CylinderGeometry(0.07, 0.07, 2.6, 6)),
         trs(p.x, gy + 1.3, p.z, 0), [0.55, 0.56, 0.58]);
       panel(p.x, gy + 2.25, p.z, ry, 2.9, 0.44, mk.row);
+      markBusy(mk.s, 6, sgn > 0 ? 1 : 0);
     }
   }
 
@@ -931,6 +977,7 @@ export function createFurniture(engine, world, track, opts = {}) {
         for (const t of [-0.95, 0.95])
           metal.add(geo('markpost', () => new THREE.CylinderGeometry(0.06, 0.06, 1.9, 6)),
             trs(p.x + Math.cos(ry) * t, gy + 0.95, p.z - Math.sin(ry) * t, 0), [0.52, 0.53, 0.55]);
+        markBusy(c.s - d, 6, sgn > 0 ? 1 : 0);
       }
     }
   }
@@ -967,6 +1014,7 @@ export function createFurniture(engine, world, track, opts = {}) {
           panel(p.x, gy + 0.60, p.z, ry + (r.sgn > 0 ? 0 : Math.PI), 2.2, 0.86, [3, 5, 11, 10][i % 4], 0,
             { frame: false, thickness: 0.03 });
       }
+      markBusy((r.s0 + r.s1) * 0.5, Math.abs(r.s1 - r.s0) * 0.5 + 3, r.sgn > 0 ? 1 : 0);
     }
   }
 
@@ -1000,6 +1048,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       // feather flag beside the post
       featherFlag(p.x + sm.normal.x * sgn * 1.9, world.heightAt(p.x + sm.normal.x * sgn * 1.9, p.z + sm.normal.z * sgn * 1.9),
         p.z + sm.normal.z * sgn * 1.9, ry + 0.6, 2.8, ci % 4);
+      markBusy(c.s + 12, 8, sgn > 0 ? 1 : 0);
     }
   }
 
@@ -1210,11 +1259,12 @@ export function createFurniture(engine, world, track, opts = {}) {
         metal.add(geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1)),
           trs(cx + outward.x * t * 4.2, canY - 0.16 + t * 0.5, cz + outward.z * t * 4.2, ry, 0.10, 0.10, sp.w), [0.50, 0.51, 0.54]);
       canvasB.add(geo('sheetH', () => new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2)),
-        trs(cx, canY, cz, ry, 4.6, 1, sp.w * 1.04, -0.12), [1, 1, 1], [1, sp.w / 1.7]);
+        trs(cx, canY, cz, ry, 4.6, 1, sp.w * 1.04, -0.12), [1, 1, 1], [1, sp.w / 9]);
       // valance hanging off the leading edge
       canvasB.add(geo('sheetV', () => new THREE.PlaneGeometry(1, 1).rotateY(Math.PI / 2)),
         trs(cx - outward.x * 2.30, canY - 0.28 - 2.30 * 0.12, cz - outward.z * 2.30, ry, 1, 0.46, sp.w * 1.04),
-        [1, 1, 1], [sp.w / 1.7, 1]);
+        [1, 1, 1], [sp.w / 9, 1]);
+      markBusy(sp.s, sp.w * 0.5 + 5, sp.sgn > 0 ? 1 : 0);
     }
   }
 
@@ -1243,6 +1293,7 @@ export function createFurniture(engine, world, track, opts = {}) {
       panel(p.x, gy + 1.5, p.z, Math.atan2(sm.tangent.x, sm.tangent.z) + Math.PI, 2.2, 0.5, 6);
       metal.add(geo('signpost', () => new THREE.CylinderGeometry(0.07, 0.07, 2.6, 6)), trs(p.x, gy + 0.9, p.z, 0), [0.55, 0.56, 0.58]);
     }
+    markBusy((j.kickerS + j.landEndS) * 0.5, Math.abs(j.landEndS - j.kickerS) * 0.5 + 6, 2);
   }
 
   /* ------------------------------------------------ orchard for the cut ---- */
@@ -1316,7 +1367,8 @@ export function createFurniture(engine, world, track, opts = {}) {
     };
 
     /* ------------------------------------------------------------- kit ----- */
-    const STONE = [[0.80, 0.76, 0.66], [0.74, 0.70, 0.60], [0.86, 0.82, 0.71], [0.68, 0.64, 0.55]];
+    const STONE = [[0.68, 0.63, 0.53], [0.60, 0.56, 0.47], [0.74, 0.69, 0.58], [0.53, 0.49, 0.41],
+      [0.64, 0.58, 0.47], [0.57, 0.53, 0.45]];
     const box = () => geo('unitbox', () => new THREE.BoxGeometry(1, 1, 1));
 
     /** Dry limestone wall: hand-laid courses, jittered, with a coping row on top. */
@@ -1495,14 +1547,30 @@ export function createFurniture(engine, world, track, opts = {}) {
     }
 
     /** A pile of quarried limestone boulders. */
+    const rockGeo = (v) => geo('rock' + v, () => {
+      // one subdivision plus per-vertex noise: a 20-face icosahedron read as polystyrene
+      const g = new THREE.IcosahedronGeometry(0.5, 1);
+      const pos = g.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const px = pos.getX(i), py = pos.getY(i), pz = pos.getZ(i);
+        const n = 1 + Math.sin(px * 9.1 + v) * 0.13 + Math.sin(py * 7.7 - v * 2.3) * 0.12
+          + Math.sin(pz * 11.3 + v * 1.7) * 0.10;
+        pos.setXYZ(i, px * n, py * n, pz * n);
+      }
+      g.computeVertexNormals();
+      return g;
+    });
     function boulders(x, gy, z, sc = 1) {
-      const rock = geo('rock', () => new THREE.IcosahedronGeometry(0.5, 0));
-      for (let i = 0; i < 3 + ((R() * 4) | 0); i++) {
-        const a = R() * TAU, r = R() * 1.5 * sc;
+      for (let i = 0; i < 4 + ((R() * 5) | 0); i++) {
+        const a = R() * TAU, r = R() * 1.7 * sc;
         const px = x + Math.cos(a) * r, pz = z + Math.sin(a) * r;
         const gy2 = world.heightAt(px, pz);
-        const s2 = (0.45 + R() * 0.75) * sc;
-        wood.add(rock, trs(px, gy2 + s2 * 0.45, pz, R() * TAU, s2 * 1.2, s2 * 0.85, s2), STONE[(R() * STONE.length) | 0]);
+        const s2 = (0.28 + R() * 0.52) * sc;
+        // bedded in: a quarter of the stone is below grade, so nothing perches on the dirt
+        wood.add(rockGeo((R() * 3) | 0),
+          trs(px, gy2 + s2 * 0.30, pz, R() * TAU, s2 * 1.25, s2 * 0.80, s2 * 1.05,
+            (R() - 0.5) * 0.5, (R() - 0.5) * 0.5),
+          STONE[(R() * STONE.length) | 0]);
       }
     }
 
@@ -1567,6 +1635,7 @@ export function createFurniture(engine, world, track, opts = {}) {
         for (let k = 0; k < 2; k++) {
           const sgn = k ? 1 : -1;
           if (railAt(s, k)) continue;                      // the rail carries its own reflectors
+          if (isBusy(s, k)) continue;                      // bales, tyres, boards already there
           const p2 = side(sm2, sgn * (hw + 2.2));
           const gy2 = world.heightAt(p2.x, p2.z);
           if (Math.abs(gy2 - p2.y) > 2.2) continue;        // the ground has fallen away here
@@ -1574,6 +1643,29 @@ export function createFurniture(engine, world, track, opts = {}) {
           wood.add(box(), trs(p2.x, gy2 + 0.42, p2.z, ry2, 0.10, 0.88, 0.14), [0.93, 0.92, 0.88]);
           metal.add(box(), trs(p2.x - sm2.normal.x * sgn * 0.075, gy2 + 0.70, p2.z - sm2.normal.z * sgn * 0.075, ry2,
             0.055, 0.15, 0.10), (i & 1) ? [0.95, 0.18, 0.12] : [0.98, 0.86, 0.20]);
+        }
+      }
+    }
+
+    /* ------------------------------------ field stones along both verges ---- */
+    {
+      const stepS = 7.0, nS = Math.floor(len / stepS);
+      for (let i = 0; i < nS; i++) {
+        const sm2 = at(i * stepS), hw = sm2.width * 0.5;
+        for (let k = 0; k < 2; k++) {
+          const sgn = k ? 1 : -1;
+          const nrock = (R() < 0.55) ? 1 + ((R() * 3) | 0) : 0;
+          for (let j = 0; j < nrock; j++) {
+            const p2 = side(sm2, sgn * (hw + 2.9 + R() * 11));
+            const px = p2.x + (R() - 0.5) * 3.0, pz = p2.z + (R() - 0.5) * 3.0;
+            const gy2 = world.heightAt(px, pz);
+            if (Math.abs(gy2 - p2.y) > 3.5) continue;
+            const s2 = 0.11 + R() * 0.24;
+            wood.add(rockGeo((R() * 3) | 0),
+              trs(px, gy2 + s2 * 0.26, pz, R() * TAU, s2 * 1.3, s2 * 0.8, s2 * 1.1,
+                (R() - 0.5) * 0.6, (R() - 0.5) * 0.6),
+              STONE[(R() * STONE.length) | 0]);
+          }
         }
       }
     }
@@ -1588,7 +1680,8 @@ export function createFurniture(engine, world, track, opts = {}) {
       const k = sgn > 0 ? 1 : 0;
       // leave the start/finish complex alone — the gantry, pit wall and stands own it
       const dStart = Math.abs(((s - track.startS + len * 1.5) % len) - len * 0.5);
-      if (dStart < 92) { poles[k] = null; continue; }
+      if (dStart < 66) { poles[k] = null; continue; }
+      if (isBusy(s, k)) { poles[k] = null; continue; }
       const off = hw + 5.4 + R() * 3.2;
       const p2 = side(sm2, sgn * off);
       const gy2 = world.heightAt(p2.x, p2.z);
@@ -1600,12 +1693,11 @@ export function createFurniture(engine, world, track, opts = {}) {
       const steep = Math.abs(drop) > 3.0 || world.slopeAt(p2.x, p2.z) > 0.42;
 
       // power poles run as their own continuous line so the wires join up
-      if (i % 4 === (sgn > 0 ? 1 : 3) && !steep) {
+      // one pole every fourth kit slot on each side (~68 m), so the wires join up in a line
+      if (i % 4 === (sgn > 0 ? 1 : 0) && !steep) {
         const pl = powerPole(p2.x, gy2, p2.z, outRy);
         if (poles[k]) wireSpan(poles[k], pl);
         poles[k] = pl;
-      } else if (i % 4 === (sgn > 0 ? 3 : 1)) {
-        poles[k] = null;
       }
 
       const roll = R();
@@ -1653,7 +1745,8 @@ export function createFurniture(engine, world, track, opts = {}) {
   const strawTex = buildStrawTextures();
   mk(straw, 'straw', new THREE.MeshStandardMaterial({
     vertexColors: true, map: strawTex.map, normalMap: strawTex.normal,
-    normalScale: new THREE.Vector2(1.25, 1.25), roughness: 0.97, metalness: 0.0,
+    normalScale: new THREE.Vector2(2.1, 2.1), roughness: 0.98, metalness: 0.0,
+    emissive: 0xffffff, emissiveMap: strawTex.map, emissiveIntensity: 0.075,
   }));
   mk(foliage, 'foliage', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0.0, flatShading: true }));
   mk(fur, 'cats', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.80, metalness: 0.0, flatShading: true }));

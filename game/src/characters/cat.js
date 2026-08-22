@@ -602,7 +602,7 @@ export function createCat(id, opts = {}) {
   // touch of self-colour emissive so it still reads on the shaded side of the seat.
   M.gear = new THREE.MeshPhysicalMaterial({
     color: spec.suit[0], roughness: 0.16, metalness: 0.05,
-    clearcoat: 1.0, clearcoatRoughness: 0.04, envMapIntensity: 1.8,
+    clearcoat: 1.0, clearcoatRoughness: 0.10, envMapIntensity: 1.15,
     emissive: new THREE.Color(spec.suit[0]).multiplyScalar(0.20), emissiveIntensity: 1.0,
   });
   // Guaranteed-dark "key" colour for the graphic marks that carry the face at range. spec.dark
@@ -885,8 +885,7 @@ export function createCat(id, opts = {}) {
     // the phantom face. It now runs the full sagittal line, front rim to back rim, which is what
     // a racing stripe actually is, and from behind reads as a vertical: the opposite of a face.
     for (const phiC of [Math.PI / 2, -Math.PI / 2]) {
-      const end = phiC < 0 ? 0.98 - 0.25 : TH * 0.995;     // the back half runs into the roundel
-      add(hg, new THREE.SphereGeometry(RAD * 1.010, 18, 14, phiC - 0.185, 0.37, 0, end), M.trim, false);
+      add(hg, new THREE.SphereGeometry(RAD * 1.010, 18, 14, phiC - 0.20, 0.40, 0, TH * 0.995), M.trim, false);
     }
     // Brow peak — FRONT. CylinderGeometry puts theta 0 at +Z, so R3's `thetaStart = PI - 0.8`
     // hung the peak off the BACK of the skull. Same maths error put the cap's brim and the
@@ -913,7 +912,7 @@ export function createCat(id, opts = {}) {
     add(gear, xform(new THREE.CylinderGeometry(0.196, 0.196, 0.012, 14, 1, false, -0.85, 1.7), { pos: [0, 0.126, 0.062], rot: [-0.24, 0, 0], scale: [1, 1, 1.30] }), M.trim, false);
     // seam panels over the crown, front to back, so the cap is not one smooth ball from behind
     for (const phiC of [Math.PI / 2, -Math.PI / 2]) {
-      add(gear, xform(new THREE.SphereGeometry(0.2182, 16, 12, phiC - 0.060, 0.12, 0, phiC < 0 ? 0.75 : 1.14), { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.trim, false);
+      add(gear, xform(new THREE.SphereGeometry(0.2182, 16, 12, phiC - 0.075, 0.15, 0, 1.14), { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.trim, false);
     }
     // rear skirt over the nape, same job as the helmet's
     add(gear, xform(new THREE.SphereGeometry(0.216, 20, 8, -Math.PI / 2 - 1.55, 3.10, 1.13, 0.46), { pos: [0, 0.016, -0.026], scale: [1.03, 0.94, 1.0] }), M.gear, false);
@@ -927,7 +926,7 @@ export function createCat(id, opts = {}) {
     const shell = new THREE.SphereGeometry(0.214, 20, 12, 0, TAU, 0, 1.24);
     add(gear, xform(shell, { pos: [0, 0.020, -0.020], scale: [1.02, 0.92, 1.0] }), M.gear);
     for (const phiC of [Math.PI / 2, -Math.PI / 2]) {
-      add(gear, xform(new THREE.SphereGeometry(0.2162, 16, 12, phiC - 0.15, 0.30, 0, phiC < 0 ? 0.75 : 1.23), { pos: [0, 0.020, -0.020], scale: [1.02, 0.92, 1.0] }), M.trim, false);
+      add(gear, xform(new THREE.SphereGeometry(0.2162, 16, 12, phiC - 0.15, 0.30, 0, 1.23), { pos: [0, 0.020, -0.020], scale: [1.02, 0.92, 1.0] }), M.trim, false);
     }
     const strap = new THREE.TorusGeometry(0.198, 0.019, 8, 24);
     add(gear, xform(strap, { pos: [0, 0.075, -0.010], rot: [1.30, 0, 0], scale: [1.03, 1.0, 1] }), M.dark, false);
@@ -1053,8 +1052,8 @@ export function createCat(id, opts = {}) {
   // not a yaw — a near-vertical tail barely moves when you yaw its root — so the whole tail now
   // stands up and out over one flank, clear of both the skull and the seat back.
   const tailSide = ((spec.seed / 101) | 0) % 2 ? 1 : -1;
-  B.tail[0].rotation.set(-0.60, 0, tailSide * 0.52);
-  for (let i = 1; i < B.tail.length; i++) B.tail[i].rotation.set(0.24, 0, tailSide * 0.05);
+  B.tail[0].rotation.set(-1.00, 0, tailSide * 0.46);
+  for (let i = 1; i < B.tail.length; i++) B.tail[i].rotation.set(0.26, 0, tailSide * 0.06);
   for (const b of B.tail) b.userData.rest = b.rotation.clone();
 
   /* ---- rest pose */

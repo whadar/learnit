@@ -90,7 +90,11 @@ const linToSrgb = v => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(Math.max(v
 function skyRadiance(dir, sunDir, p) {
   const { betaR, betaM, sunE: E } = coefficients(p);
   const inv = opticalInverse(dir.y);
-  const sR = RAY_ZENITH * inv, sM = MIE_ZENITH * inv;
+  // Same saturating air-mass curve as the fragment shader (see `invS` there) — the fog and
+  // ambient palette are only useful if they are the colour the dome actually draws.
+  const ex = Math.max(inv - 1, 0), k = p.horizonChroma ?? 1.6;
+  const invS = 1 + ex * k / (ex + k);
+  const sR = RAY_ZENITH * invS, sM = MIE_ZENITH * invS;
   const Fex = [0, 1, 2].map(i => Math.exp(-(betaR[i] * sR + betaM[i] * sM)));
   const cosT = dir.dot(sunDir);
   const rPhase = 0.05968310365946075 * (1 + Math.pow(cosT * 0.5 + 0.5, 2));
@@ -220,6 +224,7 @@ uniform vec3  uAureole;
 uniform vec3  uGroundHaze;
 uniform vec3  uEnvGround;
 uniform float uHorizonHaze;
+uniform float uHorizonChroma;   // air-mass excess the in-scatter term is allowed to see
 uniform vec3  uHazeTint;          // unit-luminance dust *hue*, not an absolute colour
 uniform float uHazeGain;
 uniform float uSkySat;
@@ -311,9 +316,26 @@ void main() {
 
   float zenithAngle = acos( max( 0.0, direction.y ) );
   float inv = 1.0 / ( cos( zenithAngle ) + 0.15 * pow( 93.885 - ( zenithAngle * 180.0 / pi ), -1.253 ) );
-  float sR = rayleighZenithLength * inv;
-  float sM = mieZenithLength * inv;
+
+  // --- horizon chroma ---------------------------------------------------------------------
+  // Preetham's air mass runs to ~38 at the skyline. At that depth ( 1 - Fex ) saturates to 1.0
+  // in ALL THREE channels, so the in-scatter term loses the 1:3:7 Rayleigh ratio that *is*
+  // the sky's blue: the bottom 20 deg of the dome comes out achromatic (measured sat 0.08 in
+  // villageStreet, 0.14 in hilltopVista) and the warm aureole then tips that grey to cream.
+  // A chase camera never looks above ~20 deg, so the blue the shader computes at zenith is
+  // never on screen. Roll the *excess* air mass over zenith into a saturating curve — zenith
+  // (inv = 1) is untouched, the skyline asymptotes to 1 + uHorizonChroma — so the horizon
+  // keeps a real Mediterranean blue instead of bleaching. Purely a stylisation, and the same
+  // one MK8's skies make: chroma held almost all the way down to the skyline.
+  float excess = max( inv - 1.0, 0.0 );
+  float invS = 1.0 + excess * uHorizonChroma / ( excess + uHorizonChroma );
+
+  float sR = rayleighZenithLength * invS;
+  float sM = mieZenithLength * invS;
   vec3 Fex = exp( -( vBetaR * sR + vBetaM * sM ) );
+  // The solar disc and its aureole still see the *true* path length, so a low sun still
+  // reddens through the full air mass.
+  vec3 FexSun = exp( -( vBetaR * rayleighZenithLength * inv + vBetaM * mieZenithLength * inv ) );
 
   float cosTheta = dot( direction, vSunDirection );
   vec3 betaRTheta = vBetaR * ( THREE_OVER_SIXTEENPI * ( 1.0 + pow( cosTheta * 0.5 + 0.5, 2.0 ) ) );
@@ -331,7 +353,10 @@ void main() {
   // dust hue — so it can never add energy. The previous form multiplied an absolute palette
   // colour (already in exposed display units) into pre-exposure radiance, which brightened
   // the horizon band by ~40% and is why the bottom third of the dome clipped to paper.
-  float hz = 1.0 - smoothstep( -0.015, 0.115, direction.y );
+  // Onset raised hard: the band used to reach 6.6 deg up, which on a horizon-locked chase
+  // camera is most of the visible dome. Dust really does sit in the last two or three
+  // degrees, and that is all it gets.
+  float hz = 1.0 - smoothstep( -0.020, 0.048, direction.y );
   float skyL = max( dot( sky, vec3( 0.2126, 0.7152, 0.0722 ) ), 0.0 );
   vec3 hazeCol = uHazeTint * skyL * uHazeGain;
   hazeCol *= mix( 1.0, 1.10, pow( max( cosTheta, 0.0 ), 6.0 ) );
@@ -368,7 +393,7 @@ void main() {
   // The Mie aureole around a low sun is golden, not white; tint it and roll off the
   // highlight so a quarter of the frame does not clip to flat paper.
   float aur = pow( max( cosTheta, 0.0 ), 7.0 );
-  sky *= mix( vec3( 1.0 ), uAureole, aur * 0.55 );
+  sky *= mix( vec3( 1.0 ), uAureole, aur * 0.42 );
 #ifdef ENV_PASS
   // The IBL wants linear radiance, so the only limiter it gets is the old luminance knee.
   {
@@ -384,7 +409,7 @@ void main() {
   float u = clamp( ang / sunR, 0.0, 1.0 );
   float limb = 1.0 - 0.62 * ( 1.0 - sqrt( max( 0.0, 1.0 - u * u ) ) );
   float disc = smoothstep( sunR, sunR * 0.82, ang ) * limb;
-  vec3 sunCol = vSunE * Fex;
+  vec3 sunCol = vSunE * FexSun;
   float glow = pow( max( cosTheta, 0.0 ), 2600.0 ) * 5.0
              + pow( max( cosTheta, 0.0 ), 400.0 ) * 0.10
              + pow( max( cosTheta, 0.0 ), 40.0 ) * 0.014;
@@ -457,6 +482,12 @@ const DEFAULTS = {
   // which the LUT's saturation push turns into a proper Mediterranean blue.
   exposure: 0.215,
   skySaturation: 1.36,
+  // How much air mass *over* the zenith column the in-scatter term is allowed to accumulate.
+  // The skyline asymptotes to (1 + this) zenith depths instead of Preetham's ~38, which is
+  // what keeps chroma in the bottom 20 deg — the only part of the dome a chase camera sees.
+  // 1.6 lands the skyline near RGB 93,159,193 away from the sun and holds the zenith exactly
+  // where it was; higher values bleach the horizon again, lower ones turn it navy.
+  horizonChroma: 1.6,
 };
 
 /**
@@ -497,6 +528,7 @@ export function createSky(engine, world, opts = {}) {
     uGroundHaze:  { value: new THREE.Color(0.34, 0.30, 0.25) },
     uEnvGround:   { value: new THREE.Color(0.30, 0.22, 0.15) },
     uHorizonHaze: { value: 0.15 },
+    uHorizonChroma: { value: o.horizonChroma },
     uHazeTint:    { value: new THREE.Color(1.03, 1.0, 0.95) },   // unit-luminance dust hue
     uHazeGain:    { value: 1.0 },
     uSkySat:      { value: o.skySaturation },
@@ -566,6 +598,7 @@ export function createSky(engine, world, opts = {}) {
     const p = {
       rayleigh: o.rayleigh, turbidity: o.turbidity, mie: o.mie, mieG: o.mieG,
       sunY: state.sunDir.y * 1000, sunElevationCos: state.sunDir.y,
+      horizonChroma: o.horizonChroma,
     };
     const elev = state.elevation;
     // Direct-beam transmittance through the real air mass at this elevation.
@@ -631,7 +664,7 @@ export function createSky(engine, world, opts = {}) {
     {
       const hl = 0.2126 * palette.horizon.r + 0.7152 * palette.horizon.g + 0.0722 * palette.horizon.b;
       _dust.setRGB(hl * 1.05, hl * 1.0, hl * 0.92, THREE.LinearSRGBColorSpace);
-      palette.horizon.lerp(_dust, 0.30);
+      palette.horizon.lerp(_dust, 0.20);
     }
     // The in-dome haze tint is a *hue*, normalised to unit luminance (see the shader).
     {
@@ -692,7 +725,7 @@ export function createSky(engine, world, opts = {}) {
         .lerp(palette.sunColor.clone().multiplyScalar(gain * 0.22), 0.14 + 0.25 * smoothstep(20, 0, elev));
     }
     uniforms.uShine.value = lerp(0.35, 0.8, smoothstep(25, 3, elev));
-    uniforms.uHorizonHaze.value = 0.13 + 0.20 * smoothstep(22, 2, elev);
+    uniforms.uHorizonHaze.value = 0.10 + 0.16 * smoothstep(18, 0, elev);
   }
 
   /** @param {number|string} h local decimal hour, or a key of TIME_PRESETS. */

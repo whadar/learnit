@@ -382,22 +382,95 @@ export function makeCompositeShader() {
 const srgbToLin = v => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
 const linToSrgb = v => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
 
+const ss = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+
+/** shortest distance between two hue angles, in degrees (0..180) */
+const hueDist = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
+
+/**
+ * Where each hue *lands*. This is a monotone map from the hue the renderer produced to the
+ * hue the frame should show, given as knots and interpolated linearly; monotonicity matters,
+ * because a non-monotone map lets two neighbouring shades cross over each other and a smooth
+ * gradient breaks into bands.
+ *
+ * The work happens between 50 and 90 deg. Foliage on this course — pine, cypress, olive,
+ * vine — renders at hue 44-64: yellow-olive, on the *warm* side of the R=G line at 60, which
+ * is why an aerial plate of a village surrounded by forest read as one sepia wash. That band
+ * is stretched onto 50-126 so a canopy becomes green, while everything below 50 deg (dry
+ * stubble at 44-50, limestone dust, straw bales, the haze) is left where it is and stays
+ * warm. Below that the map tilts slightly toward red, which is what separates a terracotta
+ * pantile roof from the dust of the road in front of it.
+ */
+const HUE_WARP = [
+  [0, 0], [20, 15], [36, 32], [51, 51], [58, 78], [66, 106], [76, 120], [88, 130],
+  [104, 138], [126, 150], [150, 164], [180, 190], [212, 216], [245, 246], [290, 292],
+  [330, 334], [360, 360],
+];
+function hueWarp(h) {
+  for (let i = 1; i < HUE_WARP.length; i++) {
+    const b = HUE_WARP[i];
+    if (h <= b[0]) {
+      const a = HUE_WARP[i - 1];
+      const t = (h - a[0]) / (b[0] - a[0]);
+      return a[1] + (b[1] - a[1]) * t;
+    }
+  }
+  return h;
+}
+
+function hsvToRgb(h, s, v) {
+  const c = v * s;
+  const hp = (((h % 360) + 360) % 360) / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0, g = 0, b = 0;
+  if (hp < 1)      { r = c; g = x; }
+  else if (hp < 2) { r = x; g = c; }
+  else if (hp < 3) { g = c; b = x; }
+  else if (hp < 4) { g = x; b = c; }
+  else if (hp < 5) { r = x; b = c; }
+  else             { r = c; b = x; }
+  const m = v - c;
+  return [r + m, g + m, b + m];
+}
+
+/**
+ * The palette, as hue families. `lo` is the saturation gain applied to a low-chroma pixel of
+ * that hue, `hi` the gain once it is already vivid; `sigma` is the kernel width in degrees.
+ *
+ * The amber family is the only one below 1.0, and that is the whole point of this table: on
+ * a course lit by a low warm sun, *everything* neutral lands there, so it is the one family
+ * that needs pulling back rather than pushing. Its `hi` stays above 1.0 so the things that
+ * are genuinely orange — boost flame, item-box gold, terracotta — are untouched by that.
+ */
+const HUE_ANCHORS = [
+  { h:  12, sigma: 27, lo: 1.24, hi: 1.06 },   // pantile red, kerb stripe, kart livery
+  { h:  46, sigma: 26, lo: 0.88, hi: 1.10 },   // limestone, plaster, dust, straw, haze
+  { h: 118, sigma: 40, lo: 1.36, hi: 1.14 },   // olive, pine, cypress, vine, grass
+  { h: 215, sigma: 55, lo: 1.78, hi: 1.38 },   // sky, shade, water, blue liveries
+  { h: 310, sigma: 50, lo: 1.30, hi: 1.14 },   // item-box magenta, bougainvillea
+];
+
 /**
  * Builds the 32^3 grading LUT as a 1024x32 RGBA strip. Deterministic and dependency-free,
  * so a screenshot round always gets exactly the same grade.
  *
- * The look: Ramot Menashe at about 15:30. Warm amber highlights, cool-teal shade so
- * Jerusalem stone reads three-dimensional, and a hard saturation push on the
- * terracotta / olive / sky triad that keeps the village legible at kart speed. The domain
- * is the renderer's ACES output, so the curve only has to add character — the highlight
- * shoulder is already there and this must not fight it.
+ * The look: Ramot Menashe at about 15:30. Warm sun, cool-teal shade so Jerusalem stone
+ * reads three-dimensional, and — the part that carries the whole frame — a palette built
+ * per *hue family* rather than per pixel: terracotta red, limestone amber, olive-and-pine
+ * green and sky blue each get their own saturation, so a village surrounded by forest reads
+ * as four colours at kart speed instead of one. The domain is the renderer's ACES output,
+ * so the curve only has to add character — the highlight shoulder is already there and this
+ * must not fight it.
  */
 export function makeGradeLUT(opts = {}) {
   const N = 32;
   const W = N * N, H = N;
   const data = new Uint8Array(W * H * 4);
 
+  // `saturation` is the *strength* of the palette shaping below, not a flat multiplier:
+  // 1.42 (what post.js asks for) means "apply the hue table at full weight".
   const sat       = opts.saturation ?? 1.28;
+  const strength  = clamp((sat - 1) / 0.42, 0, 2.2);
   const contrast  = opts.contrast ?? 1.10;
   const warmth    = opts.warmth ?? 1.0;
   const shadeTint = opts.shadeTint ?? 1.0;
@@ -430,20 +503,71 @@ export function makeGradeLUT(opts = {}) {
         // --- display-referred shaping ------------------------------------------------------
         let lum = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
 
-        // Saturation, applied as *vibrance*: the push is strongest on the near-neutral
-        // limestone dust and dry stubble that make up most of this course, and eases off
-        // both in the very brightest values (so plaster stays white) and on colours that
-        // are already saturated (so the red pantiles, the item-box gold and the kart
-        // liveries keep their gradients instead of smearing into flat primaries). A flat
-        // multiplier at this strength turns the whole moshav into orange poster paint.
+        // --- the palette: per-hue saturation and hue placement --------------------------
+        // Round-3 review measured 94.9% of every chromatic pixel in the frame inside the
+        // 0-90 deg red-to-yellow arc, with greens at 1.0% and blues at 3.4% — a kart racer
+        // rendered in one colour. The cause was a *vibrance* curve here that gave its full
+        // push to near-neutrals and rolled off on things already saturated: with a warm key
+        // light, that drives every neutral surface in the moshav (limestone, plaster,
+        // asphalt, dust, haze) into the same orange while leaving the sky and the foliage —
+        // the only things that carry another hue — untouched. It optimised mean chroma and
+        // destroyed the palette.
+        //
+        // The priority is inverted here. Saturation is a function of *hue*: the amber mass
+        // is pulled back so stone reads as stone, and the green and blue families are pushed
+        // hard so the olive groves, the pine ridge, the shade and the sky come back as their
+        // own colours. A hue rotation runs first, because the foliage on this course renders
+        // at hue 44-64 — yellow-olive, on the warm side of the R=G line at 60 — and no
+        // amount of saturation makes a yellow read as a tree. The warp is flat below 51 deg,
+        // just above the dry stubble and dust at 44-50, so the ground stays warm while the
+        // canopy above it turns green.
         {
           const mx = Math.max(out[0], out[1], out[2]);
           const mn = Math.min(out[0], out[1], out[2]);
-          const chroma = mx > 1e-4 ? (mx - mn) / mx : 0;
+          const chroma = mx > 1e-5 ? (mx - mn) / mx : 0;
+
+          // Hue, degrees. Below the chroma gate a pixel has no meaningful hue, so every
+          // hue-driven term fades out there — that is what keeps neutrals neutral and keeps
+          // the trilinear interpolation between LUT cells smooth across the grey axis.
+          const gate = ss(0.05, 0.15, chroma);
+          let h = 0;
+          const d = mx - mn;
+          if (d > 1e-6) {
+            if (mx === out[0])      h = 60 * ((((out[1] - out[2]) / d) % 6) + 6) % 360;
+            else if (mx === out[1]) h = 60 * (((out[2] - out[0]) / d) + 2);
+            else                    h = 60 * (((out[0] - out[1]) / d) + 4);
+            h = ((h % 360) + 360) % 360;
+          }
+
+          const h2 = ((h + (hueWarp(h) - h) * gate) % 360 + 360) % 360;
+
+          // Saturation gain, blended between the hue anchors with a normalised gaussian
+          // kernel so there are no seams between families. `hi` is the gain for colours that
+          // are already saturated — a boost flame, item-box gold, a kart livery — which must
+          // keep their gradients rather than smear into a flat primary.
+          const hiC = ss(0.55, 0.85, chroma);
+          let wSum = 0, gSum = 0;
+          for (let a = 0; a < HUE_ANCHORS.length; a++) {
+            const A = HUE_ANCHORS[a];
+            const t = hueDist(h2, A.h) / A.sigma;
+            const w = Math.exp(-t * t);
+            wSum += w;
+            gSum += w * (A.lo + (A.hi - A.lo) * hiC);
+          }
+          const gain = wSum > 1e-6 ? gSum / wSum : 1;
+
+          // Keep plaster and cloud tops white: the push eases out in the top stop.
           const hiRoll = 1 - 0.45 * clamp((lum - 0.82) / 0.18, 0, 1);
-          const vib = 1 - 0.60 * clamp(chroma / 0.50, 0, 1);
-          const satHere = 1 + (sat - 1) * hiRoll * vib;
-          for (let k = 0; k < 3; k++) out[k] = lum + (out[k] - lum) * satHere;
+          const satHere = clamp(1 + (gain - 1) * strength * hiRoll, 0.25, 3);
+
+          const s2 = clamp(chroma * satHere, 0, 1);
+          const rgb2 = hsvToRgb(h2, s2, mx);
+          // Rotating a yellow to a green at constant value darkens it (green carries more
+          // luma per unit value), and a saturation push darkens too. Restore most of the
+          // original luma so the canopy keeps its shape and the sky keeps its brightness.
+          const l1 = 0.2126 * rgb2[0] + 0.7152 * rgb2[1] + 0.0722 * rgb2[2];
+          const k = l1 > 1e-4 ? clamp((l1 + (lum - l1) * 0.38) / l1, 0.72, 1.45) : 1;
+          for (let n = 0; n < 3; n++) out[n] = Math.max(rgb2[n] * k, 0);
         }
 
         // filmic S-curve about a 0.46 pivot
@@ -457,9 +581,15 @@ export function makeGradeLUT(opts = {}) {
         const hi = lum * lum * lum;         // highlight weight
 
         // cool-teal shade, warm amber highlight — the classic sunny-afternoon split tone
-        out[0] += shadeTint * (-0.030 * sh) + warmth * (0.028 * hi);
-        out[1] += shadeTint * (0.006 * sh) + warmth * (0.014 * hi);
-        out[2] += shadeTint * (0.050 * sh) + warmth * (-0.023 * hi);
+        // Cool shade, warm highlight — the classic sunny-afternoon split tone, but weighted
+        // toward the shade end. A strong warm highlight tint tints the *sky and the haze*
+        // before it tints anything else, because those are the brightest things in a frame
+        // shot outdoors; that is how a Mediterranean afternoon ends up looking like a dust
+        // storm. The shade side carries the colour contrast instead, which is also where it
+        // does the most good — a third of this course is under an olive or a pine.
+        out[0] += shadeTint * (-0.042 * sh) + warmth * (0.019 * hi);
+        out[1] += shadeTint * (0.005 * sh) + warmth * (0.011 * hi);
+        out[2] += shadeTint * (0.072 * sh) + warmth * (-0.012 * hi);
 
         // a whisper of warm lift so the blacks are dusty, not video-black
         out[0] += 0.019 * sh; out[1] += 0.014 * sh; out[2] += 0.010 * sh;
