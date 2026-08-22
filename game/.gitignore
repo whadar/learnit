@@ -16,3 +16,5 @@ tools/sim/_*.mjs
 .smoke/
 tools/.*.mjs
 tools/_*.mjs
+dist-single/
+kat-racing.html

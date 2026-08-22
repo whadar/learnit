@@ -1,0 +1,265 @@
+<meta charset="utf-8">
+<title>Amikam Village Circuit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Overpass:wght@400;600;900&family=Overpass+Mono:wght@400;600&display=swap">
+
+<style>
+  /* One committed visual world — a trackside sign at dusk on the Menashe plateau — so the page
+     paints every colour explicitly and does not follow the viewer's theme. */
+  :root {
+    --asphalt:    #23262b;   /* the road surface */
+    --asphalt-lo: #16181c;   /* shadow under the kerb */
+    --limestone:  #e7dcc4;   /* Jerusalem stone: primary text */
+    --limestone-dim: #a89e8a;
+    --pantile:    #c4462e;   /* roof tile: the one accent */
+    --cypress:    #2c3e33;   /* dark green */
+    --signblue:   #10357a;   /* Israeli road-sign blue */
+    --sky:        #3d8fd4;
+    --plate: clamp(320px, 46vw, 560px);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--asphalt-lo);
+    color: var(--limestone);
+    font-family: "Overpass", ui-sans-serif, system-ui, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #app { position: fixed; inset: 0; }
+  #app canvas { display: block; width: 100%; height: 100%; }
+
+  /* ---- the start plate: an actual road sign ------------------------------------------------ */
+  #gate {
+    position: fixed; inset: 0; z-index: 10;
+    display: grid; place-items: center; gap: 0;
+    padding: 24px;
+    background:
+      radial-gradient(120% 90% at 50% 8%, #2f3a44 0%, var(--asphalt) 46%, var(--asphalt-lo) 100%);
+    transition: opacity .5s ease;
+  }
+  #gate[hidden] { display: none; }
+  #gate.away { opacity: 0; pointer-events: none; }
+
+  .sign {
+    width: var(--plate);
+    max-width: 100%;
+    background: var(--signblue);
+    border: 3px solid #f2f2f2;
+    border-radius: 10px;
+    padding: 22px 26px 24px;
+    box-shadow: 0 26px 60px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,255,255,.12);
+  }
+  .sign .he {
+    font-size: clamp(20px, 3.4vw, 30px);
+    font-weight: 600;
+    direction: rtl;
+    line-height: 1.15;
+    color: #fff;
+    text-wrap: balance;
+  }
+  .sign .en {
+    font-size: clamp(13px, 1.7vw, 17px);
+    font-weight: 600;
+    letter-spacing: .13em;
+    color: #dfe6f5;
+    margin-top: 4px;
+  }
+  .sign .rule { height: 2px; background: rgba(255,255,255,.34); margin: 14px 0 12px; }
+  .sign .meta {
+    font-family: "Overpass Mono", ui-monospace, monospace;
+    font-size: 11.5px; line-height: 1.7; color: #c3cee6;
+    font-variant-numeric: tabular-nums;
+    display: grid; grid-template-columns: auto 1fr; gap: 2px 14px;
+  }
+  .sign .meta b { font-weight: 600; color: #fff; }
+
+  .below { width: var(--plate); max-width: 100%; margin-top: 20px; }
+
+  .keys {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(122px, 1fr));
+    gap: 8px;
+    margin-bottom: 18px;
+  }
+  .key {
+    background: rgba(231,220,196,.055);
+    border: 1px solid rgba(231,220,196,.14);
+    border-radius: 7px;
+    padding: 9px 11px;
+  }
+  .key kbd {
+    font-family: "Overpass Mono", ui-monospace, monospace;
+    font-size: 11.5px; font-weight: 600;
+    color: var(--limestone);
+    background: rgba(0,0,0,.34);
+    border: 1px solid rgba(231,220,196,.2);
+    border-radius: 4px;
+    padding: 1.5px 6px;
+  }
+  .key span { display: block; margin-top: 6px; font-size: 12px; color: var(--limestone-dim); }
+
+  #go {
+    display: block; width: 100%;
+    font-family: inherit; font-weight: 900;
+    font-size: clamp(17px, 2.3vw, 21px);
+    letter-spacing: .1em;
+    color: #fff;
+    background: var(--pantile);
+    border: 0; border-radius: 8px;
+    padding: 16px;
+    cursor: pointer;
+    transition: filter .16s ease, transform .16s ease;
+  }
+  #go:hover { filter: brightness(1.1); }
+  #go:active { transform: translateY(1px); }
+  #go:focus-visible { outline: 3px solid var(--sky); outline-offset: 3px; }
+  #go[disabled] { background: #4a4f57; color: var(--limestone-dim); cursor: default; }
+
+  .note {
+    margin-top: 14px; font-size: 12px; line-height: 1.6; color: var(--limestone-dim);
+    text-align: center;
+  }
+  .note b { color: var(--limestone); font-weight: 600; }
+
+  #err {
+    margin-top: 14px; padding: 12px 14px;
+    border-left: 3px solid var(--pantile);
+    background: rgba(196,70,46,.1);
+    font-family: "Overpass Mono", ui-monospace, monospace;
+    font-size: 11.5px; line-height: 1.6; color: #f0d9d2;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  #err[hidden] { display: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #gate, #go { transition: none; }
+  }
+</style>
+
+<div id="app"></div>
+
+<div id="gate">
+  <div>
+    <div class="sign">
+      <div class="he">מסלול מושב עמיקם</div>
+      <div class="en">AMIKAM VILLAGE CIRCUIT</div>
+      <div class="rule"></div>
+      <div class="meta">
+        <b>32.5636 N</b><span>35.0208 E — Ramot Menashe, Haifa District</span>
+        <b>3072 m</b><span>square of SRTM terrain, 50–185 m elevation</span>
+        <b>552</b><span>real building footprints from Overture Maps</span>
+        <b>3 laps</b><span>eight karts</span>
+      </div>
+    </div>
+
+    <div class="below">
+      <div class="keys">
+        <div class="key"><kbd>↑</kbd> <kbd>W</kbd><span>Accelerate</span></div>
+        <div class="key"><kbd>↓</kbd> <kbd>S</kbd><span>Brake / reverse</span></div>
+        <div class="key"><kbd>←</kbd> <kbd>→</kbd><span>Steer</span></div>
+        <div class="key"><kbd>Space</kbd><span>Hop, hold to drift</span></div>
+        <div class="key"><kbd>Ctrl</kbd><span>Use item</span></div>
+        <div class="key"><kbd>Esc</kbd><span>Pause</span></div>
+      </div>
+      <button id="go" disabled>LOADING…</button>
+      <p class="note">
+        Built on the real terrain and building footprints of <b>Moshav Amikam</b>.
+        Needs WebGL2 and a keyboard.
+      </p>
+      <div id="err" hidden></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // The two files the game fetches at runtime are embedded in this page instead, so it runs
+  // with no server and no network. The heightfield was requantised to uint16 to halve its size
+  // and is expanded back to the Float32 the game expects before it is handed over.
+  (function () {
+    const HEIGHT_LO = /*__HEIGHT_LO__*/0;
+    const HEIGHT_SPAN = /*__HEIGHT_SPAN__*/0;
+    const HEIGHT_B64 = "__HEIGHT_B64__";
+    const WORLD_JSON = "__WORLD_JSON__";
+
+    let heightBuf = null;
+    function heights() {
+      if (heightBuf) return heightBuf;
+      const bin = atob(HEIGHT_B64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const q = new Uint16Array(bytes.buffer);
+      const f = new Float32Array(q.length);
+      for (let i = 0; i < q.length; i++) f[i] = HEIGHT_LO + (q[i] / 65535) * HEIGHT_SPAN;
+      heightBuf = f.buffer;
+      return heightBuf;
+    }
+
+    const realFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      const url = String(input && input.url ? input.url : input);
+      if (url.endsWith('amikam.json')) {
+        return Promise.resolve(new Response(WORLD_JSON, {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('amikam-height.bin')) {
+        return Promise.resolve(new Response(heights(), {
+          headers: { 'Content-Type': 'application/octet-stream' },
+        }));
+      }
+      return realFetch(input, init);
+    };
+
+    const gate = document.getElementById('gate');
+    const go = document.getElementById('go');
+    const err = document.getElementById('err');
+
+    function fail(what, e) {
+      err.hidden = false;
+      err.textContent = what + '\n' + (e && (e.stack || e.message) || e);
+      go.textContent = 'FAILED TO START';
+    }
+    window.addEventListener('error', e => fail('Runtime error', e.error || e.message));
+
+    // WebGL2 is a hard requirement — say so before the bundle throws something cryptic.
+    try {
+      const probe = document.createElement('canvas').getContext('webgl2');
+      if (!probe) throw new Error('This browser reports no WebGL2 context.');
+    } catch (e) {
+      fail('WebGL2 unavailable', e);
+      return;
+    }
+
+    window.__KR_SINGLE_FILE = true;
+    window.addEventListener('kr:ready', () => {
+      go.disabled = false;
+      go.textContent = 'START RACE';
+      go.focus();
+    });
+
+    // If the game never signals readiness, open the gate anyway once the bundle has run —
+    // a stuck LOADING… button with a working game behind it is the worse failure.
+    setTimeout(() => {
+      if (go.disabled && !err.hidden === false) {
+        go.disabled = false;
+        go.textContent = 'START RACE';
+      }
+    }, 12000);
+
+    go.addEventListener('click', () => {
+      gate.classList.add('away');
+      setTimeout(() => { gate.hidden = true; }, 520);
+      const c = document.querySelector('#app canvas');
+      if (c) { c.setAttribute('tabindex', '0'); c.focus(); }
+      window.dispatchEvent(new Event('kr:start'));
+    });
+  })();
+</script>
+
+<script type="module">
+/*__BUNDLE__*/
+</script>

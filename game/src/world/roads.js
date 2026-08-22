@@ -98,14 +98,22 @@ export function buildRoadTextures(p) {
   const sealed = p.kind === 'asphalt' || p.kind === 'gravel';
   const chip = p.kind === 'gravel';             // tar-and-chip, coarse pale aggregate
 
-  // Palettes are LINEAR albedo. The scene runs a hot sun through ACES plus a warm grade, so
-  // every value here comes back a long way lifted: the pale hillside (linear ~0.30) renders
-  // near byte 190, which is why the road has to be authored down at 0.06-0.11 to read as a
-  // road at all. These numbers were chosen from rendered frames, not from a swatch.
+  /* Palettes are LINEAR albedo. The scene runs a hot sun through ACES plus a warm grade, so
+   * every value here comes back a long way lifted: the pale hillside (linear ~0.30) renders
+   * near byte 190, which is why the road has to be authored down at 0.06-0.11 to read as a
+   * road at all. These numbers were chosen from rendered frames, not from a swatch.
+   *
+   * HUE. The asphalt base used to be authored blue-biased (b 0.056 > r 0.053). On a surface
+   * this dark that bias is not a subtlety: almost none of a shaded road pixel comes from the
+   * sun, so the ambient — a saturated cyan sky IBL plus a cyan hemisphere — dominates, and a
+   * blue-biased albedo on top of blue-biased fill is what turns village tarmac into water.
+   * The base is now faintly WARM (r > g > b), so the albedo pulls back against the fill
+   * instead of piling onto it, and the material's `envMapIntensity` (see `createRoads`) keeps
+   * the cyan half of that fill down where a dusty, sun-baked road actually sits. */
   const base = p.base || (p.kind === 'path' ? [0.40, 0.335, 0.245]
     : dirtKind ? [0.575, 0.515, 0.405]
       : chip ? [0.078, 0.0735, 0.067]
-        : [0.053, 0.0525, 0.056]);
+        : [0.0570, 0.0543, 0.0505]);
   const shoulderCol = p.shoulder || (dirtKind ? [0.50, 0.455, 0.335]
     : chip ? [0.235, 0.215, 0.163] : [0.225, 0.203, 0.152]);
 
@@ -115,10 +123,15 @@ export function buildRoadTextures(p) {
     ? [{ at: p.road * 0.265, w: 0.46 }]
     : [{ at: p.road * 0.27, w: 0.34 }]);
   const R = rng(seed * 7919 + 13);
+  /* Repair patches. `tone` is a MULTIPLIER on the surface already there, so it has to stay
+   * near 1: the old bright branch reached 1.64, which over a 0.05 base painted metre-wide
+   * blotches two-thirds brighter than the road they sit in — read by three review rounds as
+   * pale puddles mid-ribbon. A bleached patch of the same chip seal is a batch difference,
+   * not a different material: a quarter of a stop either way is the whole range. */
   const patches = [];
   if (p.kind === 'asphalt') for (let i = 0; i < 5; i++) {
     patches.push({ v: R() * p.vMetres, len: 0.9 + R() * 2.1, u: (R() - 0.5) * p.road * 0.78,
-      wid: 0.8 + R() * 1.7, tone: R() < 0.55 ? 0.66 + R() * 0.22 : 1.22 + R() * 0.42, seed: (R() * 1e6) | 0 });
+      wid: 0.8 + R() * 1.7, tone: R() < 0.55 ? 0.80 + R() * 0.13 : 1.09 + R() * 0.15, seed: (R() * 1e6) | 0 });
   }
   const stains = [];
   if (sealed) for (let i = 0; i < 5; i++) stains.push({ v: R() * p.vMetres, u: (R() - 0.5) * p.road * 0.4, r: 0.25 + R() * 0.6 });
@@ -207,7 +220,9 @@ export function buildRoadTextures(p) {
          * seamless. */
         const macro = NF(U, V, 0.30, seed + 71, 4);            // sun-bleach / age drift
         const tone = 0.90 + macro * 0.20;
-        r *= tone; g *= tone; b *= tone * 1.03;
+        // no blue lift here: the sun-bleach of a chip seal takes the *blue* out of the
+        // binder, it does not add it. (This term used to end `* 1.03` on b.)
+        r *= tone; g *= tone; b *= tone * 0.985;
 
         const wu = (NF(U, V, 1.7, seed + 1201, 2) - 0.5) * 0.115 + (NF(U, V, 5.5, seed + 1213, 2) - 0.5) * 0.045;
         const wv = (NF(U, V, 1.7, seed + 1307, 2) - 0.5) * 0.115 + (NF(U, V, 5.5, seed + 1319, 2) - 0.5) * 0.045;
@@ -217,7 +232,13 @@ export function buildRoadTextures(p) {
          * centimetre, and anything coarser reads as cobblestones rather than as tarmac. The
          * medium field only thins and thickens the pack and varies stone colour; the coarse
          * one just drops the occasional bigger pebble in. */
-        const fA = FMAX * 0.30, fB = FMAX * 0.60, fC = FMAX * 1.15;
+        /* `FMAX` is already the finest frequency this texture can carry (2.4 texels per
+         * lattice cell). Running the *aggregate* field at 1.15 * FMAX put the stones at two
+         * texels each — below a mip level, so the pack could not attenuate with distance and
+         * came back as fixed-screen-size salt-and-pepper that shimmers at speed. The pack now
+         * tops out at 0.62 * FMAX, i.e. about four texels a stone, which is the coarsest
+         * grain that still mips honestly. */
+        const fA = FMAX * 0.17, fB = FMAX * 0.33, fC = FMAX * 0.62;
         const a1 = VN(Uw, Vw, fA, seed + 401);
         const a2 = VN(Uw, Vw, fB, seed + 733);
         const a3 = VN(Uw, Vw, fC, seed + 915);
@@ -234,11 +255,16 @@ export function buildRoadTextures(p) {
 
         // black bitumen with its sand fines, then the stones bedded into it
         const binderK = 0.735 + (fines - 0.5) * 0.17;
-        r *= binderK; g *= binderK; b *= binderK * 1.02;
-        const cHi = chip ? [0.0975, 0.0933, 0.0832] : [0.0892, 0.0866, 0.0816];
+        // Fresh bitumen is genuinely a touch cool, but only a touch — 1.02 on b here plus
+        // 1.03 on the macro tone plus a blue-biased base stacked three blue lifts on one
+        // surface. One of them, at half strength, is enough to keep the hue interest.
+        r *= binderK; g *= binderK; b *= binderK * 1.01;
+        const cHi = chip ? [0.0975, 0.0933, 0.0832] : [0.0870, 0.0838, 0.0778];
         // every stone reads a different value — some are freshly fractured and bright,
-        // some are tar-glazed and nearly as dark as the binder
-        const stone = clamp(0.74 + a2 * 0.46 + (a3 - 0.5) * 0.22, 0.36, 1.34);
+        // some are tar-glazed and nearly as dark as the binder. The spread is narrower than
+        // it was (0.36..1.34): at four texels a stone the old range mipped down to a churn
+        // of light and dark rather than to the surface's true mean.
+        const stone = clamp(0.80 + a2 * 0.34 + (a3 - 0.5) * 0.16, 0.52, 1.20);
         const ak = clamp(agg * 0.90 + pebble * 0.30, 0, 1);
         r = lerp(r, cHi[0] * stone, ak);
         g = lerp(g, cHi[1] * stone, ak);
@@ -697,7 +723,17 @@ export function createRoads(engine, world, opts = {}) {
       centre: cfg.centre, edge: cfg.edge, seed: cfg.seed, normalStrength: cfg.normalStrength,
       W: key === 'path' ? 96 : 208, H: key === 'path' ? 512 : 1024,
     });
-    const mat = mats[key] = createRoadMaterial(tex, { normalScale: key === 'track' ? 1.2 : 0.95 });
+    /* Sky IBL, per surface class. A sealed road is authored at linear ~0.055 — an order of
+     * magnitude darker than the hillside around it — so whatever the environment puts on it
+     * is not a sheen, it is most of the pixel wherever the sun does not reach. The sky dome
+     * here is a saturated Mediterranean cyan, and at 0.45 it was painting village asphalt
+     * blue in every shadow. Tarmac is a dusty dielectric with no meaningful reflection, so it
+     * gets a whisper; the pale limestone track and footpath are brighter and genuinely a
+     * little more open to the sky, so they keep more. */
+    const mat = mats[key] = createRoadMaterial(tex, {
+      normalScale: key === 'track' ? 1.2 : 0.95,
+      envMapIntensity: (key === 'major' || key === 'minor') ? 0.13 : 0.30,
+    });
     const g = mergeGeoms(buckets[key]);
     if (!g) continue;
     const mesh = new THREE.Mesh(g, mat);
