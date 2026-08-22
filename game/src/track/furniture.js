@@ -1068,10 +1068,14 @@ export function createFurniture(engine, world, track, opts = {}) {
           const gy = world.heightAt(p.x, p.z);
           const h = 6.2 + R() * 3.4, w = 0.95 + R() * 0.3;
           const tint = 0.85 + R() * 0.3;
-          wood.add(geo('cyptrunk', () => new THREE.CylinderGeometry(0.14, 0.20, 1, 5)),
-            trs(p.x, gy + 0.5, p.z, 0, 1, 1.0, 1), [0.31, 0.26, 0.20]);
-          foliage.add(cyp, trs(p.x, gy + h * 0.5 + 0.4, p.z, R() * TAU, w, h, w),
-            [0.135 * tint, 0.225 * tint, 0.135 * tint]);
+          if (o.veg?.plant) {
+            o.veg.plant('cypress', p.x, p.z, { scale: h / 7.6, widthScale: w, lean: 0.02 + R() * 0.05 });
+          } else {
+            wood.add(geo('cyptrunk', () => new THREE.CylinderGeometry(0.14, 0.20, 1, 5)),
+              trs(p.x, gy + 0.5, p.z, 0, 1, 1.0, 1), [0.31, 0.26, 0.20]);
+            foliage.add(cyp, trs(p.x, gy + h * 0.5 + 0.4, p.z, R() * TAU, w, h, w),
+              [0.135 * tint, 0.225 * tint, 0.135 * tint]);
+          }
         }
       }
       // water tanks and olive drums on the verge
@@ -1723,7 +1727,7 @@ export function createFurniture(engine, world, track, opts = {}) {
         else if (roll < 0.50) sabra(p2.x, gy2, p2.z, 1.0 + R() * 0.6);
         else if (roll < 0.60) boulders(p2.x, gy2, p2.z, 0.9 + R() * 0.6);
         else if (roll < 0.70) { for (let j = 0; j < 3; j++) { const q = { x: p2.x + sm2.tangent.x * j * 5.5 + sm2.normal.x * sgn * (R() * 3), z: p2.z + sm2.tangent.z * j * 5.5 + sm2.normal.z * sgn * (R() * 3) }; oliveAt(wood, foliage, q.x, world.heightAt(q.x, q.z), q.z, 0.85 + R() * 0.45, R); } }
-        else if (roll < 0.78) { const cyp = geo('cypress', () => new THREE.ConeGeometry(1, 1, 8)); for (let j = 0; j < 4; j++) { const q = { x: p2.x + sm2.tangent.x * j * 4.2, z: p2.z + sm2.tangent.z * j * 4.2 }; const qy = world.heightAt(q.x, q.z); const hh = 6.0 + R() * 3.0, w2 = 0.9 + R() * 0.3, t2 = 0.85 + R() * 0.3; wood.add(geo('cyptrunk', () => new THREE.CylinderGeometry(0.14, 0.20, 1, 5)), trs(q.x, qy + 0.5, q.z, 0, 1, 1.0, 1), [0.31, 0.26, 0.20]); foliage.add(cyp, trs(q.x, qy + hh * 0.5 + 0.4, q.z, R() * TAU, w2, hh, w2), [0.135 * t2, 0.225 * t2, 0.135 * t2]); } }
+        else if (roll < 0.78) { const cyp = geo('cypress', () => new THREE.ConeGeometry(1, 1, 8)); for (let j = 0; j < 4; j++) { const q = { x: p2.x + sm2.tangent.x * j * 4.2, z: p2.z + sm2.tangent.z * j * 4.2 }; const qy = world.heightAt(q.x, q.z); const hh = 6.0 + R() * 3.0, w2 = 0.9 + R() * 0.3, t2 = 0.85 + R() * 0.3; if (o.veg?.plant) { o.veg.plant('cypress', q.x, q.z, { scale: hh / 7.6, widthScale: w2, lean: 0.02 + R() * 0.05 }); } else { wood.add(geo('cyptrunk', () => new THREE.CylinderGeometry(0.14, 0.20, 1, 5)), trs(q.x, qy + 0.5, q.z, 0, 1, 1.0, 1), [0.31, 0.26, 0.20]); foliage.add(cyp, trs(q.x, qy + hh * 0.5 + 0.4, q.z, R() * TAU, w2, hh, w2), [0.135 * t2, 0.225 * t2, 0.135 * t2]); } } }
         else if (roll < 0.86) bale(p2.x, gy2, p2.z, ry2 + (R() - 0.5) * 0.5, 0.95 + R() * 0.12);
         else if (roll < 0.93) pallets(p2.x, gy2, p2.z, ry2);
         else crowdPocket(sm2, sgn, hw + 4.4);

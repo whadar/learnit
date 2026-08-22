@@ -178,6 +178,9 @@ async function boot() {
   /* ---- the racing surface, kerbs, furniture ---- */
   S.trackMesh = guard('trackMesh', () => createTrackMesh(engine, world, S.track, {
     shadows: QS().shadows, furniture: QS().furniture, itemBoxes: false,
+    // Trackside dressing plants its cypresses through the vegetation system rather than
+    // stamping cone primitives, so the village-edge trees match the ones on the hillsides.
+    furnitureOpts: { veg: S.vegetation },
   }));
   mark('trackMesh');
   await step('unpacking the item boxes');
