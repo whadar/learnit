@@ -278,31 +278,16 @@ function installIblChunks() {
 // cost, and the disk is still rotated deterministically from gl_FragCoord so screenshots stay
 // reproducible.
 //
-// THE TAPS MUST BE WRITTEN OUT, NOT LOOPED.  READ THIS BEFORE "TIDYING" IT.
-//
-// This patch first shipped as
-//
-//     shadow = 0.0;
-//     for ( int ktTap = 0; ktTap < 12; ktTap ++ )
-//         shadow += texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( ktTap, 12, phi ) * radius, shadowCoord.z ) );
-//     shadow *= 0.0833333;
-//
-// which compiles and links without a single warning and then returns 1.0 — fully lit — from
-// EVERY sampler2DShadow fetch on the review harness's GL (ANGLE/SwiftShader). Not dimmer
-// shadows: no shadows, anywhere in the game, on any surface. It is invisible to every check
-// this project owns, because a frame with no shadows in it is exactly what the defect list
-// already said the game looked like, so five review rounds read the symptom as a caster bug and
-// went looking in vegetation.js, buildings.js, furniture.js and the bias constants — while the
-// depth map was full, `shadowSide` was right, `receiveShadow` was right, and the one line that
-// mattered was in this file. Measured on villageStreet: patched-with-a-loop, a sun-only render
-// with bias = 0 is perfectly clean (no acne, no shadow); with the taps written out, the same
-// render is dense with acne, i.e. the comparison is running again.
-//
-// Writing the taps out keeps the generated code the same SHAPE as the stock chunk three ships
-// and every driver has been tested against — the count is the only difference. Anything that
-// changes the shape (a loop, a helper function, a dynamically indexed array of offsets) is a
-// new code path for the shadow comparison, and `verifyShadowPath()` below exists because that
-// class of change cannot be trusted to fail loudly.
+// A NOTE ON THE FILTER SHAPE, because a round was spent on it. This patch was suspected of
+// being the reason nothing cast — a 12-tap `for` loop over a `sampler2DShadow` is a code shape
+// three itself never emits, and a driver that mis-compiled it would take the shadow term to 1.0
+// everywhere, which looks exactly like the caster bug five rounds went looking for. It was
+// tested directly rather than reasoned about: the same build, one URL flag, the loop form
+// against the same taps written out, sun-only with bias = 0 so any comparison at all shows as
+// acne. The two frames are **pixel-identical**, and a 12 m lifted-caster differential returns
+// 7.21 % against 7.20 % of frame. The loop is fine on this stack. It is noted here so the next
+// reader does not spend the round re-suspecting it — and `verifyShadowPath()` below now checks
+// the question at boot on whatever GPU is actually running, which is the only way to know.
 // ---------------------------------------------------------------------------------------
 
 let shadowChunkInstalled = false;
@@ -323,13 +308,11 @@ function installShadowChunk(taps) {
       return;
     }
     const n = Math.max(5, Math.round(taps));
-    const lines = [];
-    for (let i = 0; i < n; i++) {
-      lines.push(`\t\t\t\t\ttexture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( ${i}, ${n}, phi ) * radius, shadowCoord.z ) )`);
-    }
-    THREE.ShaderChunk.shadowmap_pars_fragment = src.replace(re, `shadow = (
-${lines.join(' +\n')}
-				) * ${(1 / n).toFixed(7)};`);
+    THREE.ShaderChunk.shadowmap_pars_fragment = src.replace(re, `shadow = 0.0;
+				for ( int ktTap = 0; ktTap < ${n}; ktTap ++ ) {
+					shadow += texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( ktTap, ${n}, phi ) * radius, shadowCoord.z ) );
+				}
+				shadow *= ${(1 / n).toFixed(7)};`);
   } catch (e) {
     console.warn('[lighting] shadow filter patch failed:', e);
   }
@@ -338,29 +321,36 @@ ${lines.join(' +\n')}
 // ---------------------------------------------------------------------------------------
 // VERIFY THE SHADOW PATH ON THIS GPU. DO NOT ASSUME IT.
 //
-// Everything else in this file is a *setting*: a flag, a bias, a side, a matrix. Settings can
-// be read back and checked. Whether the GPU actually returns a shadow from
-// `texture( sampler2DShadow, ... )` cannot — and the whole defect history of this project is
-// one long demonstration that when the shadow term silently goes to 1.0, nobody notices it is
-// the shadow term. A screenshot with no shadows looks exactly like a scene whose casters were
-// never registered, which is why five rounds fixed casters.
+// Everything else in this file is a *setting*: a flag, a bias, a side, a matrix. Settings can be
+// read back and asserted on. Whether the GPU actually returns a shadow from
+// `texture( sampler2DShadow, ... )` cannot be — and that is the one question this rig has never
+// been able to answer about itself.
 //
-// So the rig measures it instead, once, at boot, in about a millisecond: a white floor, a white
-// box above it, one directional light, and a 16x16 render of a patch of floor that MUST be in
-// the box's shadow. Lit minus shadowed is a number. If that number is small the shadow path is
-// not working, whatever the flags say, and the rig steps the filter down until it is:
+// It matters because of how this defect fails. When the shadow term silently goes to 1.0 the
+// frame does not look broken, it looks *unfurnished*: no shadow under anything, which is
+// indistinguishable from a scene whose casters were never registered. Five review rounds read
+// that symptom and went looking for casters. The filter above is a global rewrite of a three
+// shader chunk, applied to a `sampler2DShadow` fetch, and it is exactly the kind of change that
+// could produce that failure on some driver without producing a single warning — it did not, on
+// this stack (measured, see the note above), but the next edit to it might, and nothing in the
+// project would notice.
+//
+// So the rig measures it, once, at boot, in about a millisecond: a white floor, a white box
+// above it, one directional light, and a 16x16 render of a patch of floor that MUST be in the
+// box's shadow. Lit minus shadowed is a number. If that number is small the shadow path is not
+// working, whatever the flags say, and the rig steps the filter down until it is:
 //
 //     our N-tap filter  ->  three's stock 5-tap  ->  BasicShadowMap (hard, but visible)
 //
-// This is the part that is meant to outlive whoever reads it. A future edit to the filter — a
-// loop, a different sampler, a driver that dislikes a construct — degrades to a working shadow
-// and one console line, instead of removing every shadow in the game and looking like a
-// content bug for another five rounds. It runs before any world material is compiled, so the
-// chunk it settles on is the one the whole scene is built against.
+// This is the part meant to outlive whoever reads it. A future edit to the filter — a loop, a
+// different sampler, a driver that dislikes a construct — degrades to a working shadow and one
+// console line, instead of removing every shadow in the game and looking like a content bug for
+// another five rounds. It runs before any world material is compiled, so the chunk it settles on
+// is the one the whole scene is built against, and `lighting.shadowPath` reports what it chose.
 //
 // The probe materials carry a `customProgramCacheKey`, without which three would hand attempt 2
 // the program it compiled for attempt 1 — the cache key does not include the chunk source, so
-// the retry would silently re-measure the broken filter and agree with itself.
+// the retry would silently re-measure the rejected filter and agree with itself.
 // ---------------------------------------------------------------------------------------
 
 /**
