@@ -195,6 +195,22 @@ reviewed parts of the game.
 
 ## Known defects
 
+**Fixed in the round of 23 Aug** (all five were reported from actual play, not by any bench here;
+each now has a permanent bench so it cannot come back silently)
+- The whole field crept BACKWARDS off the grid for the ten seconds the lights were red: the hold
+  was `brake: 1`, and a brake held at a standstill is how you ask `vehicle.js` to reverse.
+- No opponent moved once a human took the wheel: `autopilot` gated `ai.control` for the entire
+  field instead of for the player's kart alone. Every bench here runs `autopilot: true`.
+- The touch controls mounted inside the renderer's `<canvas>`, where children are fallback
+  content that never lays out — every on-screen control was 0x0 px, so the game had no working
+  touch input at all, and with no Escape key a phone could not reach the pause menu or Restart.
+- The title and character screens played the attract race's engine and tyres at full tilt.
+- The engine's body resonances were baked into a grain played back at up to 3.9x, so they rode
+  the pitch and it climbed into a mosquito. Peak band at full revs is now the fundamental;
+  centroid 3384 -> 1804 Hz.
+
+Covered by `tools/sim/grid.mjs`, `tools/restart.mjs`, `tools/touch.mjs`.
+
 **Shadows** (most-cited, now correctly localised — see next section)
 - Karts have no ground shadow in roughly half the chase views; where the AO fallback fires it is
   at the visibility floor.
@@ -224,6 +240,9 @@ reviewed parts of the game.
   constant-input capture to separate the two.
 
 **UI**
+- There is no controls screen anywhere in the game — nothing tells a player what any key does.
+  `R` is bound under the name `reset` but performs a respawn, not a race restart, which is very
+  likely what "the game won't restart on reset" meant before the mobile cause was found.
 - Faint ghost text behind the title-screen hint.
 - Portrait on mobile crops badly; landscape is the intended orientation.
 - Renders at full device pixel ratio, which is heavy on a 3× phone screen.

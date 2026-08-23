@@ -122,3 +122,33 @@ failure modes. The drift VFX went blown-out white blob, then absent entirely, th
 swallowing the kart, then blob again. If you touch an effect, verify BOTH failure directions in
 frames — the effect present, and the effect not swallowing its subject — not just the one your
 brief names.
+
+**The harness's own defaults are a blind spot.** Every headless bench here builds its race with
+`autopilot: true`, because that is what makes a race run without a human. A real race is built
+with `autopilot: false`. When the AI gate was wrong for the whole field, every opponent froze the
+instant a person took the wheel — and race.mjs, pack.mjs, ai-tune.mjs and shoot-ai.mjs all stayed
+green, because not one of them exercised the configuration a player actually gets. When you add a
+bench, ask what the *shipping* call site passes, and make at least one test pass exactly that.
+`tools/sim/grid.mjs` is the one that does.
+
+**Existence is not layout.** The touch controls were mounted inside the renderer's `<canvas>`.
+Children of a canvas are fallback content: the browser parses them, `querySelector` finds them,
+they have classes and computed styles — and they are never laid out or rendered. Every on-screen
+control measured 0x0 px, so the game shipped with no working touch input at all, and a check of
+the form `expect(document.querySelector('.kr-stick')).toBeTruthy()` would have passed throughout.
+When you assert a UI element is there, assert its **bounding box**, not its presence.
+
+**A passing audio suite is not a good-sounding game.** `tools/sim/audio.mjs` asserts that every
+voice is audible, in tune, correctly placed and never clipping. It was 228/228 green while the
+engine was a mosquito, because "fatiguing" is a question about the BALANCE between bands, which no
+per-voice check asks. It was also 228/228 green while every voice arrived at full level the frame
+the AudioContext resumed, because the offline render path holds master at full gain and bypasses
+the fade entirely. If you change a voice, look at where its energy actually sits — an octave-band
+readout across the whole mix, not just its own RMS — and check the online path, not only the
+offline one.
+
+**Nothing reached through `tick()` used to be testable.** `simulate()` only steps the race, and
+headless Chromium does not schedule `requestAnimationFrame`, so a harness could not wait for the
+engine's own loop either. That left pause, respawn, the touch controls and a human's steering with
+no coverage whatsoever. `__game.stepFrame(dt)` runs one real frame including the input poll — use
+it for anything a player does with their hands.
