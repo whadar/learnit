@@ -47,7 +47,10 @@ const COOLDOWN = {
   crowd_cheer: 3.0, horn: 0.25, wrong_way: 1.2,
 };
 const DEFAULTS = {
-  master: 0.7, engine: 0.46, surface: 0.46, sfx: 0.95, music: 0.36, ambience: 0.34,
+  // engine was 0.46 when the voice had no bottom octave. Restoring the fundamental (see
+  // dsp.js/engineCycleBuffer) added ~3 dB of mid-band level on its own, so the bus comes down
+  // by the same amount: the engine is meant to sound bigger, not to sit louder in the mix.
+  master: 0.7, engine: 0.33, surface: 0.46, sfx: 0.95, music: 0.36, ambience: 0.34,
   seed: 7, character: 'mitzi', maxRivals: 4, maxEmitters: 5, reverb: true, offline: false, context: null,
   autoMusic: true, crowd: true, rolloff: 34,
 };
@@ -297,8 +300,14 @@ export function createAudio(opts = {}) {
   }
 
   /* ------------------------------------------------------------------- update ---- */
+  const SILENT_SURFACE = { speed: 0, surface: 'tarmac', grounded: true, slip: 0, kerb: 0, brake: 0, draft: 0, charge: 0, tier: 0, gain: 0 };
   function readVehicle(state) {
-    const v = state?.vehicle ?? state?.kart ?? state;
+    if (!state) return null;
+    // An explicit `vehicle: null` means "nobody is driving" and must silence the bed. The old
+    // `state?.vehicle ?? state` fell through to the CONTEXT OBJECT itself, which is truthy, so
+    // asking for silence got you an engine reading garbage off a container.
+    const named = ('vehicle' in state) || ('kart' in state);
+    const v = named ? (state.vehicle ?? state.kart) : state;
     if (!v) return null;
     return v.state && v.state.pos ? v.state : v;
   }
@@ -320,7 +329,12 @@ export function createAudio(opts = {}) {
 
     /* ---------- the player's kart ---------- */
     const v = readVehicle(state);
-    if (!v) engineVoice.setGain(0, t, 0.25);
+    if (!v) {
+      // nobody at the wheel (the title screen, a cinematic plate): fade the whole driving bed
+      // out rather than leaving the last frame's engine and tyres ringing under the menu
+      engineVoice.setGain(0, t, 0.25);
+      surfaceVoice.update(step, SILENT_SURFACE, t);
+    }
     if (v) {
       engineVoice.setGain(0.62, t, 0.25);
       const speed = v.speed ?? 0;

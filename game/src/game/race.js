@@ -142,6 +142,7 @@ export function createRace(world, track, opts = {}) {
     vehicles.push(v);
     racers.push({
       index: i,
+      gridAnchor: { x: slot.pos.x, z: slot.pos.z },
       id: entry?.id || ('kart' + i),
       name: entry?.name || FALLBACK_NAMES[i % FALLBACK_NAMES.length],
       entry, vehicle: v, isPlayer: i === O.playerIndex,
@@ -504,24 +505,39 @@ export function createRace(world, track, opts = {}) {
 
   /* --------------------------------------------------------------- update -- */
   const zeroInput = { throttle: 0, brake: 0, steer: 0, drift: 0, item: 0, look: 0 };
-  const holdInput = { throttle: 0, brake: 1, steer: 0, drift: 0, item: 0, look: 0 };
+  // Throttle only. The lights are red, so nothing the driver does with the wheel or the brake
+  // reaches the kart — but the engine still answers, which is what a rocket start is timed off.
+  const revInput = { throttle: 0, brake: 0, steer: 0, drift: 0, item: 0, look: 0 };
 
   /**
    * Hold the field on the grid.
    *
-   * Amikam's start straight runs downhill, and locked brakes on a slope are not enough: over a
-   * seven-second intro and a three-second countdown the whole grid crept out of its slots, so
-   * the cover shot of the game was eight karts scattered down the road at 26 km/h with the
-   * lights still red. The wheels still carry load and the suspension still settles — only the
-   * kart's horizontal velocity is bled off, and it is released the instant the flag drops.
+   * Amikam's start straight is not flat and the slots are not all level with it, so the grid
+   * has to be *pinned*, not merely braked. Two things went wrong when it was only braked:
+   *
+   *  - Over a seven-second intro and a three-second countdown the whole grid crept out of its
+   *    slots, so the cover shot of the game was eight karts scattered down the road with the
+   *    lights still red.
+   *  - The hold was expressed as `brake: 1`, and `vehicle.js` reads a brake held at a standstill
+   *    as a request to REVERSE (that is how you back out of a wall). So for ten seconds every
+   *    kart was under rearward drive: measured at -1.04 m/s of backward creep with the rear
+   *    wheels turning at -45 rad/s, and the player visibly rolled off the line before the flag.
+   *    Bleeding the velocity after the step did not help — the position had already integrated.
+   *
+   * So: pin x/z to the slot the kart was placed in, kill horizontal velocity, and keep the
+   * wheels from turning backwards. Height is left alone so the suspension still settles, and
+   * the pin is released the instant the flag drops.
    */
-  function holdOnGrid(v, dt) {
-    const st = v.state;
-    const k = Math.exp(-11 * dt);
-    st.vel.x *= k; st.vel.z *= k;
-    if (Math.hypot(st.vel.x, st.vel.z) < 0.3) { st.vel.x = 0; st.vel.z = 0; }
-    st.speed = Math.hypot(st.vel.x, st.vel.y, st.vel.z);
+  function holdOnGrid(r, dt) {
+    const v = r.vehicle, st = v.state, a = r.gridAnchor;
+    if (a) { st.pos.x = a.x; st.pos.z = a.z; }
+    st.vel.x = 0; st.vel.z = 0;
+    st.speed = Math.abs(st.vel.y);
     st.forwardSpeed = 0;
+    // revving on the line spins the wheels up; it must not spin them backwards, and it must not
+    // bank enough wheel speed to fire the kart off the line the frame the pin comes off
+    if (v.wheels) for (const w of v.wheels) w.omega = clamp(w.omega, 0, 18);
+    void dt;
   }
   let itemPressed = false;
 
@@ -533,9 +549,9 @@ export function createRace(world, track, opts = {}) {
 
     if (state.phase === 'intro') {
       if (state.phaseTime >= O.introTime) setPhase('countdown');
-      // karts idle on the grid: step the physics so they settle onto their suspension, on the
-      // brakes so a sloping grid does not roll the field into the first corner before the lights
-      for (const r of racers) { r.vehicle.update(dt, holdInput); holdOnGrid(r.vehicle, dt); }
+      // karts idle on the grid: step the physics so they settle onto their suspension, pinned
+      // so a sloping grid does not roll the field into the first corner before the lights
+      for (const r of racers) { r.vehicle.update(dt, zeroInput); holdOnGrid(r, dt); }
       return api;
     }
 
@@ -570,18 +586,20 @@ export function createRace(world, track, opts = {}) {
       let inp;
       if (r.isPlayer && (humanSeen || typeof O.input === 'function')) {
         inp = readPlayerInput() || zeroInput;
-      } else if (r.ai && O.autopilot !== false) {
+      } else if (r.ai && (!r.isPlayer || O.autopilot !== false)) {
+        // `autopilot` only ever meant "drive the PLAYER's kart for them" (attract mode, the
+        // demo, review shots). It was gating the whole field, so the moment a human took the
+        // wheel every opponent fell through to zeroInput and the pack never left the grid.
         inp = ai.control(r.ai, dt);      // the same controller the opponents use
       } else inp = zeroInput;
 
       if (!nowRacing) {
         trackLaunch(r, inp, dt);
         if (state.phase === 'countdown') {
-          const gated = { throttle: inp.throttle, brake: 0, steer: 0, drift: 0, item: 0, look: 0 };
           // holding the throttle on the grid revs but never moves the kart
-          r.vehicle.update(dt, holdInput);
-          holdOnGrid(r.vehicle, dt);
-          void gated;
+          revInput.throttle = inp.throttle;
+          r.vehicle.update(dt, revInput);
+          holdOnGrid(r, dt);
           continue;
         }
       }
@@ -688,6 +706,7 @@ export function createRace(world, track, opts = {}) {
     racers.forEach((r, i) => {
       const slot = gridSlot(i);
       try { r.vehicle.reset(slot.pos, slot.rot); } catch (e) { /* ignore */ }
+      r.gridAnchor.x = slot.pos.x; r.gridAnchor.z = slot.pos.z;
       r.lap = 0; r.cpIndex = 1; r.lapTimes.length = 0; r.bestLap = Infinity; r.lapStart = 0;
       r.finished = false; r.finishTime = 0; r.finishPlace = 0; r.dnf = false;
       r.place = i + 1; r.prevPlace = i + 1; r.progress = 0; r.progressInit = false; r.distSinceCp = 0;

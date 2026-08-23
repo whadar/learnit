@@ -133,11 +133,20 @@ export function createInput(opts = {}) {
   /* ---------------------------------------------------------------- touch -- */
   let touchUI = null;
   const wantTouch = O.touch === true || (O.touch === 'auto' && isTouchDevice());
-  const tState = { steer: 0, throttle: 0, brake: 0, drift: 0, item: 0, look: 0, active: false };
+  const tState = { steer: 0, throttle: 0, brake: 0, drift: 0, item: 0, look: 0, active: false, pauseTap: false };
 
   function buildTouch() {
     if (!doc || touchUI) return;
-    const host = O.element || doc.body;
+    /*
+     * NOT `O.element`. That is the renderer's canvas — it is where the pointer and wheel
+     * listeners belong, but anything appended inside a <canvas> is *fallback content*: the
+     * browser parses it, exposes it to querySelector, and never lays it out or renders it.
+     * The whole touch control set was mounted there, so every phone got a stick, an ITEM, a
+     * LOOK and a DRIFT button that measured 0x0 px and could not be tapped. The overlay is
+     * position:fixed anyway, so it belongs on the document body.
+     */
+    const host = O.touchHost || (O.element && O.element.tagName !== 'CANVAS' ? O.element : null)
+      || O.element?.parentElement || doc.body;
     const root = doc.createElement('div');
     root.className = 'kr-touch';
     root.innerHTML = TOUCH_HTML;
@@ -174,6 +183,14 @@ export function createInput(opts = {}) {
     stick.addEventListener('pointerup', stickEnd);
     stick.addEventListener('pointercancel', stickEnd);
 
+    // one-shot buttons: they fire an edge on release rather than reporting a held state
+    for (const el of root.querySelectorAll('[data-tap]')) {
+      const k = el.dataset.tap;
+      el.addEventListener('pointerdown', e => { el.classList.add('on'); e.preventDefault(); }, { passive: false });
+      const fire = () => { el.classList.remove('on'); tState[k + 'Tap'] = true; tState.active = true; };
+      el.addEventListener('pointerup', fire);
+      el.addEventListener('pointercancel', () => el.classList.remove('on'));
+    }
     for (const el of root.querySelectorAll('[data-btn]')) {
       const k = el.dataset.btn;
       const set = v => { tState[k] = v; tState.active = true; el.classList.toggle('on', !!v); };
@@ -258,6 +275,8 @@ export function createInput(opts = {}) {
       look = Math.max(look, tState.look);
       if (tState.throttle || tState.drift || tState.item) source = 'touch';
     }
+    // consumed here so it fires for exactly one poll, the same edge the Escape key produces
+    if (tState.pauseTap) { pause = 1; tState.pauseTap = false; source = 'touch'; }
     if (keyboardActive) source = 'keyboard';
 
     /* steering: analogue passes straight through, digital ramps and self-centres */
@@ -366,6 +385,7 @@ export function createInput(opts = {}) {
 
 const TOUCH_HTML = `
 <div class="kr-stick"><div class="kr-ring"></div><div class="kr-nub"></div></div>
+<button class="kr-b kr-pause" data-tap="pause" aria-label="Pause"><span>❚❚</span></button>
 <div class="kr-pads">
   <button class="kr-b kr-item" data-btn="item"><span>ITEM</span></button>
   <button class="kr-b kr-look" data-btn="look"><span>LOOK</span></button>
@@ -395,6 +415,11 @@ const TOUCH_CSS = `
 .kr-touch .kr-drift{grid-column:2;background:linear-gradient(180deg,#FFD46B,#E9A32F);width:22vmin;height:22vmin;max-width:150px;max-height:150px}
 .kr-touch .kr-item{grid-column:1;background:linear-gradient(180deg,#8FD3F4,#3FA9E0)}
 .kr-touch .kr-look{grid-column:1;background:linear-gradient(180deg,#EBDCC0,#C6AE86);width:13vmin;height:13vmin}
+/* A phone has no Escape key, no P and no gamepad Start, so without this button the pause
+   menu — and with it Restart Race and Quit — is simply unreachable on a touch device. */
+.kr-touch .kr-pause{position:absolute;top:2.4vmin;right:2.4vmin;width:11vmin;height:11vmin;
+  max-width:56px;max-height:56px;border-radius:50%;font-size:3.4vmin;line-height:1;
+  background:linear-gradient(180deg,#F2E7D0,#CBB894);opacity:.82}
 `;
 
 export default createInput;

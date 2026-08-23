@@ -39,6 +39,7 @@ export function engineCharacter(seed = 1) {
   const bore = 0.75 + r() * 0.5;                     // small & buzzy .. big & lumpy
   return {
     seed,
+    res0: 108 + r() * 54,                            // chest / silencer can — the low body
     res1: 240 + r() * 170,                           // primary exhaust resonance
     res2: 560 + r() * 420,                           // secondary / header ring
     decay1: 150 + r() * 160,
@@ -46,10 +47,10 @@ export function engineCharacter(seed = 1) {
     pulses: r() < 0.34 ? 2 : 1,                      // twin-port kart karts fire twice a cycle
     jitter: 0.10 + r() * 0.16,
     growl: 0.3 + r() * 0.6,
-    whineRatio: 5.4 + r() * 2.4,
-    whineGain: 0.018 + r() * 0.035,
+    whineRatio: 4.2 + r() * 1.8,
+    whineGain: 0.015 + r() * 0.028,
     intake: 0.35 + r() * 0.4,
-    turboHz: 3200 + r() * 2400,
+    turboHz: 2600 + r() * 1700,
     detune: (r() * 2 - 1) * 0.035,                   // no two engines are on the same pitch
     bodyQ: 1.6 + r() * 2.2,
     bright: 0.7 + r() * 0.6,
@@ -70,9 +71,14 @@ export function createEngineVoice(ctx, dest, opts = {}) {
   /* ---- exhaust body: formants then an rpm-tracking lowpass ---- */
   const lowpass2 = filter(ctx, 'lowpass', 1300, 0.6, 0, out);     // 24 dB/oct in total, so idle
   const lowpass = filter(ctx, 'lowpass', 900, 0.9, 0, lowpass2);   // is genuinely dark, not fizzy
-  const form2 = filter(ctx, 'peaking', C.res2, C.bodyQ, 3.5, lowpass);
-  const form1 = filter(ctx, 'peaking', C.res1, C.bodyQ * 0.8, 4.5, form2);
-  const hpf = filter(ctx, 'highpass', 62, 0.7, 0, form1);
+  // The body lives HERE, at fixed frequencies, and not in the grain — see the note in
+  // dsp.js/engineCycleBuffer. These do not move when the revs do, which is the whole point:
+  // an exhaust can is a fixed length of metal. With the grain now broadband they are carrying
+  // the timbre rather than merely tinting it, so they are worth real gain.
+  const form2 = filter(ctx, 'peaking', C.res2, C.bodyQ, 5.0, lowpass);
+  const form1 = filter(ctx, 'peaking', C.res1, C.bodyQ * 0.8, 6.5, form2);
+  const form0 = filter(ctx, 'peaking', C.res0, 1.1, 4.5, form1);
+  const hpf = filter(ctx, 'highpass', 52, 0.7, 0, form0);
   // Level control lives AFTER the saturator: driving a tanh harder does not make it louder,
   // it only makes it fuzzier, so putting the throttle/rpm gain in front would flatten the
   // whole dynamic range of the engine (measured: 4.9x of pre-gain became 1.3x of output).
@@ -80,8 +86,8 @@ export function createEngineVoice(ctx, dest, opts = {}) {
   const drive = shaper(ctx, rival ? 0.18 : 0.34, level);
 
   /* ---- core firing loops ---- */
-  const cyc = { baseHz: ENGINE_BASE_HZ, cycles: 8, seed: C.seed * 13 + 1, res1: C.res1, res2: C.res2,
-    decay1: C.decay1, decay2: C.decay2, pulses: C.pulses, jitter: C.jitter, growl: C.growl };
+  const cyc = { baseHz: ENGINE_BASE_HZ, cycles: 8, seed: C.seed * 13 + 1,
+    pulses: C.pulses, jitter: C.jitter, growl: C.growl };
   const bufLoad = engineCycleBuffer(ctx, cyc);
   const bufOver = engineCycleBuffer(ctx, { ...cyc, overrun: 1, seed: C.seed * 13 + 2, jitter: C.jitter * 1.5 });
 
@@ -107,7 +113,7 @@ export function createEngineVoice(ctx, dest, opts = {}) {
     gWhine = gainNode(ctx, 0.0001, hpf);
     const lpW = filter(ctx, 'lowpass', 5200, 0.8, 0, gWhine);
     whine = ctx.createOscillator();
-    whine.type = 'sawtooth';
+    whine.type = 'triangle';   // a saw gear-whine is the single most fatiguing thing in a kart mix
     whine.frequency.value = 600;
     whine.connect(lpW);
     try { whine.start(0); } catch (e) { /* */ }
@@ -172,7 +178,9 @@ export function createEngineVoice(ctx, dest, opts = {}) {
     follow(lopeAmt.gain, (1 - clamp(rpm / 0.35, 0, 1)) * 0.05 * vol, now, 0.12);
 
     // brightness: more revs and more load open the exhaust up
-    const cutoff = lerp(360, 7600, Math.pow(rpm, 1.05)) * lerp(0.78, 1.18, load) * C.bright;
+    // 7600 here used to put the top of the sweep past 11 kHz once `bright` and load were in;
+    // with a broadband grain feeding it that is audible as fizz rather than as an open exhaust.
+    const cutoff = lerp(360, 6600, Math.pow(rpm, 1.05)) * lerp(0.78, 1.18, load) * C.bright;
     follow(lowpass.frequency, clamp(cutoff, 240, 15000), now, 0.05);
     follow(lowpass2.frequency, clamp(cutoff * 1.5, 260, 18000), now, 0.05);
     follow(lowpass.Q, lerp(0.8, 2.2, load * rpm), now, 0.1);

@@ -292,10 +292,9 @@ export function jingleBuffer(ctx, { seed = 21, dur = 0.26, bright = 1 } = {}) {
  */
 export function engineCycleBuffer(ctx, opts = {}) {
   const {
-    baseHz = 50, cycles = 8, seed = 5, res1 = 300, res2 = 730, decay1 = 220, decay2 = 620,
-    pulses = 1, jitter = 0.16, overrun = 0, growl = 0.5,
+    baseHz = 50, cycles = 8, seed = 5, pulses = 1, jitter = 0.16, overrun = 0, growl = 0.5,
   } = opts;
-  const key = `eng:${baseHz}:${cycles}:${seed}:${res1}:${res2}:${decay1}:${decay2}:${pulses}:${jitter}:${overrun}:${growl}`;
+  const key = `eng:${baseHz}:${cycles}:${seed}:${pulses}:${jitter}:${overrun}:${growl}`;
   return cached(ctx, key, () => {
     const sr = ctx.sampleRate;
     const period = sr / baseHz;
@@ -311,17 +310,34 @@ export function engineCycleBuffer(ctx, opts = {}) {
         events.push({ t0: nominal + (r() * 2 - 1) * period * jitter * 0.10, g, sk: r() });
       }
     }
+    /*
+     * Everything in here is written in units of the FIRING PERIOD, never in absolute Hz.
+     *
+     * This buffer is authored at `baseHz` and played back at `firingHz / baseHz` — 3.9x at the
+     * limiter. Playback-rate resampling shifts whatever is baked in by that same factor, so a
+     * resonance written here at 300 Hz arrives at 1.2 kHz on the redline. That is what this
+     * buffer used to do, and it is why the engine climbed into a mosquito instead of opening
+     * up: its exhaust and header resonances rose an octave and a half with the revs, when the
+     * whole point of a body resonance is that it is fixed by the geometry of the metal.
+     *
+     * So the grain now carries only what SHOULD track the pitch — the firing fundamental, its
+     * octave, and a broadband blowdown bang — and the fixed formant filters in engineSynth.js
+     * supply the body at frequencies that stay put. Measured: the peak band at full revs moves
+     * from 1-2 kHz down onto the fundamental, and the centroid drops from 3384 Hz to ~1500.
+     */
     for (const e of events) {
       const len = Math.min(n, Math.round(period * 1.4));
       for (let i = 0; i < len; i++) {
         const idx = (Math.round(e.t0) + i) % n;
-        const t = i / sr;
-        const a1 = Math.exp(-t * decay1), a2 = Math.exp(-t * decay2);
-        const f1 = res1 * (1 + 0.35 * Math.exp(-t * 900));    // pressure pulse chirps down
-        let s = Math.sin(2 * Math.PI * f1 * t) * a1
-              + Math.sin(2 * Math.PI * res2 * t + 1.1) * a2 * (0.55 + growl * 0.5);
-        // combustion hiss on the leading edge
-        s += (r() * 2 - 1) * 0.30 * Math.exp(-t * 1500) * (0.5 + growl);
+        const ph = i / period;                                  // cycles, not seconds
+        const bang = Math.exp(-ph * 24);                        // blowdown: hard and short
+        const tail = Math.exp(-ph * 5.0);                       // the note it leaves behind
+        // the fundamental and its octave are the weight of the engine; both resample exactly
+        let s = Math.sin(2 * Math.PI * ph) * tail * 0.92
+              + Math.sin(2 * Math.PI * 2 * ph + 1.1) * Math.exp(-ph * 8.0) * (0.34 + growl * 0.26)
+              + Math.sin(2 * Math.PI * 3 * ph + 2.2) * Math.exp(-ph * 11.0) * (0.16 + growl * 0.14);
+        // combustion: broadband, so the formants downstream have something to shape
+        s += (r() * 2 - 1) * (0.74 * bang + 0.07 * tail) * (0.55 + growl * 0.55);
         if (overrun > 0) {
           // off-throttle: unburnt-charge pops, sparse and irregular
           if (i === 0 && e.sk < 0.30 * overrun) s += (r() * 2 - 1) * 2.2;

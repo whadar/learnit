@@ -868,11 +868,17 @@ function updateAudio(dt) {
   const p = race.state.player;
   if (!p) return;
   audioCtx.listener = engine.camera;
-  audioCtx.vehicle = p.vehicle;
+  // Attract mode runs a REAL race under the title card, so without this gate the title and
+  // character screens play the autopilot kart's engine and tyres at full tilt — the game was
+  // making driving noise before the player had chosen a cat. Music and ambience still play.
+  const driving = APP.mode === 'race' || APP.mode === 'results' || APP.mode === 'photo';
+  audioCtx.vehicle = driving ? p.vehicle : null;
   audioCtx.rivals.length = 0;
-  for (const r of race.racers) {
-    if (r.isPlayer) continue;
-    audioCtx.rivals.push({ id: r.id, pos: r.vehicle.state.pos, vel: r.vehicle.state.vel, state: r.vehicle.state });
+  if (driving) {
+    for (const r of race.racers) {
+      if (r.isPlayer) continue;
+      audioCtx.rivals.push({ id: r.id, pos: r.vehicle.state.pos, vel: r.vehicle.state.vel, state: r.vehicle.state });
+    }
   }
   audioCtx.race = {
     phase: race.state.phase, countdown: race.state.countdown,
@@ -1186,6 +1192,13 @@ Object.assign(game, {
   setViewLock(v) { APP.viewLock = v || null; },
   setQuality(t) { quality.set(t); },
   simulate, drive, packAt,
+  /**
+   * One REAL frame, input poll included — `simulate()` only steps the race, so nothing that
+   * goes through `tick()` (pause, photo, respawn, the touch controls, the human's steering)
+   * was reachable from a test. Headless Chromium does not schedule requestAnimationFrame, so
+   * a harness cannot simply wait for the engine's own loop either.
+   */
+  stepFrame(dt = 1 / 60) { tick(dt); },
   startRace, pauseRace, resumeRace, quitToTitle, enterPhoto,
   setScripted(inp) {
     scripted = inp;

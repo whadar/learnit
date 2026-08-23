@@ -136,9 +136,13 @@ export function fundamental(x, sr = SR, min = 40, max = 5000) {
     corr[lag] = r;
     if (r > bestR) { bestR = r; bestLag = lag; }
   }
-  // octave guard: a perfectly periodic signal correlates just as well at twice the period,
-  // so take the *shortest* lag that gets within 8% of the best one
-  for (let lag = lagMin; lag < bestLag; lag++) {
+  // Octave guard: a perfectly periodic signal correlates just as well at twice the period, so
+  // take the *shortest* lag that gets within 8% of the best one — but only a genuine interior
+  // peak. Starting the scan at lagMin read corr[lagMin - 1], which is never filled in, so the
+  // floor lag always looked like a rising peak; on a bass-heavy signal (whose samples are
+  // strongly correlated a few samples apart) that pinned every reading to sr/lagMin. Two
+  // different engines both reported exactly 5333 Hz = 48000/9 before this.
+  for (let lag = lagMin + 1; lag < bestLag; lag++) {
     if (corr[lag] >= bestR * 0.92 && corr[lag] > corr[lag - 1] && corr[lag] >= corr[lag + 1]) { bestLag = lag; break; }
   }
   const conf = r0 > 0 ? bestR * seg.length / r0 : 0;
