@@ -829,7 +829,7 @@ export function createSpeedFX({ count = 120, seed = 99 } = {}) {
     set intensity(v) {
       mat.uniforms.uIntensity.value = v;
       warpMat.uniforms.uIntensity.value = v;
-      mesh.visible = v > 0.01;
+      mesh.visible = v > 0.06;   // 0.01 let an invisible-by-value rush still veil the sky
       warp.visible = v > 0.01 || warpMat.uniforms.uHasScene.value > 0.5;
     },
     get intensity() { return mat.uniforms.uIntensity.value; },
@@ -2191,8 +2191,13 @@ function createKartRig(vfx, world, target, o = {}) {
     const targetTrail = boostAmt * clamp(0.16 + fast * 0.26, 0, 0.45);
     trail.setIntensity(damp(trail.material.uniforms.uIntensity.value, targetTrail, 8, dt));
 
-    // screen rush: strongest during a boost, present at high speed
-    const rush = clamp(boostAmt * 0.75 + smoothstep(18, 34, spd) * 0.45, 0, 1);
+    // Screen rush: a boost effect, not a speed effect. The old curve started ramping at 18 m/s,
+    // so ordinary cruising at 75 km/h produced rush ~0.035 — under any visible threshold as a
+    // number, but enough to clear the mesh.visible gate and paint a faint diagonal streak veil
+    // over the sky in every fast frame. Three review rounds logged that veil against sky.js and
+    // post.js; it was always this. The speed term now starts at 26 m/s and only contributes on
+    // top of a real boost.
+    const rush = clamp(boostAmt * 0.75 + smoothstep(26, 40, spd) * 0.45 * (0.35 + 0.65 * boostAmt), 0, 1);
     if (o.driveSpeedLines !== false) {
       vfx.speedLines.intensity = damp(vfx.speedLines.intensity, rush, 6, dt);
     }
