@@ -757,6 +757,12 @@ export function createVehicle(world, track, opts = {}) {
         state.betaTarget = Math.abs(betaTarget);
         yawTarget += d.dir * P.driftYawBias * clamp(1 - Math.abs(beta) / 0.6, 0, 1);
       }
+      // Outside a drift the body-slip readout is zero, not "whatever the last drift ended at".
+      // It was only ever assigned inside the block above, so it latched: a motion capture found
+      // it reading a constant -40.4 deg across every frame of two different scenarios, including
+      // one where the kart was cruising a village street in a straight line. audio.js reads it
+      // for tyre-scrub intensity, and any future consumer would have inherited the same lie.
+      if (!(d.active && speed > 3)) { state.driftSlipDeg = 0; state.betaTarget = 0; }
       yawTarget = clamp(yawTarget, -maxYaw, maxYaw);
       const yawNow = vdot(state.angVel, up);
       const yawTorque = (yawTarget - yawNow) * P.inertia.yaw * P.yawAssist * gf;
