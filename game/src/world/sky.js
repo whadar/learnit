@@ -143,13 +143,80 @@ function noiseSampler(seed) {
   };
 }
 
+/**
+ * Bakes the cloud field.
+ *
+ *   R  cumulus BODY   — a deterministic scatter of discrete, rounded puff clusters
+ *   G  billow         — mid-frequency ridged noise, the cauliflower relief on those bodies
+ *   B  fine detail    — high-frequency erosion for the edges
+ *   A  clump          — large-scale coverage modulation (busy sky here, clear sky there)
+ *
+ * The R channel used to be plain fBm. A thresholded fBm has no *bodies*: it is one connected
+ * ridge network with shredded fringes, so every "cloud" was a torn piece of a single
+ * continent, the value-noise lattice showed through as a faint square grid, and the pixels
+ * that fell just under the threshold tinted the clear sky in irregular blotches — which is
+ * exactly what the reviewers described ("no cloud body, no lit top, no defined edge", "the
+ * sky's own blue varying in irregular blotches"). Fair-weather cumulus are the opposite:
+ * separate cells with a rounded crown, sitting over clean blue.
+ *
+ * So the body is *splatted*, not sampled: a jittered grid of cells, each carrying a handful of
+ * overlapping lobes with a smooth quartic falloff, flattened vertically so the cell has a base
+ * and a crown. Wrapping the splat indices keeps the tile seamless.
+ */
 function makeCloudTexture(size = 512, seed = 20250815) {
   const n = noiseSampler(seed);
+  const r = rng(seed ^ 0x9e3779b9);
   const fbm = (u, v, per, oct, gain = 0.5) => {
     let s = 0, amp = 1, norm = 0, f = per;
     for (let i = 0; i < oct && f <= 256; i++) { s += amp * n(u, v, f); norm += amp; amp *= gain; f *= 2; }
     return s / norm;
   };
+  const billow = (u, v, per, oct) => {
+    let s = 0, amp = 1, norm = 0, f = per;
+    for (let i = 0; i < oct && f <= 256; i++) { s += amp * (1 - Math.abs(2 * n(u, v, f) - 1)); norm += amp; amp *= 0.5; f *= 2; }
+    return s / norm;
+  };
+
+  // ---- cumulus bodies: splat lobes into a wrapping accumulation buffer -------------------
+  const body = new Float32Array(size * size);
+  const G = 5;                       // cells across a tile
+  const splat = (cx, cy, rad, w, flat) => {
+    const rx = rad * size, ry = rad * size * flat;
+    const px = cx * size, py = cy * size;
+    for (let y = Math.floor(py - ry); y <= Math.ceil(py + ry); y++) {
+      const yy = ((y % size) + size) % size, dy = (y - py) / ry;
+      for (let x = Math.floor(px - rx); x <= Math.ceil(px + rx); x++) {
+        const dx = (x - px) / rx, q = dx * dx + dy * dy;
+        if (q >= 1) continue;
+        const f = 1 - q;
+        body[yy * size + (((x % size) + size) % size)] += w * f * f;
+      }
+    }
+  };
+  for (let cy = 0; cy < G; cy++) for (let cx = 0; cx < G; cx++) {
+    if (r() < 0.10) continue;                                  // the odd empty patch of sky
+    const bx = (cx + 0.15 + 0.70 * r()) / G, by = (cy + 0.15 + 0.70 * r()) / G;
+    const sc = lerp(0.70, 1.35, Math.pow(r(), 1.4));
+    const lobes = 5 + ((r() * 7) | 0);
+    for (let i = 0; i < lobes; i++) {
+      const a = r() * Math.PI * 2, d = Math.pow(r(), 0.6) * 0.55 * sc / G;
+      // lobes spread twice as wide as they rise: cumulus have a flat base and a domed crown
+      splat(bx + Math.cos(a) * d, by + Math.sin(a) * d * 0.5,
+        (0.18 + 0.16 * r()) * sc / G, 0.55 + 0.7 * r(), 0.66);
+    }
+  }
+  let peak = 0;
+  for (let i = 0; i < body.length; i++) if (body[i] > peak) peak = body[i];
+  const bnorm = 2.6 / Math.max(peak, 1e-4);
+  const bodyAt = (u, v) => {                                    // bilinear, wrapping
+    const x = u * size - 0.5, y = v * size - 0.5;
+    const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+    const xa = ((x0 % size) + size) % size, xb = (xa + 1) % size;
+    const ya = ((y0 % size) + size) % size, yb = (ya + 1) % size;
+    return lerp(lerp(body[ya * size + xa], body[ya * size + xb], fx),
+      lerp(body[yb * size + xa], body[yb * size + xb], fx), fy);
+  };
+
   const data = new Uint8Array(size * size * 4);
   const inv = 1 / size;
   for (let y = 0; y < size; y++) {
@@ -157,13 +224,10 @@ function makeCloudTexture(size = 512, seed = 20250815) {
     for (let x = 0; x < size; x++) {
       const u = x * inv;
       // domain warp gives cauliflower edges instead of woolly blobs
-      const wx = fbm(u + 0.13, v + 0.71, 4, 3) - 0.5;
-      const wy = fbm(u + 0.57, v + 0.29, 4, 3) - 0.5;
-      const uu = u + wx * 0.09, vv = v + wy * 0.09;
-      const base = fbm(uu, vv, 4, 6);
-      let bill = 0, amp = 1, norm = 0, f = 8;
-      for (let i = 0; i < 4; i++) { bill += amp * (1 - Math.abs(2 * n(uu, vv, f) - 1)); norm += amp; amp *= 0.5; f *= 2; }
-      bill /= norm;
+      const wx = fbm(u + 0.13, v + 0.71, 6, 3) - 0.5;
+      const wy = fbm(u + 0.57, v + 0.29, 6, 3) - 0.5;
+      const base = clamp(bodyAt(u + wx * 0.045, v + wy * 0.045) * bnorm, 0, 1);
+      const bill = billow(u, v, 14, 4);
       const detail = fbm(u, v, 32, 3);
       const clump = fbm(u + 0.11, v + 0.83, 2, 3);
       const i4 = (y * size + x) * 4;
@@ -179,7 +243,10 @@ function makeCloudTexture(size = 512, seed = 20250815) {
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.generateMipmaps = true;
   tex.colorSpace = THREE.NoColorSpace;
-  tex.anisotropy = 4;
+  // The deck is sampled at a grazing angle near the skyline; even with the spherical shell
+  // keeping the derivative ratio near 3:1, headroom here is what stops cumulus edges from
+  // being averaged into streaks.
+  tex.anisotropy = 16;
   tex.needsUpdate = true;
   return tex;
 }
@@ -234,6 +301,7 @@ uniform float uToneExposure;      // renderer.toneMappingExposure, mirrored in h
 
 uniform sampler2D uCloudTex;
 uniform float uCoverage, uCloudScale, uCloudOpacity, uShine, uCirrus, uAbsorb, uShadeStep;
+uniform float uShellR;          // cloud-layer curvature: layer sits 1 unit over a planet of this radius
 uniform vec2  uDrift;
 uniform vec3  uCloudLit, uCloudDark;
 
@@ -274,11 +342,10 @@ float cloudField( vec2 uv ) {
   vec4 b = texture2D( uCloudTex, uv * 1.43 + vec2( 0.31, 0.67 ) );
   float clump = a.a * 0.62 + b.a * 0.38;
   clump = clump * clump * ( 3.0 - 2.0 * clump );
-  float base  = a.r * 0.58 + b.g * 0.42;
-  float d = base * ( 0.30 + 1.45 * clump );
-  #ifndef ENV_PASS
-    d -= 0.11 * b.b * ( 1.0 - clump );
-  #endif
+  // R is the cumulus *body* (see makeCloudTexture): discrete puff clusters, not fBm. It is
+  // taken from ONE tap — averaging two scales of it would smear the cells back into the
+  // continuous wash this replaced. The second tap supplies relief (billow) and edge erosion.
+  float d = a.r * ( 0.42 + 0.95 * b.g ) * ( 0.55 + 0.70 * clump ) - 0.13 * b.b;
   return d;
 }
 
@@ -364,15 +431,42 @@ void main() {
   sky = mix( sky, hazeCol, hz * uHorizonHaze );
 
   // --- clouds ----------------------------------------------------------------------------
-  float above = smoothstep( 0.004, 0.045, direction.y );
+  // Cloud-deck parameterisation. The deck used to be an *infinite flat plane*:
+  // uv = direction.xz / max( direction.y, 0.055 ). Both halves of that were visible as
+  // artefacts in the review frames.
+  //
+  //  * The 1/y term makes the vertical texture derivative grow as 1/y^2, while the horizontal
+  //    one only grows as 1/y. Ten degrees above the skyline a single screen pixel already
+  //    covers ~20x more of the cloud field vertically than horizontally — far past the 4:1
+  //    the sampler can resolve — so the whole band a chase camera actually frames was averaged
+  //    down to horizontal streaks with no cloud body, no lit top and no edge.
+  //  * Under the clamp the uv stops depending on direction.y at all, so an entire screen band
+  //    samples ONE row of the field: dead flat down each column, still varying across it. That
+  //    is the "hard-edged rectangle of pale vertical bars" — measured in photoFinish at
+  //    x 667-778, y 176-213, constant to +-1 in luma down every column, with the roofline as
+  //    its floor and the y = 0.055 iso-line as its crisp top. Its vertical sides are just the
+  //    coverage threshold slicing that smeared row.
+  //
+  // A spherical shell removes both at once. Intersect the view ray with a cloud layer one unit
+  // above a planet of radius uShellR:  t = sqrt( R^2 y^2 + 2R + 1 ) - R y.  Straight up t = 1;
+  // at the skyline t = sqrt( 2R + 1 ), finite — so there is nothing left to clamp, and the
+  // worst vertical:horizontal derivative ratio falls from ~1/y^2 to ~R (about 3:1 per pixel at
+  // R = 16, inside the sampler's anisotropy). It is also simply the correct perspective for a
+  // cloud layer on a curved earth: the deck converges to the horizon instead of running to
+  // infinity, which is what puts real cumulus form back in the band the player sees.
+  float above = smoothstep( 0.004, 0.050, direction.y );
   if ( above > 0.001 ) {
-    vec2 pl = direction.xz / max( direction.y, 0.055 );
+    float shy = max( direction.y, 0.0 );
+    float shT = sqrt( uShellR * uShellR * shy * shy + 2.0 * uShellR + 1.0 ) - uShellR * shy;
+    vec2 pl = direction.xz * shT;
 
     #ifndef ENV_PASS
     // a thin cirrus veil sits behind the cumulus deck
     if ( uCirrus > 0.001 ) {
       vec2 cu = pl * uCloudScale * 0.30 * vec2( 0.62, 1.35 ) + uDrift * 0.35;
-      float w = texture2D( uCloudTex, cu ).r * 0.65 + texture2D( uCloudTex, cu * 2.1 + 0.4 ).g * 0.35;
+      // R is the cumulus body channel now (discrete puffs, mostly zero); cirrus needs a
+      // continuous field, so the veil is drawn from the billow and detail channels.
+      float w = texture2D( uCloudTex, cu ).g * 0.62 + texture2D( uCloudTex, cu * 2.1 + 0.4 ).b * 0.38;
       float wisp = smoothstep( 0.50, 0.80, 1.0 - abs( 2.0 * w - 1.0 ) );
       wisp *= smoothstep( 0.17, 0.44, direction.y );   // keep the veil out of the chase band
       sky = mix( sky, mix( uCloudLit * 0.55, sky, 0.35 ), wisp * uCirrus );
@@ -483,9 +577,16 @@ const DEFAULTS = {
   // A dry Israeli summer sky is genuinely clean: low turbidity, high Rayleigh. The old
   // 2.7/2.9 pair plus an un-tone-mapped dome put the whole sky above display white.
   turbidity: 2.05, rayleigh: 3.5, mie: 0.0019, mieG: 0.72,
-  // Fair-weather cumulus: lower coverage threshold = more deck. `cloudField` peaks near
-  // 1.4, so 0.375 gives scattered-to-broken cloud rather than the odd wisp.
-  coverage: 0.40, cloudScale: 0.22, cloudOpacity: 1.0, cirrus: 0.035,
+  // `cloudScale` is in units of the cloud shell's own height (see `uShellR` in the shader):
+  // the skyline sits at sqrt(2R+1) = 5.74 shell-heights, so 0.26 puts about 1.5 tiles of the
+  // field between the zenith and the horizon. The old 0.22 was against an *infinite plane*
+  // whose skyline ran out to 18 units, i.e. four tiles crushed into the last few degrees —
+  // which is why every cumulus near the skyline arrived as a streak.
+  // `cloudField` now returns roughly -0.12 .. 1.04 and its bodies are discrete, so the
+  // threshold means something different: 0.14 leaves about 18% of the tile in cloud —
+  // scattered fair-weather cumulus over clean blue, which is what mid-July over Ramot
+  // Menashe actually looks like.
+  coverage: 0.14, cloudScale: 0.26, shellR: 16, cloudOpacity: 1.0, cirrus: 0.035,
   cloudSeed: 20250815, cloudSpeed: 0.0022,
   // Pre-tonemap radiance scale for the dome. Read together with `uToneExposure`: the dome
   // now goes through the same ACES curve as everything else, so this sets where the zenith
@@ -554,6 +655,7 @@ export function createSky(engine, world, opts = {}) {
     uCloudTex:    { value: cloudTex },
     uCoverage:    { value: o.coverage },
     uCloudScale:  { value: o.cloudScale },
+    uShellR:      { value: o.shellR },
     uCloudOpacity:{ value: o.cloudOpacity },
     uShine:       { value: 0.55 },
     uAbsorb:      { value: 6.5 },
