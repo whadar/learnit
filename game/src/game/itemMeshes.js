@@ -1261,7 +1261,10 @@ export function createItemBoxMesh(opts = {}) {
     }
     return mergeGeometries(parts);
   });
-  const cage = mesh(frameGeo, gold, { scale: size, shadow: false });
+  // The cage is opaque and depth-writing, so it can cast — and all 45 course boxes were
+  // casting nothing. The translucent glass around it stays non-casting, or a box would stamp a
+  // black square on the road instead of a cage shadow.
+  const cage = mesh(frameGeo, gold, { scale: size, shadow: true });
   cage.renderOrder = 2;
   g.add(cage);
 

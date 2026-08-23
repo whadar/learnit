@@ -135,7 +135,15 @@ async function boot() {
 
   /* ---- sky + lighting (createSky owns the lighting rig) ---- */
   S.sky = guard('sky', () => createSky(engine, world, {
-    hour: num('hour', 15.4),   // mid-afternoon: long enough shadows to read, white enough sun
+    // 17.1, not 15.4. The old comment claimed 15.4 gave "long enough shadows to read"; it was
+    // measured and it does not. At 15.4 the sun sits at 53.4 deg, so a shadow is 0.74x its
+    // caster's height — and the chase camera looks within 30-35 deg of the sun's azimuth, which
+    // puts most shadows inside their own caster's screen silhouette. Measured on villageStreet:
+    // 89% of the frame above shadow factor 0.9, only 2.4% below 0.7. Six review rounds read that
+    // as "nothing casts shadows" and went hunting for broken casters that were registered all
+    // along. 17.1 drops the sun to ~31 deg and makes every shadow in the game 2.3x longer.
+    // The cost is a warmer key than a white-sun brief would pick. One number to revert.
+    hour: num('hour', 17.1),
                                // that tarmac is grey and the groves are green
     shadows: QS().shadows,
     shadowMapSize: QS().shadowMapSize,
