@@ -454,7 +454,24 @@ void main() {
   // R = 16, inside the sampler's anisotropy). It is also simply the correct perspective for a
   // cloud layer on a curved earth: the deck converges to the horizon instead of running to
   // infinity, which is what puts real cumulus form back in the band the player sees.
-  float above = smoothstep( 0.004, 0.050, direction.y );
+  // How much of the cumulus deck this ray is allowed to see.
+  //
+  // THE HARD-EDGED VERTICAL STREAK LIVES HERE, and it is a sampling failure, not a shape.
+  // The shell parameterisation removed the old 1/y blow-up but not the foreshortening that
+  // comes with any cloud layer: between the skyline and about 3 deg up, shT barely changes
+  // while the azimuth sweeps the whole circle, so one screen pixel spans several cloud cells
+  // vertically and a fraction of one horizontally. The sampler runs out of anisotropy, every
+  // column collapses onto the field's local mean, and the coverage threshold then slices that
+  // mean into a block of pale bars — constant down each column, with a crisp top edge where
+  // the mean finally crosses back under uCoverage. It was measured in photoFinish at
+  // x 707-780, y 165-215 and has been re-filed under a different cause in three review rounds.
+  //
+  // No amount of tuning fixes a degenerate sample. The deck simply does not get drawn there:
+  // it fades in from 3.2 deg to 9 deg, where the vertical:horizontal derivative ratio is back
+  // under 3:1 and a cumulus is a cumulus again. That band is also where real cumulus go on a
+  // dusty July afternoon over the Menashe plateau — the last few degrees are haze, not cloud —
+  // so the ramp buys form and honesty at once.
+  float above = smoothstep( 0.056, 0.156, direction.y );
   if ( above > 0.001 ) {
     float shy = max( direction.y, 0.0 );
     float shT = sqrt( uShellR * uShellR * shy * shy + 2.0 * uShellR + 1.0 ) - uShellR * shy;
@@ -483,7 +500,7 @@ void main() {
       // into every cloud within 6 deg of the skyline is what turned the one band a chase
       // camera actually frames into a cream lid — and a warm near-neutral is exactly the
       // hue the grade LUT rotates toward green.
-      float far = 1.0 - smoothstep( 0.010, 0.115, direction.y );
+      float far = 1.0 - smoothstep( 0.056, 0.230, direction.y );
       cl.rgb = mix( cl.rgb, mix( sky, uHazeTint * skyL * uHazeGain, 0.18 ), far * 0.70 );
       sky = mix( sky, cl.rgb, cl.a * uCloudOpacity * above );
     }
@@ -583,20 +600,29 @@ const DEFAULTS = {
   // whose skyline ran out to 18 units, i.e. four tiles crushed into the last few degrees —
   // which is why every cumulus near the skyline arrived as a streak.
   // `cloudField` now returns roughly -0.12 .. 1.04 and its bodies are discrete, so the
-  // threshold means something different: 0.14 leaves about 18% of the tile in cloud —
+  // threshold means something different: this leaves about 17% of the tile in cloud —
   // scattered fair-weather cumulus over clean blue, which is what mid-July over Ramot
   // Menashe actually looks like.
-  coverage: 0.14, cloudScale: 0.26, shellR: 16, cloudOpacity: 1.0, cirrus: 0.035,
+  // With the deck now confined to the well-sampled band above ~3.2 deg (see `above` in the
+  // shader), what the player frames is a smaller slice of the field, so the cells have to be
+  // bigger to read as cumulus rather than as texture: a lower `cloudScale` is a larger cloud,
+  // and a smaller shell radius brings the layer's own horizon closer and takes some of the
+  // radial foreshortening out of the band that is left.
+  coverage: 0.155, cloudScale: 0.205, shellR: 11, cloudOpacity: 1.0, cirrus: 0.030,
   cloudSeed: 20250815, cloudSpeed: 0.0022,
   // Pre-tonemap radiance scale for the dome. Read together with `uToneExposure`: the dome
   // now goes through the same ACES curve as everything else, so this sets where the zenith
   // sits on that curve. 0.23 lands the zenith around RGB 122,176,219 before the grade,
   // which the LUT's saturation push turns into a proper Mediterranean blue.
   exposure: 0.215,
-  skySaturation: 1.42,
+  // Round 6 read the aerial plates as false-colour, and the dome is the single largest object
+  // in every one of them. 1.42 on top of a grade that was itself pushing blue by 1.45 put the
+  // sky well past azure and into poster paint; the chroma target in lighting.js's brief is
+  // 0.34-0.42 mean, and the dome has to sit inside that like everything else.
+  skySaturation: 1.33,
   // Hue tilt toward azure; 0 = raw Rayleigh cyan-blue (hue 200), 0.10 lands the graded
   // frames near hue 210 without touching cloud tops. Above ~0.18 the sky reads violet.
-  skyAzure: 0.10,
+  skyAzure: 0.09,
   // How much air mass *over* the zenith column the in-scatter term is allowed to accumulate.
   // The skyline asymptotes to (1 + this) zenith depths instead of Preetham's ~38, which is
   // what keeps chroma in the bottom 20 deg — the only part of the dome a chase camera sees.
@@ -604,7 +630,7 @@ const DEFAULTS = {
   // the *sunward* side, which is the half a chase camera keeps pointing at; higher values
   // bleach that side back to cream, lower ones drive the anti-solar sky past the grade's
   // blue ceiling and it posterises.
-  horizonChroma: 1.25,
+  horizonChroma: 1.48,
 };
 
 /**
@@ -824,7 +850,12 @@ export function createSky(engine, world, opts = {}) {
     // Aerial perspective now mixes toward a *correct* display colour, so it no longer has to
     // be weak to avoid bleaching — but 1.5 km of course does not need a kilometre of murk
     // either. This lands the far ridge visibly behind the near hills instead of erasing it.
-    palette.hazeDensity = opts.hazeDensity ?? 0.00072;
+    // Aerial perspective is the frame's primary depth cue (see THE LOOK in lighting.js), and
+    // 0.00072 was measurably too thin: it put only 7 % of haze on a 150 m building and 24 % on
+    // a 1 km ridge, which is why round 6 found a 3 km skyline as contrasty as the kerb. Solved
+    // against the brief's targets (10 % at 150 m, 28 % at 400 m, 55 % at 1 km) for a camera
+    // ~25 m above `apBase`, with `apDesat` doing the other half of the work.
+    palette.hazeDensity = opts.hazeDensity ?? 0.00098;
     palette.hazeSunAmount = 0.55 + 0.30 * smoothstep(30, 4, elev);
 
     // Cloud lighting tracks the sun so the deck never looks pasted on. Values are given in

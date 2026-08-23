@@ -711,14 +711,19 @@ const hueDist = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 36
  * The work happens between 50 and 90 deg. Foliage on this course — pine, cypress, olive,
  * vine — renders at hue 44-64: yellow-olive, on the *warm* side of the R=G line at 60, which
  * is why an aerial plate of a village surrounded by forest read as one sepia wash. That band
- * is stretched onto 50-126 so a canopy becomes green, while everything below 50 deg (dry
- * stubble at 44-50, limestone dust, straw bales, the haze) is left where it is and stays
- * warm. Below that the map tilts slightly toward red, which is what separates a terracotta
- * pantile roof from the dust of the road in front of it.
+ * has to cross the line, but it must stop in the OLIVE range and not carry on to emerald: the
+ * previous knots took hue 66 to 106 and hue 76 to 120, i.e. onto the pure green axis, where
+ * the green family's saturation gain then made a sunlit canopy fluorescent — most of why
+ * round 6 read the aerial plates as false-colour. The Menashe plateau in July is silver-green
+ * olive, blue-black cypress and grey-green pine over gold stubble, so 58-104 now lands on
+ * 68-122 instead. Everything below 51 deg (dry stubble at 44-50, limestone dust, straw bales,
+ * the haze) is left exactly where it is and stays warm; below that the map tilts slightly
+ * toward red, which is what separates a terracotta pantile roof from the dust of the road in
+ * front of it.
  */
 const HUE_WARP = [
-  [0, 0], [20, 15], [36, 32], [51, 51], [58, 78], [66, 106], [76, 120], [88, 130],
-  [104, 138], [126, 150], [150, 168], [180, 202], [212, 223], [245, 248], [290, 292],
+  [0, 0], [20, 16], [36, 33], [51, 51], [58, 68], [66, 86], [76, 100], [88, 111],
+  [104, 122], [126, 138], [150, 160], [180, 198], [212, 220], [245, 247], [290, 292],
   [330, 334], [360, 360],
 ];
 function hueWarp(h) {
@@ -757,21 +762,27 @@ function hsvToRgb(h, s, v) {
  * the one family that needs pulling back rather than pushing. Its `hi` stays above 1.0 so the
  * things that are genuinely orange — boost flame, item-box gold, terracotta — are untouched.
  *
- * Green is the mirror image, and its `hi` of 0.82 is doing real work: the hue warp above
- * lands saturated yellow-olives on the green axis, and a canopy at 0.9 chroma is neon poster
- * paint, not a pine. Pushing the dull greens up while pulling the vivid ones down compresses
- * the whole family into the band a tree actually occupies.
+ * Green is the mirror image, and its `hi` is doing real work: the hue warp above lands
+ * saturated yellow-olives on the olive axis, and a canopy at 0.9 chroma is neon poster paint,
+ * not a pine. Pushing the dull greens up while pulling the vivid ones down compresses the
+ * whole family into the band a tree actually occupies.
+ *
+ * Read the numbers against the chroma target in lighting.js's brief — mean 0.34-0.42, where
+ * Mario Kart actually sits. Round 6 measured this course well above it, and the excess was
+ * not spread evenly: it was concentrated in the two families that cover the most screen area,
+ * green and blue. Both of their `hi` values are now genuine compressors, so a sunlit prickly
+ * pear and a zenith sky arrive already vivid and are pulled DOWN, while the dull end of each
+ * family is still lifted and the palette stays separated.
  */
 const HUE_ANCHORS = [
-  { h:  12, sigma: 27, lo: 1.24, hi: 1.06 },                     // pantile red, kerb, livery
-  { h:  46, sigma: 26, lo: 0.88, hi: 1.10 },                     // limestone, dust, straw
-  { h: 118, sigma: 40, lo: 1.40, hi: 0.80, c0: 0.28, c1: 0.60 }, // olive, pine, cypress, vine
-  // Blue is the one family that touches the largest single object in every frame — the sky —
-  // and round-5 review named it "electric". 1.78/1.38 was a push aimed at a road that had no
-  // chroma to push; the neutral-chroma term in the composite does that job now, so this can
-  // go back to a gain that flatters a livery without turning the dome into poster paint.
-  { h: 215, sigma: 55, lo: 1.45, hi: 1.20 },                     // sky, shade, water, liveries
-  { h: 310, sigma: 50, lo: 1.30, hi: 1.14 },                     // item box, bougainvillea
+  { h:  12, sigma: 27, lo: 1.16, hi: 1.00 },                     // pantile red, kerb, livery
+  { h:  46, sigma: 26, lo: 0.86, hi: 1.02 },                     // limestone, dust, straw
+  { h: 104, sigma: 40, lo: 1.06, hi: 0.58, c0: 0.24, c1: 0.56 }, // olive, pine, cypress, vine
+  // Blue touches the largest single object in every frame — the sky — so it is the family a
+  // saturation push flatters least. The dome carries its own chroma from sky.js's `uSkySat`;
+  // this only has to keep a livery and a shadow from going grey.
+  { h: 215, sigma: 55, lo: 1.30, hi: 0.98 },                     // sky, shade, water, liveries
+  { h: 310, sigma: 50, lo: 1.20, hi: 1.06 },                     // item box, bougainvillea
 ];
 
 /**

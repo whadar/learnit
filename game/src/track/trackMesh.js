@@ -512,15 +512,21 @@ function createSurfaceMaterial(tex, o) {
      * tree shadow blew straight through the tonemapper into a shapeless cream blob. A tint
      * cannot do that: it is centred on 1, so the layer redistributes value instead of
      * manufacturing it. */
-    uChipA: { value: new THREE.Vector3(1.18, 1.11, 0.99) },
+    uChipA: { value: new THREE.Vector3(1.10, 1.06, 1.00) },
     /* The scene's key light and grade skew a neutral albedo warm. The correction happens on
      * the LIT result and is anchored to LUMINANCE: pull the pixel towards `luma * uTint`,
      * keeping `uSat` of its own chroma. It used to sit at 0.30, which threw away 70 % of the
      * road's colour and left r = g = b across every probe — a grey hole in a Mediterranean
      * palette. The albedo now carries a real hue split (warm limestone chippings in cool
      * bitumen, see `tarmacTextures`) so the grade only has to take the edge off. */
-    uSat: { value: 0.40 },
-    uTint: { value: new THREE.Vector3(0.940, 1.00, 1.135) },
+    // The correction is now much lighter in both directions. The old pair threw away 60 % of
+    // the surface's chroma and then replaced it with a blue-leaning neutral, which stacked on
+    // top of the composite's own cool cast for achromatic pixels; between them they are what
+    // has twice sent this road violet and once "blue choppy water". A chip seal of warm
+    // limestone chippings in cool bitumen already IS near-neutral, so the grade only has to
+    // take the last of the key light's warmth off it.
+    uSat: { value: 0.44 },
+    uTint: { value: new THREE.Vector3(0.988, 1.00, 1.040) },
     uDetail: { value: new THREE.Vector2(1.0, 0.85) },   // (unused, strength)
     uDebug: { value: 0 },
   };
@@ -622,7 +628,7 @@ float kBL(float f, float foot){ return smoothstep(0.95, 2.4, 1.0 / (f * foot)); 
   // Two slow octaves only, both far above the pixel footprint at any playable distance, so
   // the de-tiling itself can never become the thing that sparkles.
   float dt = (kdN(wp * 0.071) - 0.5) * 0.62 + (kdN(wp * 0.29) - 0.5) * 0.38;
-  diffuseColor.rgb *= 1.0 + dt * 0.15;
+  diffuseColor.rgb *= 1.0 + dt * 0.085;
 
   /* --- chip-seal aggregate, three band-limited octaves ---------------------- */
   // 38 cm binder patchiness / 13 cm stone clusters / 4.8 cm individual chippings. All three
@@ -634,13 +640,29 @@ float kBL(float f, float foot){ return smoothstep(0.95, 2.4, 1.0 / (f * foot)); 
   float n1 = (kdN(wp * f1) - 0.5) * w1;
   float n2 = (kdN(wp * f2 + 17.3) - 0.5) * w2;
   float n3 = (kdN(wp * f3 + 41.7) - 0.5) * w3;
-  float agg = (n1 * 0.42 + n2 * 0.62 + n3 * 0.98) * dstr;
-  gGrain = (n2 * 0.55 + n3 * 1.0) * dstr;
-  diffuseColor.rgb *= 1.0 + agg * 1.15;
+
+  /* AMPLITUDE. This is the number that made the road "curdled grey-white noise", and it was
+   * not subtle: the three octaves summed to +-0.86 before dstr, and the albedo was then
+   * multiplied by 1 + agg * 1.15. In the near field, where all three band limits are open,
+   * that swung the tarmac's own albedo between roughly 0 and 2x from one 5 cm cell to the
+   * next. No real chip seal does that — a fresh one is a nearly uniform dark grey whose
+   * aggregate you read almost entirely from the way the stone tops CATCH THE LIGHT, i.e. from
+   * relief and gloss, not from colour. Half of every frame is this surface, so a wide albedo
+   * swing is not detail, it is the loudest thing in the image and it destroys the value
+   * separation between the racing line, the verge and the kerb that the whole brief rests on.
+   *
+   * So the pack keeps its shape and loses its contrast: the worst-case albedo swing drops from
+   * +-0.99 to +-0.29, a factor of 3.4, weighted toward the two octaves a player can actually
+   * resolve — and the relief it used to carry in colour is handed to the micro-normal below
+   * (k, raised to match) and to roughness. The stones still glint; the road stays a road.
+   */
+  float agg = (n1 * 0.30 + n2 * 0.40 + n3 * 0.44) * dstr;
+  gGrain = (n2 * 0.62 + n3 * 1.15) * dstr;
+  diffuseColor.rgb *= 1.0 + agg * 0.60;
   // Stone tops catch the warm limestone, the binder between them keeps the cool of the
   // bitumen. Both ends of the mix are centred near 1, so this is a hue split, not a lift.
-  float chips = smoothstep(-0.04, 0.26, agg);
-  diffuseColor.rgb *= mix(vec3(0.975, 0.988, 1.045), uChipA, chips * 0.55);
+  float chips = smoothstep(-0.03, 0.18, agg);
+  diffuseColor.rgb *= mix(vec3(0.985, 0.993, 1.024), uChipA, chips * 0.42);
 
   /* --- start / finish chequer, laid on the road axis ----------------------- */
   float ds = s - uStartS;
@@ -673,7 +695,7 @@ float kBL(float f, float foot){ return smoothstep(0.95, 2.4, 1.0 / (f * foot)); 
   roughnessFactor = mix(roughnessFactor, 0.66, gPaint * 0.85);
   // A hard floor: tarmac is never glossier than this, and the specular term is not shadowed,
   // so a dip here is a licence to put sky-bright glare on road that is standing in shade.
-  roughnessFactor = clamp(roughnessFactor - gGrain * 0.05, 0.62, 1.0);`)
+  roughnessFactor = clamp(roughnessFactor - gGrain * 0.055, 0.66, 1.0);`)
 
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
   totalEmissiveRadiance += uPaintGlow * gPaint;`)
@@ -690,7 +712,12 @@ float kBL(float f, float foot){ return smoothstep(0.95, 2.4, 1.0 / (f * foot)); 
              + (kdN((wp + vec2(eB, 0.0)) * 21.0 + 41.7) - kdN((wp - vec2(eB, 0.0)) * 21.0 + 41.7)) * wB;
     float gz = (kdN((wp + vec2(0.0, eA)) * 7.5 + 17.3) - kdN((wp - vec2(0.0, eA)) * 7.5 + 17.3)) * wA * 0.55
              + (kdN((wp + vec2(0.0, eB)) * 21.0 + 41.7) - kdN((wp - vec2(0.0, eB)) * 21.0 + 41.7)) * wB;
-    float k = (1.0 - gPaint * 0.85) * uDetail.y * 0.42;
+    // Carries the relief the albedo pack gave up — the aggregate reads as stone tops catching
+    // the sun rather than as light and dark paint. It is a narrow window, though: at 0.78 the
+    // metre of road under the front bumper came back as warm mottled gravel, because a strong
+    // micro-normal under a low warm key turns every cell into a lit face and a shaded one and
+    // the surface stops being flat. Just above the old 0.42, no more.
+    float k = (1.0 - gPaint * 0.85) * uDetail.y * 0.50;
     normal = normalize(normal - (gx * vAxX + gz * vAxZ) * k);
   }`);
 

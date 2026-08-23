@@ -8,14 +8,66 @@ import { clamp, lerp as lerpN } from '../core/mathx.js';
  *   const lighting = createLighting(engine, world, skyState);
  *
  * The rig patches materials so that (a) they cast their FRONT faces into the shadow map —
- * see the long note by `fitShadow()`, it is why anything has a contact shadow at all — and
- * (b) fog becomes a height-aware, sun-tinted aerial-perspective term. Patching composes with any
+ * see `installShadowSideDefault()`, it is why anything has a shadow at all — and (b) fog
+ * becomes a height-aware, sun-tinted aerial-perspective term. Patching composes with any
  * `onBeforeCompile` another system already installed, and is re-applied automatically if
  * somebody overwrites it later, so parallel systems cannot silently break each other.
  *
  * Materials are adopted automatically for the built-in mesh material types. A system that
  * uses a custom ShaderMaterial can opt in explicitly with `lighting.setupMaterial(mat)`.
  */
+
+/* =====================================================================================
+ * THE LOOK — one direction for the whole image.
+ *
+ * Six review rounds were lost to six agents tuning six files toward six different pictures.
+ * These six files (lighting, sky, post, postShaders, terrainMaterial, trackMesh) compose into
+ * ONE pixel, so they now answer to one written brief. If a change does not serve the brief
+ * below, it does not go in — whatever a defect list says.
+ *
+ * SUBJECT. A sun-bleached Mediterranean afternoon on the Menashe plateau, about 16:00 in
+ * mid-July. Jerusalem limestone, red pantile, olive silver-green, dark cypress, dry gold
+ * stubble, dust on the ridges. Bright, but the sun has been up a long time and everything
+ * is a little bleached. Mario Kart 8's clarity, not its Nintendo-primary palette.
+ *
+ * KEY / FILL / AMBIENT.
+ *   - ONE directional sun, warm (~5200 K at this elevation), carrying ~72 % of the light on a
+ *     lit horizontal surface. Sunlit limestone lands at display 0.84-0.90 and must not clip.
+ *   - Sky hemisphere + terra-rossa bounce + sky IBL *diffuse* together carry the other ~28 %.
+ *     That is the whole shadow budget: a cast shadow is therefore worth about 1.6 stops —
+ *     dark enough to read at speed, open enough to keep the material's own hue. Shadows
+ *     must never go to one flat blue-black.
+ *   - Sky IBL *specular* stays bolted down (see installIblChunks); an unshadowed reflection
+ *     brighter than sunlit ground is the white-smear failure mode this project keeps hitting.
+ *
+ * EXPOSURE. Mean frame luma 0.38-0.46. Under 1 % of pixels above 250 and a real black
+ * present (p1 near 10) so the frame owns its whole range. The tonal anchor lives in
+ * post.js (uBlackPt/uWhitePt) and is a constant: one black and one white for the game.
+ *
+ * SATURATION. Mean chroma 0.34-0.42 — the Mario Kart band, and about 20 % below where
+ * round 6 sat. Chroma comes from the palette being *separated*, not from a global push:
+ * terracotta red, limestone amber, olive-green and sky azure each graded as their own
+ * family (postShaders HUE_ANCHORS). Foliage lands olive/yellow-green at hue 90-110, never
+ * emerald; dry ground stays ochre, never Mars orange; the dome is azure at 210-214.
+ *
+ * DISTANCE. Aerial perspective is the primary depth cue and is deliberately strong: ~10 %
+ * of the way to the haze at 150 m, ~28 % at 400 m, ~55 % at 1 km, capped at 0.74. It also
+ * *desaturates* (apDesat), because losing chroma with distance is what actually separates a
+ * 3 km ridge from the kerb in front of the kart — mixing toward a bright horizon colour on
+ * its own only makes the distance pale, not far away.
+ *
+ * ROAD vs VERGE. The racing surface is the darkest large mass in frame — display luma
+ * 0.22-0.32 in sun — against a dry ochre verge at 0.55-0.68 and kerbs at full red/white
+ * contrast. That value step is what makes the ribbon legible at 200 km/h. The asphalt's
+ * own texture must stay LOW contrast at every distance: aggregate reads through the normal
+ * map and roughness, not through albedo noise. Any albedo swing wide enough to see as
+ * mottle from the chase camera is a bug, not detail (see trackMesh `agg`).
+ *
+ * ANCHORING. Every kart carries a visible ground shadow in every frame: a real cast shadow
+ * from the map (the sun is at 31 deg, so it falls well clear of the silhouette) PLUS an
+ * ambient-occlusion pool under the chassis. The two are independent on purpose — if one is
+ * ever broken again, the other still glues the field to the road.
+ * ===================================================================================== */
 
 // ---------------------------------------------------------------------------------------
 // Global shader-chunk surgery. Everything is guarded behind AERIAL_PERSPECTIVE so that any
@@ -74,6 +126,7 @@ function installFogChunks() {
     uniform float apBase;
     uniform float apSunAmount;
     uniform float apMax;
+    uniform float apDesat;
   #endif
 #endif`;
 
@@ -107,6 +160,19 @@ function installFogChunks() {
     apCol *= mix( 0.74, 1.0, smoothstep( -0.30, 0.02, apDir.y ) );
     float apCos  = max( dot( apDir, apSunDir ), 0.0 );
     apCol = mix( apCol, apSunTint, pow( apCos, 5.0 ) * apSunAmount );
+
+    // Distance eats CHROMA before it eats contrast, and that is the half of aerial
+    // perspective this rig was missing: mixing toward a bright horizon colour alone makes
+    // the far ridge pale but leaves it just as vivid as the kerb in front of the kart, which
+    // is exactly what round 6 read as "no aerial perspective in the first 600 m". Scattering
+    // is spectrally broad by the time it has crossed a kilometre of dusty summer air, so the
+    // surface's own colour washes toward its own luminance on the way in. Applied before the
+    // haze mix so a surface loses its colour and *then* recedes, rather than being painted
+    // over — the ridge keeps its form and stops competing for attention.
+    {
+      float apL = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+      gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( apL ), apAmount * apDesat );
+    }
 
     gl_FragColor.rgb = mix( gl_FragColor.rgb, apCol, apAmount );
 
@@ -223,6 +289,67 @@ function installShadowChunk(taps) {
 }
 
 // ---------------------------------------------------------------------------------------
+// THE SHADOW-CASTER DEFAULT.  Read this before touching anything to do with shadows.
+//
+// three renders a caster's depth pass with the OPPOSITE side to the one the material draws:
+// `WebGLShadowMap.getDepthMaterial` does
+//
+//     result.side = ( material.shadowSide !== null ) ? material.shadowSide : shadowSide[ material.side ];
+//
+// with `shadowSide = { FrontSide: BackSide, ... }`. That is an acne dodge for closed solids,
+// and it is catastrophic here: every kart panel, cat, foliage card, sign, kerb and roof in
+// this game is an open, single-sided shell with no back faces pointing at the sun, so with
+// BackSide it writes NOTHING into the depth map. Measured on the gridStart fit: 81.9 % of the
+// 2048^2 map still at the cleared depth of 1.0 while the shadow pass was submitting 1.35 M
+// triangles. The karts were, literally, not occluders.
+//
+// The old cure was to walk the scene every 30 frames and set `shadowSide = FrontSide` on the
+// materials found. THAT IS WHY THIS DEFECT HAS COME BACK FOUR TIMES. The fix was correct but
+// it was a *registration*, and a registration is only as good as the last time it ran:
+//
+//   * `main.js buildRacerVisuals()` disposes and rebuilds all eight racer rigs — with brand
+//     new materials — whenever a race is (re)built, and `setView()` restages the field for
+//     every review plate;
+//   * the review harness renders only EIGHT frames per view, so a scan on a 30-frame timer
+//     usually does not run at all between the rebuild and the screenshot;
+//   * so the karts in the shot were, once again, materials nobody had registered — casting
+//     nothing — while the code that "fixed" it sat right there looking correct.
+//
+// Any object created between two scans had the bug. Polling cannot fix that, only shrink the
+// window. So the default itself is changed instead: `shadowSide` becomes a prototype accessor
+// whose *unset* value is FrontSide. A material is then a correct caster from the instant it is
+// constructed, with nothing to register, no scan to have run and no ordering to get right —
+// and a material that genuinely wants three's flip (see the closed-solid note below) says so
+// explicitly, which is now the only way to get it.
+//
+// three assigns `this.shadowSide = null` in the Material constructor; that assignment hits the
+// setter, stores null, and the getter reports FrontSide. `Material.copy()` and `setValues()`
+// go through the same setter, so clones and JSON loads inherit the same rule.
+// ---------------------------------------------------------------------------------------
+
+let shadowSideDefaultInstalled = false;
+
+function installShadowSideDefault() {
+  if (shadowSideDefaultInstalled) return;
+  shadowSideDefaultInstalled = true;
+  try {
+    const proto = THREE.Material && THREE.Material.prototype;
+    if (!proto || Object.getOwnPropertyDescriptor(proto, 'shadowSide')) return;
+    Object.defineProperty(proto, 'shadowSide', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        const v = this.__ktShadowSide;
+        return (v === undefined || v === null) ? THREE.FrontSide : v;
+      },
+      set(v) { this.__ktShadowSide = v; },
+    });
+  } catch (e) {
+    console.warn('[lighting] shadowSide default not installed; casters may be empty:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 // Closed-solid detection.
 //
 // `setupMaterial` forces `shadowSide = FrontSide` because three defaults a FrontSide material's
@@ -295,6 +422,7 @@ const smoothstep01 = (a, b, x) => {
  * @param {object} sky  state from createSky: { sunDir, palette, envScene }
  */
 export function createLighting(engine, world, sky, opts = {}) {
+  installShadowSideDefault();
   installFogChunks();
   installIblChunks();
   installShadowChunk(opts.shadowTaps ?? 12);
@@ -318,7 +446,10 @@ export function createLighting(engine, world, sky, opts = {}) {
     apSunAmount: { value: 0.55 },
     // A 1.5 km course never needs the distance fully replaced by haze; capping the mix
     // keeps the far ridge a *ridge* rather than a silhouette-free band of sky.
-    apMax:       { value: opts.hazeMax ?? 0.62 },
+    apMax:       { value: opts.hazeMax ?? 0.74 },
+    // How much of a surface's own chroma the same column of air takes with it. Runs ahead of
+    // the haze mix so distance costs colour first and contrast second; see the shader note.
+    apDesat:     { value: opts.hazeDesat ?? 0.70 },
     // Split IBL controls — see installIblChunks(). The diffuse term carries the whole shadow
     // fill so it runs hot; the specular one is held down and knee-compressed so a grazing
     // reflection of the sky can never be brighter than sunlit ground.
@@ -458,9 +589,14 @@ export function createLighting(engine, world, sky, opts = {}) {
 
   // ---- ambient: sky/ground hemisphere + a terra-rossa bounce --------------------------
   // Gains on top of whatever sky.js's palette hands over; see the long note in applyPalette().
-  const SKY_FILL_GAIN   = opts.hemiGain ?? 3.1;
-  const SKY_FILL_WARMTH = clamp(opts.hemiWarmth ?? 0.42, 0, 1);
-  const BOUNCE_GAIN     = opts.bounceGain ?? 2.2;
+  // Sized against the brief at the top of this file: sky + bounce + IBL diffuse together carry
+  // about 28 % of what a lit horizontal surface receives, so a cast shadow is worth roughly
+  // 1.6 stops. The previous 3.1 put the fill near 36 % — shadows that were present but soft
+  // enough that the eye did not use them, which is half of why the field read as floating even
+  // in the plates where the shadow map WAS working.
+  const SKY_FILL_GAIN   = opts.hemiGain ?? 2.55;
+  const SKY_FILL_WARMTH = clamp(opts.hemiWarmth ?? 0.44, 0, 1);
+  const BOUNCE_GAIN     = opts.bounceGain ?? 1.95;
 
   const hemi = new THREE.HemisphereLight(pal.skyAmbient, pal.groundAmbient, pal.hemiIntensity);
   hemi.position.set(0, 1, 0);
@@ -595,11 +731,15 @@ export function createLighting(engine, world, sky, opts = {}) {
   function fitShadowSide(mesh, mat) {
     if (!shadows || !mat || mat.isShadowMaterial) return;
     const ud = mat.userData;
-    if (ud.__ktShadowAuthored === undefined) ud.__ktShadowAuthored = mat.shadowSide != null;
-    if (ud.__ktShadowAuthored) return;                 // the material's owner chose; respect it
-    if (!ud.__ktOpenShell && !isSmallClosedSolid(mesh)) ud.__ktOpenShell = true;
-    const want = ud.__ktOpenShell ? THREE.FrontSide : null;
-    if (mat.shadowSide !== want) mat.shadowSide = want;   // read per draw; no recompile needed
+    // `installShadowSideDefault()` has already made FrontSide the answer for every material in
+    // the game, so this pass can only ever *downgrade* a small closed solid to three's flip.
+    // That inversion is the point: if this scan never runs — a rig built between two scans, a
+    // material swapped mid-race — the caster is still correct, and the worst that can happen
+    // is a little self-shadow acne on a jaffa. It used to be the difference between an
+    // occluder and no occluder at all, which is why the defect kept coming back.
+    if (ud.__ktSideFitted) return;
+    ud.__ktSideFitted = true;
+    if (isSmallClosedSolid(mesh)) mat.shadowSide = THREE.BackSide;
   }
 
   /** Closed AND small enough that its far surface is only a bias deeper than its near one. */
@@ -691,87 +831,134 @@ export function createLighting(engine, world, sky, opts = {}) {
   // A shadow map can only ever darken the ground *behind* an occluder. What sells a kart as
   // standing on the road is the little wedge of near-black right where rubber meets tarmac —
   // the ambient occlusion of a 1 m box sitting on a plane, which no directional shadow map
-  // resolves at this sun angle (elevation 53 deg puts the cast shadow almost entirely under
-  // the chassis, and the canonical views all look within ~30 deg of the sun's azimuth). MK8 draws it as an explicit soft blob under every kart and so does this.
+  // resolves at any sun angle. MK8 draws it as an explicit soft blob under every kart, and so
+  // does this. It is deliberately redundant with the cast shadow: two independent mechanisms
+  // anchor the field, so a regression in either one still leaves the karts on the ground.
   //
-  // The previous pool was the size of the kart's own footprint — 2.3 x 3.0 m — and that is
-  // exactly why it never appeared in a frame. A chase or photo-finish camera sits about a
-  // metre above the road: the ground directly beneath a kart is entirely hidden by the kart,
-  // so a pool that stops at the silhouette is drawn into pixels the kart already occludes.
-  // Toggling it on and off in photoFinish changed 1041 pixels out of 921600, all of them
-  // slivers off to one side — the karts might as well have had no contact shadow, which is
-  // what three critics reported. What has to be visible is the ring OUTSIDE the silhouette:
-  // the darkening that spills past the tyres and out behind the rear axle, which is the part
-  // of the ground the camera can actually see.
+  // TWO THINGS KEPT THIS INVISIBLE, and both were geometry, not tuning.
   //
-  // So the pool is 2.95 x 3.85 m over a kart that is about 1.5 x 2.1 m, and it is not an
-  // ellipse: four tight tyre-contact lobes at the wheels, a broad chassis lobe between them
-  // and a wide low-density halo, unioned. The tyre lobes are what read as rubber touching
-  // tarmac; the halo is what survives a grazing camera.
+  // 1. IT WAS BURIED IN THE ROAD. The pool was placed at the racer root's world Y plus 3 cm,
+  //    on the assumption that the root sits on the surface the kart is driving on. It does
+  //    not: measured across three canonical views the racer roots sit 0.06-0.20 m above the
+  //    raw heightfield, while `trackMesh` builds the racing surface with a 8.5 cm parabolic
+  //    CROWN on top of the track spline, plus banking, plus whatever grading the ribbon
+  //    carries over raw terrain. So on most of the course the pool was a few centimetres
+  //    UNDER the tarmac and lost the depth test outright. Proved directly: rendering the same
+  //    frame with `depthTest = false` puts the pool back on screen, with nothing else changed.
+  //    It is now lifted by `contactLift` (12 cm — clears the crown and normal grading) and
+  //    carries a polygon offset strictly stronger than anything trackMesh uses (the tarmac is
+  //    -5/-14, its decals -8/-16), so neither the crown nor a banked corner can swallow it.
+  //
+  // 2. IT WAS THE WRONG SHAPE. A symmetric pool the size of the kart's own footprint is drawn
+  //    almost entirely into pixels the kart already occludes — a chase camera sits a metre up
+  //    and behind, so the ground *under* a kart is exactly what it cannot see. What has to be
+  //    visible is the part that spills OUTSIDE the silhouette. With the sun at 31 deg that is
+  //    also where a real shadow goes, so the pool is now anisotropic: a tight AO core under
+  //    the chassis with four tyre-contact lobes, plus a long soft lobe stretched down-sun and
+  //    offset down-sun, which puts darkness on open road in every frame regardless of which
+  //    way the kart is pointing.
   //
   // One InstancedMesh, black over the road so it darkens the surface's own texture instead of
-  // painting grey over it, lifted 3 cm and polygon-offset so it never z-fights, pulled a
-  // little down-sun so it reads as anchored to the light rather than stamped.
+  // painting grey over it. The texture is authored in the pool's own frame with +Y = down-sun.
   const contact = (() => {
     if (opts.contactShadows === false) return null;
     try {
-      const S = 128, cv = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
-      if (!cv) return null;
-      cv.width = cv.height = S;
-      const c = cv.getContext('2d');
-      const img = c.createImageData(S, S);
-      // Normalised half-extents: x across the kart, y along it. 1.0 == the pool's own edge.
+      const S = 128;
+      const mk = (paint) => {
+        const cv = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
+        if (!cv) return null;
+        cv.width = cv.height = S;
+        const c = cv.getContext('2d');
+        const img = c.createImageData(S, S);
+        for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+          const dx = (x + 0.5) / S * 2 - 1, dy = (y + 0.5) / S * 2 - 1;
+          // The alpha is windowed to exactly zero at the border: a quad edge carrying even 4 %
+          // over tarmac reads as a printed rectangle, and that straight line is the "hard-edged
+          // slab behind the kart" this project keeps re-filing.
+          const win = (1 - smoothstep01(0.62, 1.0, Math.abs(dx))) * (1 - smoothstep01(0.62, 1.0, Math.abs(dy)));
+          const i = (y * S + x) * 4;
+          img.data[i] = img.data[i + 1] = img.data[i + 2] = 0;
+          img.data[i + 3] = Math.round(255 * clamp(paint(dx, dy) * win, 0, 1));
+        }
+        c.putImageData(img, 0, 0);
+        const t = new THREE.CanvasTexture(cv);
+        t.colorSpace = THREE.NoColorSpace;
+        t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+        // NO MIPMAPS. A mip chain averages the border ramp away — by level 4 the border and the
+        // centre are within a few percent — and a chase camera, which sees this quad at a
+        // grazing angle and therefore picks a coarse mip, would get back the flat translucent
+        // square with four straight edges the window above exists to prevent.
+        t.minFilter = t.magFilter = THREE.LinearFilter;
+        t.generateMipmaps = false;
+        return t;
+      };
+
+      /** Smooth elliptical lobe, 1 at the centre, 0 at d = 1 + soft. */
       const lobe = (dx, dy, rx, ry, soft) => {
         const d = Math.sqrt((dx / rx) * (dx / rx) + (dy / ry) * (dy / ry));
-        const t = 1 - Math.min(1, Math.max(0, (d - (1 - soft)) / (2 * soft)));
+        const t = 1 - clamp((d - (1 - soft)) / (2 * soft), 0, 1);
         return t * t * (3 - 2 * t);
       };
-      const WX = 0.44, WY = 0.35;                       // wheel centres in pool space
-      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-        const dx = (x + 0.5) / S * 2 - 1, dy = (y + 0.5) / S * 2 - 1;
-        let occ = 1 - lobe(dx, dy, 0.90, 0.94, 0.98) * 0.34;      // wide halo
-        occ *= 1 - lobe(dx, dy, 0.50, 0.58, 0.72) * 0.72;         // chassis
+
+      // --- A: the AO core, in the KART's frame (x across, y along) -------------------------
+      const WX = 0.44, WY = 0.34;                       // wheel centres in pool space
+      const coreTex = mk((dx, dy) => {
+        let occ = 1 - lobe(dx, dy, 0.86, 0.92, 0.98) * 0.30;     // wide halo
+        occ *= 1 - lobe(dx, dy, 0.48, 0.56, 0.70) * 0.78;        // chassis
         for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
-          occ *= 1 - lobe(dx - sx * WX, dy - sy * WY, 0.21, 0.17, 0.85);   // tyre contact
+          occ *= 1 - lobe(dx - sx * WX, dy - sy * WY, 0.20, 0.16, 0.85);   // tyre contact
         }
-        // The halo still carries a few percent of alpha at the quad's corners, and a quad edge
-        // at 4% over tarmac is a visible straight line — the pool reads as a printed rectangle.
-        // Window it to exactly zero at the border.
-        const win = (1 - smoothstep01(0.66, 1.0, Math.abs(dx))) * (1 - smoothstep01(0.66, 1.0, Math.abs(dy)));
-        const i = (y * S + x) * 4;
-        img.data[i] = img.data[i + 1] = img.data[i + 2] = 0;
-        img.data[i + 3] = Math.round(255 * Math.min(1, (1 - occ) * win));
-      }
-      c.putImageData(img, 0, 0);
-      const tex = new THREE.CanvasTexture(cv);
-      tex.colorSpace = THREE.NoColorSpace;
-      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-      // NO MIPMAPS. The alpha above is windowed to exactly zero at the quad's border so the
-      // pool cannot read as a printed rectangle — but a mip chain averages that ramp away:
-      // by level 4 the border and the centre are within a few percent of each other, so a
-      // chase camera, which sees this quad at a grazing angle and therefore selects a coarse
-      // mip, gets a flat translucent square with four straight edges. That is exactly the
-      // "hard-edged slab behind the kart" that keeps coming back. A 128 px texture stretched
-      // over 3 m has nothing worth prefiltering anyway.
-      tex.minFilter = tex.magFilter = THREE.LinearFilter; tex.generateMipmaps = false;
+        return 1 - occ;
+      });
+
+      // --- B: the soft cast lobe, in the SUN's ground frame (y = down-sun) -----------------
+      // Tapered: dense where it leaves the tyres, feathering out down-sun, so it reads as a
+      // shadow thrown by a low sun rather than a stamped oval.
+      const castTex = mk((dx, dy) => {
+        const t = (dy + 1) * 0.5;                       // 0 at the kart, 1 at the far end
+        const wid = 0.62 - 0.16 * t;                    // narrows as it runs away
+        const a = lobe(dx, dy * 0.92 - 0.06, wid, 0.96, 0.55);
+        return a * (0.92 - 0.42 * t * t);
+      });
+      if (!coreTex || !castTex) return null;
 
       const geo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-      const mat = new THREE.MeshBasicMaterial({
-        map: tex, color: 0x000000, transparent: true, opacity: opts.contactStrength ?? 0.80,
-        depthWrite: false, fog: false, toneMapped: false,
-        polygonOffset: true, polygonOffsetFactor: -8, polygonOffsetUnits: -8,
-      });
       const MAX = opts.contactMax ?? 24;
-      const mesh = new THREE.InstancedMesh(geo, mat, MAX);
-      mesh.name = 'lighting:contact';
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = false;
-      // Above the transparent road dressing — the grid slabs (6) and the skid decals (5) are
-      // drawn after opaque geometry and would otherwise paint straight over the pool — and
-      // below the boost pads and the additive VFX, which belong on top of everything.
-      mesh.renderOrder = 7; mesh.count = 0;
-      mesh.userData.__ktContact = true;
-      scene.add(mesh);
+
+      // Black over the road, so the pool darkens the surface's own aggregate instead of
+      // painting flat grey on top of it.
+      //
+      // The polygon offset is the important number here, and it is deliberately stronger than
+      // anything `trackMesh.js` uses (tarmac -5/-14, road decals -8/-16, boost pads -8/-16).
+      // The pool has to win against the racing surface at every banking angle and over the
+      // 8.5 cm road crown; losing that contest is what made it invisible for four rounds.
+      const makeMat = (map, op) => new THREE.MeshBasicMaterial({
+        map, color: 0x000000, transparent: true, opacity: op,
+        depthWrite: false, fog: false, toneMapped: false,
+        polygonOffset: true, polygonOffsetFactor: -18, polygonOffsetUnits: -72,
+      });
+      const mkMesh = (map, op, name, order) => {
+        const m = new THREE.InstancedMesh(geo, makeMat(map, op), MAX);
+        m.name = name;
+        m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        m.frustumCulled = false; m.castShadow = false; m.receiveShadow = false;
+        // Above every transparent piece of road dressing — skid decals (5), grid slabs (6) and
+        // boost pads (8) are all drawn after the opaque pass and would otherwise paint over the
+        // shadow — and below the additive VFX, which belong on top of everything.
+        m.renderOrder = order; m.count = 0;
+        m.userData.__ktContact = true;
+        scene.add(m);
+        return m;
+      };
+      // Cast lobe first so the AO core lands on top of it where they overlap.
+      const castMesh = mkMesh(castTex, opts.castStrength ?? 0.66, 'lighting:contactCast', 9);
+      const mesh = mkMesh(coreTex, opts.contactStrength ?? 0.86, 'lighting:contact', 10);
+
+      // How far the pool sits above the racer root. Not cosmetic: `trackMesh` crowns the
+      // racing surface by 8.5 cm over the track spline and the ribbon is graded over raw
+      // terrain, while the racer roots measure only 0.06-0.20 m above the heightfield — so a
+      // 3 cm lift put the pool inside the tarmac on most of the course.
+      const LIFT = opts.contactLift ?? 0.12;
 
       const targets = [];
       const restY = new WeakMap();      // racer -> { y, x, z } resting reference, see update()
@@ -779,9 +966,29 @@ export function createLighting(engine, world, sky, opts = {}) {
       const _n = new THREE.Vector3(), _fw = new THREE.Vector3(), _rt = new THREE.Vector3();
       const _m = new THREE.Matrix4();
       const _basis = new THREE.Matrix4();
+      const _sunFwd = new THREE.Vector3(), _sunRt = new THREE.Vector3();
+      const _cFw = new THREE.Vector3(), _cRt = new THREE.Vector3();
 
+      /**
+       * Refresh the target list.
+       *
+       * THIS RUNS EVERY FRAME, and that is not laziness — it is the fix. `main.js`
+       * `buildRacerVisuals()` destroys and rebuilds all eight rigs whenever a race is built,
+       * and the review harness renders only eight frames per view, so a list rebuilt on a
+       * 30-frame timer is stale exactly when a screenshot is taken. Racer rigs are added
+       * straight to the scene root, so the fast path is a loop over `scene.children` — about
+       * thirty entries — and the deep traverse is only used as a fallback when that finds
+       * nothing, which keeps it correct even if somebody nests a rig later.
+       */
       function collect() {
         targets.length = 0;
+        for (const o of scene.children) {
+          if (targets.length >= MAX) break;
+          if (!/^racer:/.test(o.name || '')) continue;
+          if (o.userData && o.userData.contactShadow === false) continue;
+          targets.push(o);
+        }
+        if (targets.length) return;
         scene.traverse(o => {
           if (targets.length >= MAX) return;
           if (o.userData && o.userData.contactShadow === false) return;
@@ -790,45 +997,51 @@ export function createLighting(engine, world, sky, opts = {}) {
       }
 
       function update() {
-        if (!targets.length) return;
+        collect();
+        if (!targets.length) { mesh.count = 0; castMesh.count = 0; return; }
+        // Ground-projected sun direction: the axis the cast lobe is laid along.
+        _sunFwd.set(lightDir.x, 0, lightDir.z);
+        if (_sunFwd.lengthSq() < 1e-6) _sunFwd.set(0, 0, 1); else _sunFwd.normalize();
+        _sunRt.set(-_sunFwd.z, 0, _sunFwd.x);
+        // How long the lobe runs: a 1.1 m tall kart with the sun at elevation e throws
+        // 1.1 / tan(e). Bounded so a low sun does not paint a runway.
+        const tanEl = Math.max(0.28, Math.abs(sky.sunDir.y) /
+          Math.max(1e-3, Math.hypot(sky.sunDir.x, sky.sunDir.z)));
+        const reach = clamp(1.15 / tanEl, 1.2, 3.4);
+
         let n = 0;
         for (const o of targets) {
           if (!o.visible || !o.parent) continue;
           o.getWorldPosition(_p);
-          // `createRacer` builds each rig with its wheels on the ground at local y = 0, so the
-          // root's world Y *is* the contact height. The heightfield is only a sanity reference
-          // here: the track ribbon is graded and can sit a metre above raw terrain, and putting
-          // the pool on `heightAt` buries it under the road.
+          // The heightfield is only a sanity reference: the track ribbon is graded and can sit
+          // a metre above raw terrain, so `heightAt` alone cannot place or gate the pool.
           const gy = world ? world.heightAt(_p.x, _p.z) : _p.y;
           const airTerrain = Number.isFinite(gy) ? Math.max(0, _p.y - gy) : 0;
-          // ...but the heightfield ALONE cannot decide whether a kart is airborne, because a
-          // graded corner or a bridged culvert can put the ribbon several metres over raw
-          // terrain, and every kart driving over it would silently lose its contact shadow.
-          // Track a per-racer resting height instead: it snaps down the moment the kart is
-          // lower than the reference and creeps up slowly, so a jump reads as air while a
-          // climb does not. Airborne means BOTH measures agree.
+          // ...and it cannot decide whether a kart is airborne either, because a graded corner
+          // or a bridged culvert puts the ribbon several metres over raw terrain and every kart
+          // driving over it would silently lose its shadow. Track a per-racer resting height:
+          // it snaps down the moment the kart is lower than the reference and creeps up slowly,
+          // so a jump reads as air while a climb does not. Airborne means BOTH measures agree.
           //
-          // ...and the reference needs a TELEPORT guard, which is the bug that made this whole
-          // system invisible. `setView()` re-stages the field with packAt()/simulate() — every
-          // kart jumps to a different part of the course between two visual frames, often tens
-          // of metres lower. The creep then needs `drop / 0.045` frames to catch up, so for
-          // several seconds `_p.y - ref` reads as "this kart is 30 m in the air" and the pool
-          // is dropped by the `air > 2.4` test below. gridStart is the one plate that still had
-          // contact shadows precisely because it is where the reference was first written; every
-          // other plate shipped with mesh.count === 0 and the whole field floating. A jump
-          // moves a kart a few metres per frame at most, so a horizontal step of more than 6 m
-          // in a single update is a re-stage, not a jump: re-seat the reference on the spot.
+          // The reference needs a TELEPORT guard. `setView()` re-stages the field with
+          // packAt()/simulate(): every kart jumps to a different part of the course between two
+          // rendered frames, often tens of metres lower, and the creep would need drop/0.045
+          // frames to catch up — several seconds of "this kart is 30 m in the air". A jump moves
+          // a kart a couple of metres per frame at most, so a horizontal step over 6 m is a
+          // re-stage, not a jump: re-seat the reference on the spot.
           const st = restY.get(o);
           const staged = !st || Math.abs(_p.x - st.x) + Math.abs(_p.z - st.z) > 6;
           const ref = staged ? _p.y
             : (_p.y < st.y ? _p.y : Math.min(_p.y, st.y + 0.045));
           restY.set(o, { y: ref, x: _p.x, z: _p.z });
           const air = staged ? 0 : Math.min(airTerrain, Math.max(0, _p.y - ref));
-          // A kart in the air has no contact to occlude: the pool widens, then is dropped once
-          // it would only be a smudge.
+          // A kart in the air has no contact to occlude: the pool widens and fades, then is
+          // dropped once it would only be a smudge.
           if (air > 2.4) continue;
           const grow = 1 + Math.min(0.9, Math.max(0, air - 1.1) * 0.6);
+          const y = _p.y + LIFT;
 
+          // --- A: AO core, kart-aligned so the tyre lobes land on the tyres ---------------
           o.getWorldQuaternion(_q);
           _n.set(0, 1, 0).applyQuaternion(_q);
           if (!Number.isFinite(_n.x) || _n.lengthSq() < 1e-6) _n.set(0, 1, 0); else _n.normalize();
@@ -836,22 +1049,36 @@ export function createLighting(engine, world, sky, opts = {}) {
           _fw.addScaledVector(_n, -_fw.dot(_n));
           if (_fw.lengthSq() < 1e-6) _fw.set(0, 0, 1); else _fw.normalize();
           _rt.crossVectors(_n, _fw).normalize();
-
           _basis.makeBasis(_rt, _n, _fw);
-          _basis.setPosition(
-            _p.x + lightDir.x * 0.22,
-            _p.y + 0.03,
-            _p.z + lightDir.z * 0.22);
-          _s.set(2.95 * grow, 1, 3.85 * grow);
+          _basis.setPosition(_p.x, y, _p.z);
+          _s.set(2.70 * grow, 1, 3.35 * grow);
           _m.copy(_basis).scale(_s);
           mesh.setMatrixAt(n, _m);
+
+          // --- B: cast lobe, sun-aligned and pushed down-sun so it clears the silhouette ---
+          // Laid in the plane the kart is standing on, not the world horizontal: this quad is
+          // nearly four metres long, so on a banked corner or a 10 % climb a world-flat one
+          // buries its far end in the road and the shadow stops halfway.
+          _cFw.copy(_sunFwd).addScaledVector(_n, -_sunFwd.dot(_n));
+          if (_cFw.lengthSq() < 1e-6) _cFw.copy(_fw); else _cFw.normalize();
+          _cRt.crossVectors(_n, _cFw).normalize();
+          _basis.makeBasis(_cRt, _n, _cFw);
+          _basis.setPosition(
+            _p.x + _cFw.x * reach * 0.46,
+            y + _cFw.y * reach * 0.46 - 0.004,
+            _p.z + _cFw.z * reach * 0.46);
+          _s.set(2.05 * grow, 1, (2.0 + reach) * grow);
+          _m.copy(_basis).scale(_s);
+          castMesh.setMatrixAt(n, _m);
+
           n++;
         }
-        mesh.count = n;
+        mesh.count = n; castMesh.count = n;
         mesh.instanceMatrix.needsUpdate = true;
+        castMesh.instanceMatrix.needsUpdate = true;
       }
 
-      return { mesh, collect, update };
+      return { mesh, castMesh, collect, update, get count() { return mesh.count; } };
     } catch (e) {
       console.warn('[lighting] contact shadows unavailable:', e);
       return null;
@@ -870,10 +1097,25 @@ export function createLighting(engine, world, sky, opts = {}) {
   // camera nor the scene changed.
   renderer.shadowMap.autoUpdate = false;
   let frame = 0;
+  // Cheap structural fingerprint of the scene root. Racer rigs, item props, the VFX group and
+  // every other system's root are all direct children of the scene, so a change here means
+  // something was created, swapped or destroyed — which is precisely when material adoption,
+  // receiveShadow and caster registration have to be redone. Polling on a 30-frame timer left
+  // a window of up to half a second in which brand-new geometry was unregistered, and the
+  // review harness renders eight frames per plate, so that window WAS the screenshot. See the
+  // long note by installShadowSideDefault().
+  const sceneStamp = () => {
+    let k = scene.children.length * 131;
+    for (let i = 0; i < scene.children.length; i++) k += scene.children[i].id;
+    return k;
+  };
+  let lastStamp = -1;
 
   const system = {
     update(dt) {
-      if ((frame++ % 30) === 0) { scan(); contact?.collect(); }
+      const stamp = sceneStamp();
+      if (stamp !== lastStamp || (frame % 30) === 0) { lastStamp = stamp; scan(); }
+      frame++;
       contact?.update();
       const cam = engine.camera;
       const moved = cam.position.distanceToSquared(lastCamPos) > 2.5e-3 ||
@@ -904,6 +1146,7 @@ export function createLighting(engine, world, sky, opts = {}) {
     apUniforms,
     setupMaterial,
     scan,
+    contact,
     /** Re-read sky.palette / sky.sunDir after a time-of-day change. */
     refresh(rebuildEnv = true) {
       applyPalette();

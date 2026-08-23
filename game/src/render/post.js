@@ -258,7 +258,7 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // the halo: a punchy glow that cannot swallow the kart. The old 0.42/1.5/0.68 trio
     // worked out to a gain of ~5.7 and turned the `driftCorner` boost flame into a
     // 600 px white hole with the kart nowhere inside it.
-    bloomStrength:   opts.bloomStrength ?? 0.26,
+    bloomStrength:   opts.bloomStrength ?? 0.19,
     // `bloomRadius` is UnrealBloomPass's mip-weight lerp: at 0.40 the *lowest* mip — 60x34
     // texels for a 1920x1080 chain — was weighted 0.52, more than the tightest one. A single
     // texel of that mip is a 32x32 px block, and bilinearly upsampled over a bright roofline
@@ -318,8 +318,13 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // a midtone-only range, which is exactly the poster-paint failure mode. Chroma comes down
     // here and in the LUT; the range that went missing comes back through uBlackPt/uWhitePt
     // below, and a little contrast is what stops a wider range from reading flat.
-    contrast:        opts.contrast ?? 1.045,
-    saturation:      opts.saturation ?? 1.24,
+    // Chroma down, VALUE up. That trade is the whole grade note: round 6 read the frames as
+    // false-colour AND flat, which is the signature of high saturation over a narrow tonal
+    // range. Saturation comes off here and in the LUT's hue families; the punch that goes with
+    // it comes back through contrast and the black/white anchor below, which is what MK8
+    // actually has — deep, separated values, not more paint.
+    contrast:        opts.contrast ?? 1.09,
+    saturation:      opts.saturation ?? 1.08,
     lutMix:          opts.lutMix ?? 1.0,
     // Where the over-range top end starts to roll. Below this the pass is the identity. It
     // used to sit at 0.86, which pulled ordinary sunlit plaster at 0.95 down to 0.926 before
@@ -343,8 +348,8 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
     // shape the last stop at each end. The old anchor had a hard 0.062 floor (measured as
     // p1 = 40 in hilltopVista, exactly the floor's byte value) and an exponential ceiling
     // whose fixed point put display white at 0.975, so no frame could reach either end.
-    blackPt:         opts.blackPt ?? 0.014,
-    whitePt:         opts.whitePt ?? 0.878,
+    blackPt:         opts.blackPt ?? 0.015,
+    whitePt:         opts.whitePt ?? 0.872,
     black:           opts.black ?? 0.0,
     toePivot:        opts.toePivot ?? 0.17,
     toeGamma:        opts.toeGamma ?? 1.10,
@@ -482,7 +487,12 @@ export function createPostFX(renderer, scene, camera, opts = {}) {
   // Round 1 measured a mean chroma of 0.19 against Mario Kart's 0.33-0.42 with the LUT at
   // 1.28 / 1.10; this pushes both and deepens the cool-shade split so the warm sun reads
   // as warm against it.
-  const lut = makeGradeLUT({ saturation: 1.32, contrast: 1.10, shadeTint: 1.00, warmth: 0.97,
+  // `saturation` here is the STRENGTH the hue table is applied at, not a flat multiplier
+  // (see makeGradeLUT): 1.32 means "apply HUE_ANCHORS at full weight". It stays high on
+  // purpose — the chroma reduction this round is in the anchors themselves, where it can be
+  // aimed at the two families that were actually over (green and blue) instead of draining
+  // the terracotta and the liveries along with them.
+  const lut = makeGradeLUT({ saturation: 1.32, contrast: 1.11, shadeTint: 1.00, warmth: 0.97,
     ...(opts.lut || {}) });
   cu.tLut.value = lut;
   cu.tDepth.value = depthTexture;

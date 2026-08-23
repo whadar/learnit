@@ -215,6 +215,26 @@ function generateLayer(key, S, seed, extra = false) {
     }
   }
 
+  /* Chroma trim on the two reddest layers.
+   *
+   * `terra` and `farm` are authored as honest terra rossa — the parent rock really is that
+   * red — but they are also, between them, most of the open ground on this course, and the
+   * frame sees them through a warm key light and a grade that lifts the amber family. Round 6
+   * read the aerial plates as false-colour and the verge as Mars orange, which is those three
+   * multiplying. The soil keeps its hue and gives up 13 % of its saturation here, at the
+   * source, rather than being fought downstream where the fix would drag the pantile roofs
+   * and the boost flame down with it. Ochre, not rust. */
+  if (key === 'terra' || key === 'farm') {
+    for (let i = 0; i < N; i++) {
+      const r = col[i * 3], g = col[i * 3 + 1], b = col[i * 3 + 2];
+      const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const k = 0.87;
+      col[i * 3] = l + (r - l) * k;
+      col[i * 3 + 1] = l + (g - l) * k;
+      col[i * 3 + 2] = l + (b - l) * k;
+    }
+  }
+
   // Cavity AO from the difference between the height and its blurred self.
   const blur = boxBlurWrap(hgt, S, Math.max(2, S >> 6), 2);
   const alb = new Uint8Array(N * 4);
