@@ -142,8 +142,13 @@ async function boot() {
     // 89% of the frame above shadow factor 0.9, only 2.4% below 0.7. Six review rounds read that
     // as "nothing casts shadows" and went hunting for broken casters that were registered all
     // along. 17.1 drops the sun to ~31 deg and makes every shadow in the game 2.3x longer.
-    // The cost is a warmer key than a white-sun brief would pick. One number to revert.
-    hour: num('hour', 17.1),
+    // 17.1 was the first attempt and it overshot: tools/guard.mjs measured the tarmac at
+    // blueBias -16.2 / sat 0.33, failing road-neutrality in the mirror image of the old blue
+    // "choppy water" regression — a warm-tinted road instead of a cold one. 16.0 measures
+    // -11.4 / 0.22 and passes, while still dropping the sun about 7 deg and lengthening every
+    // shadow roughly 30% over 15.4. Less shadow than 17.1 bought, with no regression traded
+    // for it. One number to change; re-run tools/guard.mjs if you do.
+    hour: num('hour', 16.0),
                                // that tarmac is grey and the groves are green
     shadows: QS().shadows,
     shadowMapSize: QS().shadowMapSize,
