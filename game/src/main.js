@@ -254,6 +254,9 @@ async function boot() {
   } else {
     APP.mode = 'menu';
     menu.show('title');
+    S.hud?.show(false);
+    // No keyboard on a coarse pointer, so the keyboard hints would be actively misleading.
+    if (S.input?.touchVisible) guard('menu.touchHints', () => menu.useTouchHints?.());
     S.camera.setMode('fixed');
     // Attract mode: a real race runs on autopilot under the title card, so the fly-over is
     // looking at eight karts actually racing rather than an empty circuit.
@@ -523,7 +526,10 @@ function wireRaceEvents(race) {
       if (p === 'intro') S.camera?.setMode('intro', { snap: true });
       if (p === 'countdown' || p === 'racing') {
         S.camera?.setMode('chase', { snap: race.state.phase === 'countdown' });
-        S.hud?.show(true);
+        // Attract mode runs a REAL race under the title card, so this phase change fires there
+        // too — and without the mode guard the race HUD (lap counter, minimap, timer, speedo)
+        // renders straight through the title and character screens.
+        if (APP.mode === 'race') S.hud?.show(true);
       }
       if (p === 'results') showResults();
     }

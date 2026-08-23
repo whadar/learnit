@@ -337,7 +337,10 @@ export function createMenu(opts = {}) {
     <div class="kt-logo"><span class="k">KAT</span><span class="r">RACING</span>
       <span class="sub">${esc(O.subtitle)}</span></div>
     <div class="kt-list" data-el="titlelist"></div>
-    <div class="kt-hint">Arrows / WASD to move · Enter or Space to select</div>
+    <div class="kt-hint" data-el="hintTitle">Arrows / WASD to move · Enter or Space to select</div>
+    <!-- The raw renderer/driver string is diagnostic, not player-facing: it is long enough to
+         run under the control hint and collide with it. It lives on the Settings screen
+         (data-el="gpuline"); this corner keeps a short tier name only. -->
     <div class="kt-corner" data-el="gpu"></div>
   </section>
 
@@ -652,7 +655,25 @@ export function createMenu(opts = {}) {
       }
       return api;
     },
-    setGPU(text) { el.gpu.textContent = text; el.gpuline.textContent = text; return api; },
+    /** On a phone there is no keyboard, so keyboard hints are worse than no hint at all. */
+    useTouchHints() {
+      const swap = [
+        ['hintTitle', 'Tap to choose'],
+        ['hintChars', 'Tap a cat to pick · tap Back to go back'],
+        ['hintCourse', 'Tap to start the race'],
+        ['hintSettings', 'Tap to change · tap Back to go back'],
+        ['hintPause', 'Tap Resume'],
+      ];
+      for (const [key, text] of swap) if (el[key]) el[key].textContent = text;
+      return api;
+    },
+    setGPU(text) {
+      // Settings gets the full driver string; the title corner gets only the tier word, so a
+      // 90-character ANGLE/SwiftShader identifier cannot overlap the control hint beneath it.
+      el.gpuline.textContent = text;
+      el.gpu.textContent = (String(text).match(/^\s*([A-Za-z][A-Za-z0-9 +-]{0,18})/) || [, ''])[1].trim();
+      return api;
+    },
     setCharacter(i) { state.character = Math.max(0, Math.min(roster.length - 1, i | 0)); paint(); return api; },
     get character() { return roster[state.character]; },
     get course() { return courses[state.course]; },
