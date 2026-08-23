@@ -25,14 +25,16 @@ import { clamp, lerp as lerpN } from '../core/mathx.js';
  * ONE pixel, so they now answer to one written brief. If a change does not serve the brief
  * below, it does not go in — whatever a defect list says.
  *
- * SUBJECT. A sun-bleached Mediterranean afternoon on the Menashe plateau, about 16:00 in
- * mid-July. Jerusalem limestone, red pantile, olive silver-green, dark cypress, dry gold
- * stubble, dust on the ridges. Bright, but the sun has been up a long time and everything
- * is a little bleached. Mario Kart 8's clarity, not its Nintendo-primary palette.
+ * SUBJECT. A sun-bleached Mediterranean afternoon on the Menashe plateau — 15:24 local on a
+ * mid-July day, which for 32.56 N puts the sun at elevation 53.4 deg, azimuth 263 (due west,
+ * a shade south). Jerusalem limestone, red pantile, olive silver-green, dark cypress, dry
+ * gold stubble, dust on the ridges. Bright, but the sun has been up a long time and
+ * everything is a little bleached. Mario Kart 8's clarity, not its Nintendo-primary palette.
  *
  * KEY / FILL / AMBIENT.
- *   - ONE directional sun, warm (~5200 K at this elevation), carrying ~72 % of the light on a
- *     lit horizontal surface. Sunlit limestone lands at display 0.84-0.90 and must not clip.
+ *   - ONE directional sun, faintly warm (~5600 K at this elevation), carrying ~72 % of the
+ *     light on a lit horizontal surface. Sunlit limestone lands at display 0.84-0.90 and
+ *     must not clip.
  *   - Sky hemisphere + terra-rossa bounce + sky IBL *diffuse* together carry the other ~28 %.
  *     That is the whole shadow budget: a cast shadow is therefore worth about 1.6 stops —
  *     dark enough to read at speed, open enough to keep the material's own hue. Shadows
@@ -63,10 +65,13 @@ import { clamp, lerp as lerpN } from '../core/mathx.js';
  * map and roughness, not through albedo noise. Any albedo swing wide enough to see as
  * mottle from the chase camera is a bug, not detail (see trackMesh `agg`).
  *
- * ANCHORING. Every kart carries a visible ground shadow in every frame: a real cast shadow
- * from the map (the sun is at 31 deg, so it falls well clear of the silhouette) PLUS an
- * ambient-occlusion pool under the chassis. The two are independent on purpose — if one is
- * ever broken again, the other still glues the field to the road.
+ * ANCHORING. Every kart carries a visible ground shadow in every frame. At 53 deg the sun
+ * throws a SHORT shadow — about 0.75 of the caster's height — so most of it lands under the
+ * chassis where a chase camera cannot see it, and the shadow map alone can never anchor the
+ * field on this course. It therefore gets two mechanisms: the map's own cast shadow, and an
+ * explicit ambient-occlusion pool with a soft lobe pushed down-sun far enough to clear the
+ * silhouette. They are independent on purpose — if one is ever broken again, the other still
+ * glues the field to the road.
  * ===================================================================================== */
 
 // ---------------------------------------------------------------------------------------
@@ -831,9 +836,11 @@ export function createLighting(engine, world, sky, opts = {}) {
   // A shadow map can only ever darken the ground *behind* an occluder. What sells a kart as
   // standing on the road is the little wedge of near-black right where rubber meets tarmac —
   // the ambient occlusion of a 1 m box sitting on a plane, which no directional shadow map
-  // resolves at any sun angle. MK8 draws it as an explicit soft blob under every kart, and so
-  // does this. It is deliberately redundant with the cast shadow: two independent mechanisms
-  // anchor the field, so a regression in either one still leaves the karts on the ground.
+  // resolves at any sun angle — and at this course's 53 deg sun the map's own cast shadow is
+  // only ~0.75 of the kart's height long, so nearly all of it hides under the chassis anyway.
+  // MK8 draws an explicit soft blob under every kart, and so does this. It is deliberately
+  // redundant with the cast shadow: two independent mechanisms anchor the field, so a
+  // regression in either one still leaves the karts on the ground.
   //
   // TWO THINGS KEPT THIS INVISIBLE, and both were geometry, not tuning.
   //
@@ -852,11 +859,10 @@ export function createLighting(engine, world, sky, opts = {}) {
   // 2. IT WAS THE WRONG SHAPE. A symmetric pool the size of the kart's own footprint is drawn
   //    almost entirely into pixels the kart already occludes — a chase camera sits a metre up
   //    and behind, so the ground *under* a kart is exactly what it cannot see. What has to be
-  //    visible is the part that spills OUTSIDE the silhouette. With the sun at 31 deg that is
-  //    also where a real shadow goes, so the pool is now anisotropic: a tight AO core under
-  //    the chassis with four tyre-contact lobes, plus a long soft lobe stretched down-sun and
-  //    offset down-sun, which puts darkness on open road in every frame regardless of which
-  //    way the kart is pointing.
+  //    visible is the part that spills OUTSIDE the silhouette, and that is also where the real
+  //    shadow goes, so the pool is now anisotropic: a tight AO core under the chassis with
+  //    four tyre-contact lobes, plus a soft lobe stretched and offset down-sun, which puts
+  //    darkness on open road in every frame regardless of which way the kart is pointing.
   //
   // One InstancedMesh, black over the road so it darkens the surface's own texture instead of
   // painting grey over it. The texture is authored in the pool's own frame with +Y = down-sun.
@@ -902,18 +908,25 @@ export function createLighting(engine, world, sky, opts = {}) {
 
       // --- A: the AO core, in the KART's frame (x across, y along) -------------------------
       const WX = 0.44, WY = 0.34;                       // wheel centres in pool space
+      // The core has to have a genuinely dark HEART, not just a soft field. Over tarmac at
+      // display luma ~0.33 a broad 40 % pool only takes the road to 0.20, and that step is too
+      // small to read at speed — the kart looks like it is hovering over a slightly dirty
+      // patch. A tight, dense chassis lobe with four denser tyre lobes inside it gives the eye
+      // an edge to find, and the wide halo then keeps it from looking like a printed sticker.
       const coreTex = mk((dx, dy) => {
-        let occ = 1 - lobe(dx, dy, 0.86, 0.92, 0.98) * 0.30;     // wide halo
-        occ *= 1 - lobe(dx, dy, 0.48, 0.56, 0.70) * 0.78;        // chassis
+        let occ = 1 - lobe(dx, dy, 0.86, 0.92, 0.98) * 0.34;     // wide halo
+        occ *= 1 - lobe(dx, dy, 0.46, 0.54, 0.62) * 0.88;        // chassis
         for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
-          occ *= 1 - lobe(dx - sx * WX, dy - sy * WY, 0.20, 0.16, 0.85);   // tyre contact
+          occ *= 1 - lobe(dx - sx * WX, dy - sy * WY, 0.19, 0.15, 0.80);   // tyre contact
         }
         return 1 - occ;
       });
 
       // --- B: the soft cast lobe, in the SUN's ground frame (y = down-sun) -----------------
       // Tapered: dense where it leaves the tyres, feathering out down-sun, so it reads as a
-      // shadow thrown by a low sun rather than a stamped oval.
+      // thrown shadow rather than a stamped oval. Its length follows the real sun elevation
+      // (see `reach` in update), so it is a short tail at this course's 53 deg midday sun and
+      // a long one if the time of day is ever wound back toward golden hour.
       const castTex = mk((dx, dy) => {
         const t = (dy + 1) * 0.5;                       // 0 at the kart, 1 at the far end
         const wid = 0.62 - 0.16 * t;                    // narrows as it runs away
@@ -952,7 +965,7 @@ export function createLighting(engine, world, sky, opts = {}) {
       };
       // Cast lobe first so the AO core lands on top of it where they overlap.
       const castMesh = mkMesh(castTex, opts.castStrength ?? 0.66, 'lighting:contactCast', 9);
-      const mesh = mkMesh(coreTex, opts.contactStrength ?? 0.86, 'lighting:contact', 10);
+      const mesh = mkMesh(coreTex, opts.contactStrength ?? 0.90, 'lighting:contact', 10);
 
       // How far the pool sits above the racer root. Not cosmetic: `trackMesh` crowns the
       // racing surface by 8.5 cm over the track spline and the ribbon is graded over raw
@@ -1051,7 +1064,7 @@ export function createLighting(engine, world, sky, opts = {}) {
           _rt.crossVectors(_n, _fw).normalize();
           _basis.makeBasis(_rt, _n, _fw);
           _basis.setPosition(_p.x, y, _p.z);
-          _s.set(2.70 * grow, 1, 3.35 * grow);
+          _s.set(2.55 * grow, 1, 3.20 * grow);
           _m.copy(_basis).scale(_s);
           mesh.setMatrixAt(n, _m);
 
