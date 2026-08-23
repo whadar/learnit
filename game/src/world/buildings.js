@@ -856,7 +856,15 @@ export function createBuildings(engine, world, opts = {}) {
     const bb = new THREE.Box3();
     const rec = { key: k, shell: [], far: [], box: bb };
     emit(c.shell, 'bld', k, rec.shell, bb, true);
-    emit(c.far, 'bldfar', k, rec.far, bb, false);
+    // The far LOD casts too. It used to be emitted with shadow = false, on the reasoning that
+    // a distant stand-in is not worth a depth pass — but `shellDist` is 430 m, and the hero
+    // vista looks down on a village that is almost entirely beyond that. The result was a
+    // moshav of 552 houses that occluded nothing at all: every roof lit, every street lit, no
+    // village-scale relief in the one frame the village is the subject of. It is also the
+    // cheapest shadow in the game — the far bucket is two merged surfaces per 256 m tile, a
+    // couple of thousand triangles for a whole neighbourhood, and only one of shell/far is
+    // ever visible so the depth pass never draws both.
+    emit(c.far, 'bldfar', k, rec.far, bb, true);
     for (const m of rec.far) m.visible = false;
     chunkList.push(rec);
   }

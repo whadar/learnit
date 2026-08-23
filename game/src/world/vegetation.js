@@ -1046,7 +1046,20 @@ function build(engine, world, opts) {
         im.instanceColor = colAttr;
         im.count = 0;
         im.frustumCulled = false;
-        im.castShadow = !!(cfg.shadow !== false && l === 0);
+        // BOTH LODs cast, not just the near mesh.
+        //
+        // This used to be `&& l === 0`, and `l === 0` reaches only as far as the species' own
+        // `r0` — 82 m for a pine, 55 m for a vine, 70 m for an oak bush. Every tree past that
+        // switched to the card cluster and stopped occluding, so a hillside of two hundred
+        // pines lit a hillside of two hundred pine-shaped patches of flat ground, and a tree
+        // driven past lost its shadow at the LOD line: the pop the shadow was there to hide.
+        // The card cluster is real geometry (30-90 triangles), not a billboard, so it writes a
+        // sensible silhouette; the true billboards — `standPine`, `standOak` and the ground
+        // cover — set `shadow: false` on the species and are still out, because a card that
+        // turns to face the shadow camera casts a shadow that swings with the sun rather than
+        // with the tree. Cost measured on villageStreet: ~30k extra triangles in a depth pass
+        // that was already submitting 1.35 M.
+        im.castShadow = cfg.shadow !== false;
         im.receiveShadow = true;
         im.name = `veg-${name}-lod${l}-${part.tag}`;
         if (part.mat.userData.depthMaterial) im.customDepthMaterial = part.mat.userData.depthMaterial;

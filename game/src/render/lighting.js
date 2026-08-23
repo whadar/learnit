@@ -72,6 +72,18 @@ import { clamp, lerp as lerpN } from '../core/mathx.js';
  * explicit ambient-occlusion pool with a soft lobe pushed down-sun far enough to clear the
  * silhouette. They are independent on purpose — if one is ever broken again, the other still
  * glues the field to the road.
+ *
+ * THE HOUR IS THE LARGEST REMAINING LEVER ON THIS, and it is not set here. `main.js` asks
+ * `createSky` for `hour: 15.4`; `sky.js resolveTime()` turns that into elevation 53.4, which is
+ * astronomically right for 15:24 at 32.56 N in July (independently checked: 52.1 deg) and
+ * artistically the worst hour on the clock for a kart racer. A shadow 0.74 of its caster's
+ * height, thrown toward or away from a chase camera sitting 2.5 m above the road, is four to
+ * six screen pixels deep: measured on villageStreet, a 1.6 m hay bale twenty metres out casts a
+ * shadow that occupies a 4 px band. It is *there* — the differential renders show it — and it
+ * cannot be seen. Winding the hour to ~17.1 puts the sun near 31 deg and makes every shadow in
+ * the game 2.3x longer, at the cost of a warmer key than the 'white sun, grey tarmac' line
+ * above. That is an art-direction decision for whoever owns the hour, not a lighting bug, and
+ * it is recorded here so the next round does not re-derive it from screenshots.
  * ===================================================================================== */
 
 // ---------------------------------------------------------------------------------------
@@ -262,12 +274,39 @@ function installIblChunks() {
 // both failure modes at once.
 //
 // Twelve taps give 13 quantisation levels — below the 8-bit quantisation of the frame — so the
-// radius can finally be opened to a real world-space penumbra. It is one loop over the same
-// hardware-compared sampler; the taps are the only extra cost, and the disk is still rotated
-// deterministically from gl_FragCoord so screenshots stay reproducible.
+// radius can finally be opened to a real world-space penumbra. The taps are the only extra
+// cost, and the disk is still rotated deterministically from gl_FragCoord so screenshots stay
+// reproducible.
+//
+// THE TAPS MUST BE WRITTEN OUT, NOT LOOPED.  READ THIS BEFORE "TIDYING" IT.
+//
+// This patch first shipped as
+//
+//     shadow = 0.0;
+//     for ( int ktTap = 0; ktTap < 12; ktTap ++ )
+//         shadow += texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( ktTap, 12, phi ) * radius, shadowCoord.z ) );
+//     shadow *= 0.0833333;
+//
+// which compiles and links without a single warning and then returns 1.0 — fully lit — from
+// EVERY sampler2DShadow fetch on the review harness's GL (ANGLE/SwiftShader). Not dimmer
+// shadows: no shadows, anywhere in the game, on any surface. It is invisible to every check
+// this project owns, because a frame with no shadows in it is exactly what the defect list
+// already said the game looked like, so five review rounds read the symptom as a caster bug and
+// went looking in vegetation.js, buildings.js, furniture.js and the bias constants — while the
+// depth map was full, `shadowSide` was right, `receiveShadow` was right, and the one line that
+// mattered was in this file. Measured on villageStreet: patched-with-a-loop, a sun-only render
+// with bias = 0 is perfectly clean (no acne, no shadow); with the taps written out, the same
+// render is dense with acne, i.e. the comparison is running again.
+//
+// Writing the taps out keeps the generated code the same SHAPE as the stock chunk three ships
+// and every driver has been tested against — the count is the only difference. Anything that
+// changes the shape (a loop, a helper function, a dynamically indexed array of offsets) is a
+// new code path for the shadow comparison, and `verifyShadowPath()` below exists because that
+// class of change cannot be trusted to fail loudly.
 // ---------------------------------------------------------------------------------------
 
 let shadowChunkInstalled = false;
+let stockShadowChunk = null;      // three's own chunk, kept so the filter can be stepped back
 
 function installShadowChunk(taps) {
   if (shadowChunkInstalled) return;
@@ -275,6 +314,7 @@ function installShadowChunk(taps) {
   try {
     const src = THREE.ShaderChunk.shadowmap_pars_fragment;
     if (typeof src !== 'string') return;
+    stockShadowChunk = src;
     // Match ONLY the directional/spot 2D block: the point-light one below it builds its taps
     // into named `sampleN` variables and must be left alone.
     const re = /shadow = \(\s*\n(?:[^\n]*vogelDiskSample\([^\n]*\n){5}\s*\) \* 0\.2;/;
@@ -283,14 +323,159 @@ function installShadowChunk(taps) {
       return;
     }
     const n = Math.max(5, Math.round(taps));
-    THREE.ShaderChunk.shadowmap_pars_fragment = src.replace(re, `shadow = 0.0;
-				for ( int ktTap = 0; ktTap < ${n}; ktTap ++ ) {
-					shadow += texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( ktTap, ${n}, phi ) * radius, shadowCoord.z ) );
-				}
-				shadow *= ${(1 / n).toFixed(7)};`);
+    const lines = [];
+    for (let i = 0; i < n; i++) {
+      lines.push(`\t\t\t\t\ttexture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( ${i}, ${n}, phi ) * radius, shadowCoord.z ) )`);
+    }
+    THREE.ShaderChunk.shadowmap_pars_fragment = src.replace(re, `shadow = (
+${lines.join(' +\n')}
+				) * ${(1 / n).toFixed(7)};`);
   } catch (e) {
     console.warn('[lighting] shadow filter patch failed:', e);
   }
+}
+
+// ---------------------------------------------------------------------------------------
+// VERIFY THE SHADOW PATH ON THIS GPU. DO NOT ASSUME IT.
+//
+// Everything else in this file is a *setting*: a flag, a bias, a side, a matrix. Settings can
+// be read back and checked. Whether the GPU actually returns a shadow from
+// `texture( sampler2DShadow, ... )` cannot — and the whole defect history of this project is
+// one long demonstration that when the shadow term silently goes to 1.0, nobody notices it is
+// the shadow term. A screenshot with no shadows looks exactly like a scene whose casters were
+// never registered, which is why five rounds fixed casters.
+//
+// So the rig measures it instead, once, at boot, in about a millisecond: a white floor, a white
+// box above it, one directional light, and a 16x16 render of a patch of floor that MUST be in
+// the box's shadow. Lit minus shadowed is a number. If that number is small the shadow path is
+// not working, whatever the flags say, and the rig steps the filter down until it is:
+//
+//     our N-tap filter  ->  three's stock 5-tap  ->  BasicShadowMap (hard, but visible)
+//
+// This is the part that is meant to outlive whoever reads it. A future edit to the filter — a
+// loop, a different sampler, a driver that dislikes a construct — degrades to a working shadow
+// and one console line, instead of removing every shadow in the game and looking like a
+// content bug for another five rounds. It runs before any world material is compiled, so the
+// chunk it settles on is the one the whole scene is built against.
+//
+// The probe materials carry a `customProgramCacheKey`, without which three would hand attempt 2
+// the program it compiled for attempt 1 — the cache key does not include the chunk source, so
+// the retry would silently re-measure the broken filter and agree with itself.
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Render one floor texel that is certainly in shadow, and the same texel with the caster
+ * switched off. Returns lit-minus-shadowed on 0..1, or -1 if the probe could not run.
+ */
+function measureShadowContrast(renderer, attempt) {
+  let rt = null;
+  const prevTarget = renderer.getRenderTarget();
+  const prevEnabled = renderer.shadowMap.enabled;
+  const prevAuto = renderer.shadowMap.autoUpdate;
+  const disposables = [];
+  try {
+    const scene = new THREE.Scene();
+    const key = 'ktShadowProbe' + attempt;
+    const mat = () => {
+      const m = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      m.customProgramCacheKey = () => key;
+      disposables.push(m);
+      return m;
+    };
+    const floorGeo = new THREE.PlaneGeometry(40, 40).rotateX(-Math.PI / 2);
+    const boxGeo = new THREE.BoxGeometry(2, 2, 2);
+    disposables.push(floorGeo, boxGeo);
+
+    const floor = new THREE.Mesh(floorGeo, mat());
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // The caster sits 3 m up; the light is at 45 deg, so its shadow lands on the floor around
+    // x = +3 — beside the box, not under it, so the sample is floor and never the box itself.
+    const box = new THREE.Mesh(boxGeo, mat());
+    box.position.set(0, 3, 0);
+    box.castShadow = true;
+    scene.add(box);
+
+    const light = new THREE.DirectionalLight(0xffffff, 3.0);
+    light.position.set(-6, 6, 0);
+    light.target.position.set(0, 0, 0);
+    light.castShadow = true;
+    light.shadow.mapSize.set(256, 256);
+    const c = light.shadow.camera;
+    c.left = -8; c.right = 8; c.top = 8; c.bottom = -8; c.near = 0.5; c.far = 40;
+    c.updateProjectionMatrix();
+    light.shadow.bias = -0.002;
+    light.shadow.normalBias = 0.02;
+    scene.add(light, light.target);
+
+    // Look down at the shadowed patch from a direction the box cannot block.
+    const cam = new THREE.PerspectiveCamera(14, 1, 0.5, 80);
+    cam.position.set(0, 9, 9);
+    cam.lookAt(3, 0, 0);
+    cam.updateMatrixWorld();
+
+    rt = new THREE.WebGLRenderTarget(16, 16);
+    const buf = new Uint8Array(16 * 16 * 4);
+    const sample = () => {
+      renderer.shadowMap.needsUpdate = true;
+      renderer.setRenderTarget(rt);
+      renderer.render(scene, cam);
+      renderer.readRenderTargetPixels(rt, 6, 6, 4, 4, buf);
+      let sum = 0;
+      for (let i = 0; i < 16; i++) sum += (buf[i * 4] + buf[i * 4 + 1] + buf[i * 4 + 2]) / 3;
+      return sum / 16 / 255;
+    };
+
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.autoUpdate = false;
+    const shadowed = sample();
+    box.castShadow = false;
+    const lit = sample();
+    return lit - shadowed;
+  } catch (e) {
+    console.warn('[lighting] shadow self-test could not run:', e);
+    return -1;
+  } finally {
+    for (const d of disposables) d.dispose?.();
+    rt?.dispose?.();
+    renderer.setRenderTarget(prevTarget);
+    renderer.shadowMap.enabled = prevEnabled;
+    renderer.shadowMap.autoUpdate = prevAuto;
+    renderer.shadowMap.needsUpdate = true;
+  }
+}
+
+/** A caster has to take at least this much light off the floor for the path to count as alive. */
+const SHADOW_PATH_MIN_CONTRAST = 0.15;
+
+/**
+ * Install the widest shadow filter this GPU actually honours. Returns a short label for logs.
+ */
+function verifyShadowPath(renderer, taps) {
+  // Settle the filter type before measuring, or the probe measures one path and the game runs
+  // another — and three warns once per render that PCFSoft is deprecated.
+  if (renderer.shadowMap.type === THREE.PCFSoftShadowMap) renderer.shadowMap.type = THREE.PCFShadowMap;
+  installShadowChunk(taps);
+  let contrast = measureShadowContrast(renderer, 1);
+  if (contrast < 0) return 'unverified';               // no readback here; keep what we chose
+  if (contrast >= SHADOW_PATH_MIN_CONTRAST) return `${Math.max(5, Math.round(taps))}-tap`;
+
+  console.warn(`[lighting] the ${Math.max(5, Math.round(taps))}-tap shadow filter returns no ` +
+    `shadow on this GPU (contrast ${contrast.toFixed(3)}); falling back to three's stock filter`);
+  if (stockShadowChunk) THREE.ShaderChunk.shadowmap_pars_fragment = stockShadowChunk;
+  contrast = measureShadowContrast(renderer, 2);
+  if (contrast >= SHADOW_PATH_MIN_CONTRAST) return 'stock-5-tap';
+
+  console.warn(`[lighting] hardware-compared shadows return nothing on this GPU ` +
+    `(contrast ${contrast.toFixed(3)}); falling back to an unfiltered shadow map`);
+  renderer.shadowMap.type = THREE.BasicShadowMap;
+  contrast = measureShadowContrast(renderer, 3);
+  if (contrast >= SHADOW_PATH_MIN_CONTRAST) return 'basic';
+
+  console.warn('[lighting] no shadow filter on this GPU produces a shadow; the contact-shadow ' +
+    'pool is now the only thing anchoring the field');
+  return 'none';
 }
 
 // ---------------------------------------------------------------------------------------
@@ -430,7 +615,12 @@ export function createLighting(engine, world, sky, opts = {}) {
   installShadowSideDefault();
   installFogChunks();
   installIblChunks();
-  installShadowChunk(opts.shadowTaps ?? 12);
+  // Not `installShadowChunk()` directly: the filter is chosen by measurement, not by faith.
+  // See the long note by verifyShadowPath(). This runs before terrain, buildings, vegetation
+  // or the circuit exist, so whatever it settles on is what the whole world compiles against.
+  const shadowPath = (opts.shadows !== false)
+    ? verifyShadowPath(engine.renderer, opts.shadowTaps ?? 12)
+    : 'off';
 
   const scene = engine.scene, renderer = engine.renderer;
   const pal = sky.palette;
@@ -1154,6 +1344,8 @@ export function createLighting(engine, world, sky, opts = {}) {
 
   const api = {
     sun, hemi, bounce, fog,
+    /** Which shadow filter this GPU was measured to honour — see verifyShadowPath(). */
+    shadowPath,
     csm: null,               // the CSM rig is gone; kept null so sky.js's handle stays valid
     envMap: env,
     apUniforms,
