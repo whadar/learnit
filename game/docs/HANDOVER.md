@@ -233,7 +233,24 @@ Covered by `tools/sim/grid.mjs`, `tools/restart.mjs`, `tools/touch.mjs`.
   width varies with the source OSM geometry, corners are inherited road wiggle.
 - Buildings are flat boxes with decal windows; a visible LOD seam in the hero vista.
 
-**Motion and feel** (from `tools/sim/feel.mjs`, 8/9 benches in target)
+**Motion** (first real run of the motion harness, 24 Aug — `shoot-seq` + `popcheck` + `camcheck`)
+- A rival kart rides between the chase camera and the player and smears across the bottom of the
+  frame. Measured on oliveGrove: the player is rock steady at 8.7-9.6 m from the camera and
+  screen (638-654, 383-391), while P2 rides 2.6-3.2 m out — a third of the player's distance —
+  projecting to y=681, 817 and 864 on a 720 px frame. The camera has no rival avoidance and no
+  near-plane push. `popcheck` sees it as 8 pops in 13 frame pairs while the telemetry over the
+  same frames is perfectly smooth; `tools/camcheck.mjs` fails on it directly. Not camera lag —
+  the camera tracks the player almost perfectly.
+- driftCorner carries an impact signature at frame 3->4: yaw rate flips +0.345 -> -2.736 rad/s
+  in one 0.12 s step while speed drops 70 -> 45 km/h (about 5.9 g) and driftSlipDeg snaps from
+  -25.8 to 0 and never returns. **Cause unresolved** — the scenario is scripted and may simply be
+  driving into the scenery. Separating scripting from instability still needs a constant-input
+  capture; this run does not settle it.
+- villageStreet is clean: 13 pairs, no pops, smooth telemetry throughout.
+- itemChaos has never been captured to completion — 8 of 14 frames before the run hit its time
+  limit. Under SwiftShader a 1280x720 q=high frame costs roughly 15-20 s.
+
+**Feel** (from `tools/sim/feel.mjs`, 8/9 benches in target)
 - 0–50 km/h takes 5.15 s against a 0.8–3.5 s target — sluggish for a kart racer.
 - Yaw rate is jumpy in captured scenes (−0.50 to −2.14 rad/s while accelerating fairly
   straight). **Unconfirmed** — may be scripted scenario input rather than instability; needs a
