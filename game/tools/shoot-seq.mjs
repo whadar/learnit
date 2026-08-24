@@ -20,6 +20,7 @@
  *   SEQ_STEP    seconds of game time per frame  (0.1)
  *   SEQ_W/H     viewport                        (1280x720)
  *   SEQ_VIDEO   1 = also record a webm per scenario (0)
+ *   SEQ_SHOT_TIMEOUT  ms allowed per screenshot     (240000 — SwiftShader is slow)
  *
  * Writes <out>/<scene>/f00.png … and <out>/<scene>/telemetry.json (speed, yaw rate, drift
  * angle and camera position per frame), so a reviewer can correlate what it sees with what the
@@ -37,6 +38,7 @@ const FRAMES = +(process.env.SEQ_FRAMES || 10);
 const STEP = +(process.env.SEQ_STEP || 0.1);
 const W = +(process.env.SEQ_W || 1280), H = +(process.env.SEQ_H || 720);
 const VIDEO = process.env.SEQ_VIDEO === '1';
+const SHOT_TIMEOUT = +(process.env.SEQ_SHOT_TIMEOUT || 240000);
 
 const browser = await chromium.launch({
   executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
@@ -48,6 +50,10 @@ const ctx = await browser.newContext({
   ...(VIDEO ? { recordVideo: { dir: path.join(OUT, '_video'), size: { width: W, height: H } } } : {}),
 });
 const page = await ctx.newPage();
+// SwiftShader draws a 1280x720 frame of this scene in well over Playwright's default 30 s
+// screenshot timeout, so every capture died on frame 0 with a TimeoutError and the tool wrote
+// nothing at all. Software rasterisation is the whole point of this harness — give it room.
+page.setDefaultTimeout(SHOT_TIMEOUT);
 const errors = [];
 page.on('pageerror', e => errors.push(String(e.message).slice(0, 200)));
 
@@ -99,7 +105,7 @@ for (const scene of SCENES) {
     }
     await page.evaluate(() => window.__game.renderOnce && window.__game.renderOnce());
     telemetry.push({ frame: i, t: +(i * STEP).toFixed(3), ...(await page.evaluate(SAMPLE)) });
-    await page.screenshot({ path: path.join(dir, `f${String(i).padStart(2, '0')}.png`) });
+    await page.screenshot({ path: path.join(dir, `f${String(i).padStart(2, '0')}.png`), timeout: SHOT_TIMEOUT });
     shot++;
   }
   fs.writeFileSync(path.join(dir, 'telemetry.json'), JSON.stringify(telemetry, null, 1));
