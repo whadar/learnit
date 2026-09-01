@@ -24,6 +24,8 @@ const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../
 const FPS = +(process.env.SIM_HZ || 60);
 const DT = 1 / FPS;
 const only = process.argv[2] || 'all';
+/** Which circuit to bench. `SIM_COURSE=dogpatch node tools/sim/race.mjs` */
+const COURSE = process.env.SIM_COURSE || 'amikam';
 const B = s => `\x1b[1m${s}\x1b[0m`;
 const pad = (s, n) => String(s).padEnd(n);
 const num = (v, n = 2, w = 7) => String(Number.isFinite(v) ? v.toFixed(n) : '—').padStart(w);
@@ -32,10 +34,10 @@ const num = (v, n = 2, w = 7) => String(Number.isFinite(v) ? v.toFixed(n) : '—
 async function loadWorld() {
   try {
     const { WorldData } = await import('../../src/world/worldData.js');
-    const base = fs.existsSync(path.join(ROOT, 'public/data/amikam.json'))
+    const base = fs.existsSync(path.join(ROOT, `public/data/${COURSE}.json`))
       ? path.join(ROOT, 'public/data') : path.join(ROOT, 'dist/data');
-    const json = JSON.parse(fs.readFileSync(path.join(base, 'amikam.json'), 'utf8'));
-    const buf = fs.readFileSync(path.join(base, 'amikam-height.bin'));
+    const json = JSON.parse(fs.readFileSync(path.join(base, `${COURSE}.json`), 'utf8'));
+    const buf = fs.readFileSync(path.join(base, `${COURSE}-height.bin`));
     const heights = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
     const w = new WorldData(json, heights);
     if (!Number.isFinite(w.heightAt(0, 0))) throw new Error('bad heightfield');
@@ -65,7 +67,7 @@ async function loadWorld() {
 async function loadTrack(world) {
   try {
     const m = await import('../../src/track/track.js');
-    const t = m.buildTrack(world, {});
+    const t = m.buildTrack(world, { course: COURSE });
     t.sample(0); t.nearest({ x: 0, y: 0, z: 0 });
     console.log('  track: src/track/track.js   length=' + t.length.toFixed(0) + ' m  cps=' + (t.checkpoints?.length ?? 0));
     return t;

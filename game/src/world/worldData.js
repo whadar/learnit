@@ -21,10 +21,11 @@ export class WorldData {
     this.minH = this.t.min; this.maxH = this.t.max;
   }
 
-  static async load(base = 'data/') {
+  /** @param {string} base asset directory  @param {string} slug which world to load */
+  static async load(base = 'data/', slug = 'amikam') {
     const [json, bin] = await Promise.all([
-      fetch(base + 'amikam.json').then(r => r.json()),
-      fetch(base + 'amikam-height.bin').then(r => r.arrayBuffer()),
+      fetch(`${base}${slug}.json`).then(r => r.json()),
+      fetch(`${base}${slug}-height.bin`).then(r => r.arrayBuffer()),
     ]);
     return new WorldData(json, new Float32Array(bin));
   }

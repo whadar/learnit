@@ -46,6 +46,13 @@ import { createMenu } from './ui/menu.js';
 const Q = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 const flag = (k, d = false) => { const v = Q.get(k); return v == null ? d : !(v === '0' || v === 'false' || v === 'off'); };
 const num = (k, d) => { const v = +Q.get(k); return Number.isFinite(v) && Q.get(k) != null ? v : d; };
+const str = (k, d) => Q.get(k) || d;
+/*
+ * Which circuit this session is racing. The world is a multi-megabyte static asset and every
+ * mesh in the scene is built against it, so the course is chosen once at boot rather than
+ * swapped live; the course-select screen navigates to ?course=<slug>, which is a page load.
+ */
+const COURSE = ['amikam', 'dogpatch'].includes(str('course', '')) ? str('course', '') : 'amikam';
 
 const app = (typeof document !== 'undefined' && document.getElementById('app')) || document.body;
 const engine = new Engine(app);
@@ -119,13 +126,13 @@ async function boot() {
   /* ---- real world data ---- */
   // 'data/' is right for the built game at the site root; the /preview/ page (and any
   // sub-path deploy) needs the absolute one. Try both rather than guess.
-  const world = S.world = game.world = await WorldData.load('data/')
-    .catch(() => WorldData.load('/data/'));
+  const world = S.world = game.world = await WorldData.load('data/', COURSE)
+    .catch(() => WorldData.load('/data/', COURSE));
   mark('worldData');
   await step('draping the circuit');
 
   /* ---- the circuit ---- */
-  S.track = guard('track', () => buildTrack(world, { laps: num('laps', 3) }));
+  S.track = guard('track', () => buildTrack(world, { laps: num('laps', 3), course: COURSE }));
   if (!S.track) throw new Error('the circuit could not be built');
   // …and make the landscape agree with it. See conformWorldToTrack().
   guard('conform', () => conformWorldToTrack(world, S.track));
@@ -406,17 +413,33 @@ function buildMenuData(roster) {
     for (let s = 0; s < L; s += L / 128) { const p = S.track.sample(s); preview.push([p.pos.x, p.pos.z]); }
   } catch (e) { /* the card just draws a plain plate */ }
 
-  const courses = [
+  // Only the course this session actually loaded can draw a real minimap preview; the other
+  // is listed with its own blurb and selecting it reloads the page onto that world.
+  const CATALOGUE = [
     {
-      id: 'amikam', name: S.track.name || 'Amikam Village Circuit',
+      id: 'amikam', name: 'Amikam Village Circuit',
       blurb: 'The real streets, farm tracks and olive groves of Moshav Amikam — a climb to the ridge, a hairpin at the summit and a plunge back to the fields.',
-      laps: S.track.laps ?? 3, lengthM: S.track.length, surface: 'Tarmac & dirt', preview,
+      lengthM: 3065, surface: 'Tarmac & dirt',
     },
-    { id: 'amikam-reverse', name: 'Amikam Reverse', blurb: 'Coming soon.', laps: 3, lengthM: S.track.length, preview, locked: true },
+    {
+      id: 'dogpatch', name: 'Dogpatch Waterfront',
+      blurb: 'A street circuit on San Francisco\'s eastern shore — the Pier 70 straight along the water, hard right-angle corners through the warehouses, and one right-hander at 22nd.',
+      lengthM: 1719, surface: 'City tarmac',
+    },
   ];
+  const courses = CATALOGUE.map(c => c.id === COURSE
+    ? { ...c, name: S.track.name || c.name, laps: S.track.laps ?? 3, lengthM: Math.round(S.track.length), preview }
+    : { ...c, laps: 3, preview: null });
 
   menu.setData({ roster, courses });
-  menu.on('start', e => { menu.hide(); startRace(e.characterIndex, { skipIntro: false, autopilot: false }); });
+  menu.on('start', e => {
+    const want = CATALOGUE[e.courseIndex ?? menu.state?.course ?? 0]?.id;
+    if (want && want !== COURSE) {                 // a different world: reload onto it
+      const q = new URLSearchParams(location.search); q.set('course', want);
+      location.search = q.toString(); return;
+    }
+    menu.hide(); startRace(e.characterIndex, { skipIntro: false, autopilot: false });
+  });
   menu.on('resume', () => resumeRace());
   menu.on('restart', () => { menu.hide(); startRace(lastCharacter, { skipIntro: true, autopilot: false }); });
   menu.on('quit', () => quitToTitle());
