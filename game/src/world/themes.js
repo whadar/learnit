@@ -36,6 +36,7 @@ const LEVANT = {
   sheetTints: [[0.60, 0.64, 0.68], [0.70, 0.71, 0.70], [0.52, 0.56, 0.60], [0.66, 0.66, 0.64]],
   flatBias: 0,          // added to the probability a roof is flat
   furniture: {},        // the village dressing is Amikam's own
+  streetTree: 'cypress',// the moshav's punctuation marks
   sheetChance: 0.55,
   stoneChance: 0.11,
   // Trackside boards are bilingual here: the big line is Hebrew, the small line English.
@@ -76,6 +77,13 @@ const BAYFRONT = {
   sheetTints: [[0.58, 0.62, 0.66], [0.68, 0.70, 0.71], [0.46, 0.50, 0.54], [0.74, 0.75, 0.73]],
   // No olive grove, and no village-fete bunting strung over an industrial waterfront.
   furniture: { grove: false, bunting: false, bales: false, crates: false },
+  /*
+   * Monterey pine, not Italian cypress. Monterey CYPRESS is genuinely Californian, so the
+   * species name is not the problem — buildCypress draws the narrow columnar Italian form,
+   * and a row of those down a San Francisco street reads as Tuscany. The pine's spreading
+   * crown is what actually grows on this coast.
+   */
+  streetTree: 'pine',
   /*
    * 0.88, not 0.55. The roof tints here are multiplicative against the pantile texture, so the
    * greys below can only ever make a clay roof dark RED — they cannot make it grey. The first
