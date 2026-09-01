@@ -35,6 +35,7 @@ const LEVANT = {
   // fibre-cement / galvanised sheeting on the farm buildings
   sheetTints: [[0.60, 0.64, 0.68], [0.70, 0.71, 0.70], [0.52, 0.56, 0.60], [0.66, 0.66, 0.64]],
   flatBias: 0,          // added to the probability a roof is flat
+  furniture: {},        // the village dressing is Amikam's own
   sheetChance: 0.55,
   stoneChance: 0.11,
   // Trackside boards are bilingual here: the big line is Hebrew, the small line English.
@@ -73,7 +74,16 @@ const BAYFRONT = {
     [0.38, 0.40, 0.43], [0.62, 0.63, 0.62],
   ],
   sheetTints: [[0.58, 0.62, 0.66], [0.68, 0.70, 0.71], [0.46, 0.50, 0.54], [0.74, 0.75, 0.73]],
-  flatBias: 0.55,       // the waterfront is overwhelmingly flat-roofed
+  // No olive grove, and no village-fete bunting strung over an industrial waterfront.
+  furniture: { grove: false, bunting: false, bales: false, crates: false },
+  /*
+   * 0.88, not 0.55. The roof tints here are multiplicative against the pantile texture, so the
+   * greys below can only ever make a clay roof dark RED — they cannot make it grey. The first
+   * themed render proved it: the nearest, most prominent building still wore a pitched red
+   * roof. Flat roofs do not use that texture at all, so pushing nearly every roof flat is what
+   * actually removes the pantile, and it happens to be true of the neighbourhood as well.
+   */
+  flatBias: 0.88,
   sheetChance: 0.72,
   stoneChance: 0.02,    // brick, not ashlar
   // Same two-line board, but the shore speaks English. The names are real: Pier 70 is the old

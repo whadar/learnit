@@ -448,6 +448,8 @@ export function createFurniture(engine, world, track, opts = {}) {
     stands: true, gantry: true, signs: true, arches: true, jump: true, grove: true,
     markers: true, barriers: true, marshals: true, village: true, verge: true,
     shadows: true,
+    // A place says which dressing belongs to it; an explicit opt still overrides.
+    ...themeOf(world).furniture,
   }, opts);
   const R = rng(o.seed);
   const group = new THREE.Group(); group.name = 'furniture';
