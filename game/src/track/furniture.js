@@ -11,6 +11,7 @@
  * for banners, signs and bunting.
  */
 import * as THREE from 'three';
+import { themeOf } from '../world/themes.js';
 import { clamp, lerp, rng, TAU } from '../core/mathx.js';
 
 /* ============================================================== builder ===== */
@@ -81,7 +82,7 @@ function texFrom(c, { repeat = false, aniso = 8 } = {}) {
  * `panel()` below is responsible for making sure a viewer never sees the mirrored back of a
  * quad (it emits a real front face and a real back face, each with its own correct UVs).
  */
-function buildSignAtlas() {
+function buildSignAtlas(SG) {
   const W = 1024, H = 2048, cell = 128, ROWS = H / cell;
   const { c, x } = makeCanvas(W, H);
   x.fillStyle = '#20242c'; x.fillRect(0, 0, W, H);
@@ -124,13 +125,13 @@ function buildSignAtlas() {
     ctx.fillStyle = '#f0bd44'; ctx.fillRect(0, cell - 9, W, 9); ctx.fillRect(0, 0, W, 6);
     catMark(ctx, 74, cell * 0.52, 34, 'rgba(255,214,116,0.92)');
     catMark(ctx, W - 74, cell * 0.52, 34, 'rgba(255,214,116,0.92)');
-    centred(ctx, 'מסלול מושב עמיקם', 'AMIKAM VILLAGE CIRCUIT', '#ffffff', 56);
+    centred(ctx, SG.gantry[0], SG.gantry[1], '#ffffff', 56);
   });
   // 1 — START / FINISH, chequer-edged
   row(1, ctx => {
     ctx.fillStyle = '#f3efe4'; ctx.fillRect(0, 0, W, cell);
     chequerBand(ctx, 0, 24, 32); chequerBand(ctx, cell - 24, 24, 32);
-    centred(ctx, 'זינוק · סיום', 'START / FINISH', '#16181c', 52);
+    centred(ctx, SG.startFin[0], SG.startFin[1], '#16181c', 52);
   });
   // 2 — lap banner
   row(2, ctx => {
@@ -204,14 +205,14 @@ function buildSignAtlas() {
     ctx.fillStyle = '#7d2544';
     ctx.beginPath(); ctx.ellipse(88, cell * 0.52, 26, 34, 0, 0, TAU); ctx.fill();
     ctx.beginPath(); ctx.ellipse(W - 88, cell * 0.52, 26, 34, 0, 0, TAU); ctx.fill();
-    centred(ctx, 'יקב רמות מנשה', 'MENASHE HILLS WINERY', '#5c1a33', 50);
+    centred(ctx, SG.winery[0], SG.winery[1], '#5c1a33', 50);
   });
   // 11 — sponsor: tyres
   row(11, ctx => {
     ctx.fillStyle = '#33353c'; ctx.fillRect(0, 0, W, cell);
     ctx.fillStyle = '#e0a21f'; ctx.fillRect(0, 0, W, 12); ctx.fillRect(0, cell - 12, W, 12);
     ctx.strokeStyle = '#f2c85e'; ctx.lineWidth = 9; ctx.beginPath(); ctx.arc(96, cell / 2, 38, 0, TAU); ctx.stroke();
-    centred(ctx, 'צמיגי עמיקם', 'AMIKAM TYRES', '#ffe6ae', 52);
+    centred(ctx, SG.tyres[0], SG.tyres[1], '#ffe6ae', 52);
   });
   // 12 — chequered strip (no text) for barrier tops
   row(12, ctx => { chequerBand(ctx, 0, cell * 0.5, 32); chequerBand(ctx, cell * 0.5, cell * 0.5, 32); ctx.fillStyle = '#f2efe6'; for (let i = 0; i < 32; i += 2) ctx.fillRect(i * W / 32, cell * 0.5, W / 32 + 1, cell * 0.5); for (let i = 1; i < 32; i += 2) { ctx.fillStyle = '#16171b'; ctx.fillRect(i * W / 32, cell * 0.5, W / 32 + 1, cell * 0.5); } });
@@ -219,7 +220,7 @@ function buildSignAtlas() {
   row(13, ctx => {
     ctx.fillStyle = '#e56a12'; ctx.fillRect(0, 0, W, cell);
     ctx.fillStyle = '#1b1c20'; ctx.fillRect(0, 0, W, 7); ctx.fillRect(0, cell - 7, W, 7);
-    centred(ctx, 'עמדת שופט', 'MARSHAL POST', '#1b1c20', 54);
+    centred(ctx, SG.marshal[0], SG.marshal[1], '#1b1c20', 54);
   });
   // 14 — championship banner
   row(14, ctx => {
@@ -227,7 +228,7 @@ function buildSignAtlas() {
     ctx.fillStyle = '#f2c94c'; ctx.fillRect(0, 0, W, 7); ctx.fillRect(0, cell - 7, W, 7);
     catMark(ctx, 80, cell * 0.5, 36, '#fbe08a');
     catMark(ctx, W - 80, cell * 0.5, 36, '#fbe08a');
-    centred(ctx, 'אליפות החתולים', 'KAT RACING GRAND PRIX', '#ffffff', 52);
+    centred(ctx, SG.grandPrix[0], SG.grandPrix[1], '#ffffff', 52);
   });
   // 15 — red/white chevron hazard
   row(15, ctx => {
@@ -694,7 +695,7 @@ export function createFurniture(engine, world, track, opts = {}) {
   }
 
   /* -------------------------------------------------------- start gantry --- */
-  const atlas = buildSignAtlas();
+  const atlas = buildSignAtlas(themeOf(world).signs);
   const flagTex = buildFlagTexture();
   /**
    * A trackside sign.

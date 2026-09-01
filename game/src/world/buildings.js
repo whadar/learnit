@@ -20,6 +20,7 @@
 import * as THREE from 'three';
 import { rng, clamp, lerp, smoothstep } from '../core/mathx.js';
 import { createBuildingMaterials } from '../render/materials/buildingMaterials.js';
+import { themeOf } from './themes.js';
 
 const CHUNK = 256;        // shell / far tiles
 const DCHUNK = 128;       // detail tiles: trim, joinery, roof furniture
@@ -256,22 +257,12 @@ function addBox(S, cx, cy, cz, ux, uz, hw, hh, hd, col, us) {
 
 /* ======================================================================= design ==== */
 
-const PLASTER_TINTS = [
-  [1.00, 0.99, 0.96], [0.99, 0.95, 0.87], [0.97, 0.91, 0.79],
-  [1.00, 0.97, 0.92], [0.94, 0.88, 0.76], [0.98, 0.95, 0.90],
-  [0.92, 0.85, 0.72], [1.00, 0.98, 0.94], [0.88, 0.84, 0.78],
-  [0.99, 0.92, 0.85], [0.96, 0.94, 0.91], [0.91, 0.86, 0.75],
-  [1.00, 0.94, 0.90], [0.86, 0.83, 0.79],
-];
-// clay pantiles run from fresh orange to sun-bleached brown; a few roofs are re-laid grey.
-const ROOF_TINTS = [
-  [1.02, 0.94, 0.88], [0.80, 0.70, 0.64], [1.18, 1.02, 0.86],
-  [0.68, 0.62, 0.60], [1.10, 0.88, 0.72], [0.96, 0.90, 0.86],
-  [1.14, 0.98, 0.82], [0.74, 0.66, 0.60], [0.88, 0.80, 0.76],
-  [1.06, 0.86, 0.66], [0.92, 0.86, 0.86], [1.00, 0.80, 0.62],
-];
-// fibre-cement / galvanised sheeting on the farm buildings
-const SHEET_TINTS = [[0.60, 0.64, 0.68], [0.70, 0.71, 0.70], [0.52, 0.56, 0.60], [0.66, 0.66, 0.64]];
+/*
+ * The material palettes moved to themes.js when the game gained a second place. Overture gives
+ * Dogpatch a roof shape for none of its buildings and a facade material for none of them, so
+ * every surface here falls through to a default — and the default being Amikam's is why the
+ * first San Francisco render came back with terracotta pantiles over Jerusalem stone.
+ */
 
 function hashStr(s) {
   let h = 2166136261;
@@ -279,7 +270,7 @@ function hashStr(s) {
   return h >>> 0;
 }
 
-function design(b, world, idx) {
+function design(b, world, idx, TH = themeOf(world)) {
   const ring = cleanRing(b.rings?.[0] || []);
   if (!ring || ring.length < 3) return null;
   const area = Math.abs(ringArea(ring));
@@ -320,16 +311,16 @@ function design(b, world, idx) {
     const twoUp = clamp((area - 95) / 260, 0, 1) * 0.46 + 0.07;
     storeys = r0 < twoUp ? 2 : 1;
     storeyH = 3.0 + r1 * 0.4;
-    roofKind = r2 < 0.13 ? 'flat' : (r2 < 0.56 ? 'gable' : 'hip');
+    roofKind = r2 < 0.13 + TH.flatBias ? 'flat' : (r2 < 0.56 + TH.flatBias ? 'gable' : 'hip');
   } else if (kind === 'shed') {
     storeys = 1; storeyH = 2.5 + r1 * 0.4;
-    roofKind = r2 < 0.42 ? 'flat' : 'gable';
+    roofKind = r2 < 0.42 + TH.flatBias ? 'flat' : 'gable';
   } else if (kind === 'barn') {
     storeys = 1; storeyH = 4.6 + r1 * 2.0;
-    roofKind = r2 < 0.30 ? 'flat' : 'gable';
+    roofKind = r2 < 0.30 + TH.flatBias ? 'flat' : 'gable';
   } else if (kind === 'packing') {
     storeys = 1; storeyH = 6.0 + r1 * 2.4;
-    roofKind = r2 < 0.55 ? 'flat' : 'gable';
+    roofKind = r2 < 0.55 + TH.flatBias ? 'flat' : 'gable';
   } else {                                     // greenhouse
     storeys = 1; storeyH = 2.6 + r1 * 1.0; roofKind = 'gable';
   }
@@ -343,12 +334,12 @@ function design(b, world, idx) {
   // --- surfacing ----------------------------------------------------------------------
   const mr = rand();
   let wallMat = 'plaster';
-  if (kind === 'house') wallMat = mr < 0.11 ? 'stone' : (mr < 0.34 ? 'mixed' : 'plaster');
-  else if (kind === 'packing' || kind === 'barn') wallMat = mr < 0.07 ? 'stone' : 'plaster';
-  const tint = PLASTER_TINTS[(rand() * PLASTER_TINTS.length) | 0];
-  const sheeted = kind !== 'house' && kind !== 'greenhouse' && rand() < 0.55;
-  const roofTint = sheeted ? SHEET_TINTS[(rand() * SHEET_TINTS.length) | 0]
-                           : ROOF_TINTS[(rand() * ROOF_TINTS.length) | 0];
+  if (kind === 'house') wallMat = mr < TH.stoneChance ? 'stone' : (mr < 0.34 ? 'mixed' : 'plaster');
+  else if (kind === 'packing' || kind === 'barn') wallMat = mr < TH.stoneChance * 0.6 ? 'stone' : 'plaster';
+  const tint = TH.wallTints[(rand() * TH.wallTints.length) | 0];
+  const sheeted = kind !== 'house' && kind !== 'greenhouse' && rand() < TH.sheetChance;
+  const roofTint = sheeted ? TH.sheetTints[(rand() * TH.sheetTints.length) | 0]
+                           : TH.roofTints[(rand() * TH.roofTints.length) | 0];
 
   const rects = (roofKind === 'flat')
     ? [{ cx: obb.cx, cz: obb.cz, ux: obb.ux, uz: obb.uz, w: obb.w, d: obb.d }]
