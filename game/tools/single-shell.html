@@ -180,35 +180,41 @@
   // with no server and no network. The heightfield was requantised to uint16 to halve its size
   // and is expanded back to the Float32 the game expects before it is handed over.
   (function () {
-    const HEIGHT_LO = /*__HEIGHT_LO__*/0;
-    const HEIGHT_SPAN = /*__HEIGHT_SPAN__*/0;
-    const HEIGHT_B64 = "__HEIGHT_B64__";
-    const WORLD_JSON = "__WORLD_JSON__";
+    /*
+     * Every course this file ships with, keyed by slug: the vector JSON verbatim and the
+     * heightfield requantised to uint16 over its own min/max, expanded back to the Float32 the
+     * game expects on first use. Worlds are decoded lazily, so loading Amikam never pays for
+     * Dogpatch's terrain.
+     */
+    const WORLDS = /*__WORLDS__*/null;
 
-    let heightBuf = null;
-    function heights() {
-      if (heightBuf) return heightBuf;
-      const bin = atob(HEIGHT_B64);
+    const heightCache = Object.create(null);
+    function heights(slug) {
+      if (heightCache[slug]) return heightCache[slug];
+      const w = WORLDS[slug];
+      const bin = atob(w.b64);
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       const q = new Uint16Array(bytes.buffer);
       const f = new Float32Array(q.length);
-      for (let i = 0; i < q.length; i++) f[i] = HEIGHT_LO + (q[i] / 65535) * HEIGHT_SPAN;
-      heightBuf = f.buffer;
-      return heightBuf;
+      for (let i = 0; i < q.length; i++) f[i] = w.lo + (q[i] / 65535) * w.span;
+      heightCache[slug] = f.buffer;
+      return heightCache[slug];
     }
 
     const realFetch = window.fetch.bind(window);
     window.fetch = function (input, init) {
       const url = String(input && input.url ? input.url : input);
-      if (url.endsWith('amikam.json')) {
-        return Promise.resolve(new Response(WORLD_JSON, {
-          headers: { 'Content-Type': 'application/json' },
+      const hm = url.match(/([A-Za-z0-9_-]+)-height\.bin$/);
+      if (hm && WORLDS[hm[1]]) {
+        return Promise.resolve(new Response(heights(hm[1]), {
+          headers: { 'Content-Type': 'application/octet-stream' },
         }));
       }
-      if (url.endsWith('amikam-height.bin')) {
-        return Promise.resolve(new Response(heights(), {
-          headers: { 'Content-Type': 'application/octet-stream' },
+      const jm = url.match(/([A-Za-z0-9_-]+)\.json$/);
+      if (jm && WORLDS[jm[1]]) {
+        return Promise.resolve(new Response(WORLDS[jm[1]].json, {
+          headers: { 'Content-Type': 'application/json' },
         }));
       }
       return realFetch(input, init);
