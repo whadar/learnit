@@ -279,6 +279,11 @@ async function boot() {
     APP.mode = 'race';
     APP.fixedStep = 1 / 60;
     startRace(menu.state.character, { skipIntro: true, autopilot: true });
+  } else if (flag('go', false)) {
+    // Arrived here from the course screen of another world: the player already chose, so do
+    // not make them choose again.
+    menu.hide();
+    startRace(num('kat', 0), { skipIntro: false, autopilot: false });
   } else {
     APP.mode = 'menu';
     menu.show('title');
@@ -442,8 +447,17 @@ function buildMenuData(roster) {
   menu.setData({ roster, courses });
   menu.on('start', e => {
     const want = CATALOGUE[e.courseIndex ?? menu.state?.course ?? 0]?.id;
-    if (want && want !== COURSE) {                 // a different world: reload onto it
-      const q = new URLSearchParams(location.search); q.set('course', want);
+    if (want && want !== COURSE) {
+      /*
+       * A different world means a page load: every mesh in the scene is built against it.
+       * The character choice has to survive that, or the player picks a cat, picks a course,
+       * and is dumped back on the character screen to pick the same cat again — which is
+       * exactly what happened. Carry the cat and an intent to race, and resume on the grid.
+       */
+      const q = new URLSearchParams(location.search);
+      q.set('course', want);
+      q.set('kat', String(e.characterIndex ?? menu.state?.character ?? 0));
+      q.set('go', '1');
       location.search = q.toString(); return;
     }
     menu.hide(); startRace(e.characterIndex, { skipIntro: false, autopilot: false });

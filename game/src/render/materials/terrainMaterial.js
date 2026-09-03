@@ -11,6 +11,7 @@
  * Everything is generated in-repo: no image assets, no network. Deterministic given the seed.
  */
 import * as THREE from 'three';
+import { themeOf } from '../../world/themes.js';
 import { fbmField, worleyField, boxBlurWrap, heightToNormal, hash2i } from './noise.js';
 
 /** Surface layers, in shader index order. `scale` is the world size in metres of one tile. */
@@ -659,8 +660,11 @@ const BODY = /* glsl */`
  * splatted, triplanar, detail-mapped ground surface.
  */
 export function createTerrainMaterial(world, tex, opts = {}) {
+  // `diffuseColor.rgb *= kAlbedo` below starts from this colour, so it is a free per-place
+  // multiply over the whole ground — white for a place whose layers were authored for it.
   const mat = new THREE.MeshStandardMaterial({
-    color: 0xffffff, roughness: 1.0, metalness: 0.0, dithering: true, fog: true,
+    color: themeOf(world).ground?.tint ?? 0xffffff,
+    roughness: 1.0, metalness: 0.0, dithering: true, fog: true,
   });
   const u = {
     kSplat: { value: tex.splat },

@@ -55,6 +55,8 @@ const LEVANT = {
     street:   ['רחוב רקפת', 'REHOV RAKEFET'],
   },
   items: {},            // the canonical names in items.js ARE the Levant set
+  // Identity multiply: the terrain layers were authored for exactly this place.
+  ground: { tint: 0xffffff, skirt: 0x9a8f6a },
 };
 
 /*
@@ -137,6 +139,16 @@ const BAYFRONT = {
     hamsa: 'Golden Gate Charm', avatiach: 'Series A',    catnap: 'Robotaxi',
     duchifat: 'Cable Car Rush', afifon: 'Bay Kite',
   },
+  /*
+   * The six ground layers are procedurally authored Levantine surfaces — limestone, nari soil,
+   * terra rossa, wheat stubble, tilled farm soil, scree — and the splat that chooses between
+   * them is driven by farm / crop / grass / forest land cover. Dogpatch is a city and has
+   * almost none, so every pixel falls through to the base limestone: the sandy verge along a
+   * San Francisco street. Re-authoring six surfaces is a bigger job than this deserves, but
+   * the shader already multiplies its albedo by the material colour, so a cool grey multiply
+   * turns warm ochre into something that reads as concrete and worn asphalt.
+   */
+  ground: { tint: 0xa8b0bc, skirt: 0x6f757e },
 };
 
 export const THEMES = { levant: LEVANT, bayfront: BAYFRONT };

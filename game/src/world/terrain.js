@@ -16,6 +16,7 @@
  *   terrain.setQuality(0.5);
  */
 import * as THREE from 'three';
+import { themeOf } from './themes.js';
 import { rng, clamp } from '../core/mathx.js';
 import { hash2i } from '../render/materials/noise.js';
 import { buildTerrainTextures, createTerrainMaterial, createStoneMaterial } from '../render/materials/terrainMaterial.js';
@@ -343,7 +344,7 @@ function fallbackTerrain(engine, world) {
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++) pos.setY(i, world.heightAt(pos.getX(i), pos.getZ(i)));
   geo.computeVertexNormals();
-  const material = new THREE.MeshStandardMaterial({ color: 0x9a8f6a, roughness: 0.95, metalness: 0 });
+  const material = new THREE.MeshStandardMaterial({ color: themeOf(world).ground?.skirt ?? 0x9a8f6a, roughness: 0.95, metalness: 0 });
   const mesh = new THREE.Mesh(geo, material);
   mesh.receiveShadow = true;
   engine.scene.add(mesh);
