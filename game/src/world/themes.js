@@ -56,7 +56,7 @@ const LEVANT = {
   },
   items: {},            // the canonical names in items.js ARE the Levant set
   // Identity multiply: the terrain layers were authored for exactly this place.
-  ground: { tint: [1, 1, 1], skirt: 0x9a8f6a },
+  ground: { tint: [1, 1, 1], skirt: 0x9a8f6a, verge: null },
 };
 
 /*
@@ -155,7 +155,7 @@ const BAYFRONT = {
    * lands near (0.60, 0.63, 0.65) — neutral, and still bright enough to read as sunlit
    * concrete rather than wet slate.
    */
-  ground: { tint: [0.80, 0.92, 1.30], skirt: 0x6f757e },
+  ground: { tint: [0.80, 0.92, 1.30], skirt: 0x6f757e, verge: [0.72, 0.80, 0.95] },
 };
 
 export const THEMES = { levant: LEVANT, bayfront: BAYFRONT };

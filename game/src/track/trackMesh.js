@@ -9,6 +9,7 @@
  *   const tm = createTrackMesh(engine, world, track);
  */
 import * as THREE from 'three';
+import { themeOf } from '../world/themes.js';
 import { clamp, lerp, rng } from '../core/mathx.js';
 import { hash2i } from '../render/materials/noise.js';
 import { createRoadMaterial, mergeGeoms } from '../world/roads.js';
@@ -836,6 +837,18 @@ export function createTrackMesh(engine, world, track, opts = {}) {
   const matSurface = createSurfaceMaterial(surfTex, { startS: track.startS, length: track.length });
   const vergeTex = vergeTextures();
   const matVerge = createRoadMaterial(vergeTex, { normalScale: 1.15, offsetFactor: -1, offsetUnits: -2 });
+  /*
+   * The strip either side of the racing surface. `vergeTextures()` authors it as sun-bleached
+   * grit, dry grass and scattered stones — a Levantine farm-track run-off, and the tan edge
+   * that reads as sand along a San Francisco street.
+   *
+   * Worth recording how long this took to find: the ground looked sandy, so the terrain
+   * material got tinted, twice, and the pixels did not move either time — because this is not
+   * the terrain. It is the circuit's own mesh. A raycast through the offending pixels named it
+   * in one shot after three renders of looking at it. Measure which system emits the pixels
+   * before theorising about the one you assume does.
+   */
+  { const t = themeOf(world).ground?.verge; if (t) matVerge.color.setRGB(t[0], t[1], t[2]); }
   matVerge.vertexColors = true;
   matVerge.map.wrapS = THREE.RepeatWrapping;
   matVerge.normalMap.wrapS = THREE.RepeatWrapping;
