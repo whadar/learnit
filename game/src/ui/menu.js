@@ -280,7 +280,7 @@ export function createMenu(opts = {}) {
       'Hold accelerate as the last light goes out for a rocket start. Too early and you bog down.',
       'The orchard cut through the olive grove saves 95 m — if you carry a boost onto the loose dirt.',
       'Tuck in behind a rival for a second and the slipstream fires you past them.',
-      'Every roof in the village is a real building footprint from Moshav Amikam.',
+      'Every roof you pass is a real building footprint, at its real height.',
     ],
   }, opts);
 
