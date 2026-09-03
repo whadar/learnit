@@ -137,7 +137,7 @@ function buildSignAtlas(SG) {
   row(2, ctx => {
     ctx.fillStyle = grad(ctx, '#9a2027', '#5d1119'); ctx.fillRect(0, 0, W, cell);
     ctx.fillStyle = '#e9b53a'; ctx.fillRect(0, 0, W, 5); ctx.fillRect(0, cell - 5, W, 5);
-    centred(ctx, 'הקפה אחרונה', 'FINAL LAP', '#f7e9c9', 58);
+    centred(ctx, SG.lastLap[0], SG.lastLap[1], '#f7e9c9', 58);
   });
   // 3 — sponsor: olive press
   //
@@ -151,33 +151,33 @@ function buildSignAtlas(SG) {
     ctx.fillStyle = '#3d6b3a'; ctx.fillRect(0, 0, W, 9); ctx.fillRect(0, cell - 9, W, 9);
     ctx.fillStyle = '#4f7a3c'; ctx.beginPath(); ctx.ellipse(96, cell / 2, 40, 26, -0.4, 0, TAU); ctx.fill();
     ctx.fillStyle = '#7d9b52'; ctx.beginPath(); ctx.ellipse(W - 96, cell / 2, 40, 26, 0.4, 0, TAU); ctx.fill();
-    centred(ctx, 'בית הבד עמיקם', 'AMIKAM OLIVE PRESS', '#22331f', 50);
+    centred(ctx, SG.sponsorA[0], SG.sponsorA[1], '#22331f', 50);
   });
   // 4 — sponsor: dairy / cats
   row(4, ctx => {
     ctx.fillStyle = grad(ctx, '#ffffff', '#dfe6f2'); ctx.fillRect(0, 0, W, cell);
     ctx.fillStyle = '#2a3b6d'; ctx.fillRect(0, 0, W, 10); ctx.fillRect(0, cell - 10, W, 10);
     catMark(ctx, 92, cell * 0.52, 36, '#2a3b6d');
-    centred(ctx, 'מחלבת רמות מנשה', 'RAMOT MENASHE DAIRY', '#1d2a4d', 50);
+    centred(ctx, SG.sponsorB[0], SG.sponsorB[1], '#1d2a4d', 50);
   });
   // 5 — sponsor: watermelon
   row(5, ctx => {
     ctx.fillStyle = '#b8362f'; ctx.fillRect(0, 0, W, cell);
     ctx.fillStyle = '#2d6b34'; ctx.beginPath(); ctx.arc(92, cell / 2, 42, 0, TAU); ctx.fill();
     ctx.fillStyle = '#e6584e'; ctx.beginPath(); ctx.arc(92, cell / 2, 32, 0, TAU); ctx.fill();
-    centred(ctx, 'אבטיחי העמק', 'VALLEY WATERMELONS', '#fdf1de', 50);
+    centred(ctx, SG.sponsorC[0], SG.sponsorC[1], '#fdf1de', 50);
   });
   // 6 — hairpin warning (yellow)
   row(6, ctx => {
     ctx.fillStyle = '#e5b209'; ctx.fillRect(0, 0, W, cell);
     ctx.fillStyle = '#171612'; ctx.fillRect(0, 0, 10, cell); ctx.fillRect(W - 10, 0, 10, cell);
-    centred(ctx, 'סיבוב חד', 'HAIRPIN', '#171612', 58);
+    centred(ctx, SG.hazard[0], SG.hazard[1], '#171612', 58);
   });
   // 7 — blue street sign
   row(7, ctx => {
     ctx.fillStyle = '#123a6b'; ctx.fillRect(0, 0, W, cell);
     ctx.strokeStyle = '#f0eede'; ctx.lineWidth = 6; ctx.strokeRect(10, 10, W - 20, cell - 20);
-    centred(ctx, 'רחוב רקפת', 'REHOV RAKEFET', '#f0eede', 52);
+    centred(ctx, SG.street[0], SG.street[1], '#f0eede', 52);
   });
   // 8 — 100 m board
   row(8, ctx => {

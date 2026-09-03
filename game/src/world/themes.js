@@ -47,7 +47,14 @@ const LEVANT = {
     tyres:    ['צמיגי עמיקם', 'AMIKAM TYRES'],
     marshal:  ['עמדת שופט', 'MARSHAL POST'],
     grandPrix:['אליפות החתולים', 'KAT RACING GRAND PRIX'],
+    lastLap:  ['הקפה אחרונה', 'FINAL LAP'],
+    sponsorA: ['בית הבד עמיקם', 'AMIKAM OLIVE PRESS'],
+    sponsorB: ['מחלבת רמות מנשה', 'RAMOT MENASHE DAIRY'],
+    sponsorC: ['אבטיחי העמק', 'VALLEY WATERMELONS'],
+    hazard:   ['סיבוב חד', 'HAIRPIN'],
+    street:   ['רחוב רקפת', 'REHOV RAKEFET'],
   },
+  items: {},            // the canonical names in items.js ARE the Levant set
 };
 
 /*
@@ -104,6 +111,31 @@ const BAYFRONT = {
     tyres:    ['AMERICAN INDUSTRIAL CENTER', 'THIRD STREET'],
     marshal:  ['MARSHAL POST', 'TURN 4 · 22ND ST'],
     grandPrix:['KAT RACING GRAND PRIX', 'BAY CIRCUIT'],
+    lastLap:  ['FINAL LAP', 'ONE TO GO'],
+    /*
+     * The sponsor hoardings are INVENTED. Dogpatch really is full of robotics and AI shops —
+     * Overture even names some of them, and those real names are used on the buildings
+     * themselves, which is map fidelity. A trackside hoarding is different: it says a company
+     * paid to sponsor this race, and putting a real firm's name there would be a claim about
+     * them that is not true. So the boards are plausible SF tech that does not exist.
+     */
+    sponsorA: ['DOGPATCH ROBOTICS', 'AUTONOMY LAB · 22ND ST'],
+    sponsorB: ['PIER 70 COMPUTE', 'GPU CLUSTER · BY THE HOUR'],
+    sponsorC: ['ILLINOIS INFERENCE', 'MODELS SERVED FRESH'],
+    hazard:   ['SHARP TURN', '90°'],
+    street:   ['TENNESSEE ST', '22ND STREET'],
+  },
+  /*
+   * The same twelve items, re-skinned for the bay. Mechanics, colours, speeds and hit types
+   * are untouched — only what the HUD calls them. A hoopoe and a bowl of hummus are Amikam's
+   * jokes; racing past Pier 70 they just read as someone else's game.
+   */
+  items: {
+    sabra: 'Delivery Drone',   jaffa: 'Sourdough Roll',  jaffa3: 'Triple Sourdough',
+    pan: 'Firewall',           falafel: 'Cold Brew',     falafel3: 'Triple Cold Brew',
+    hummus: 'Spilled Latte',   pardes: 'Server Rack',    khamsin: 'Karl the Fog',
+    hamsa: 'Golden Gate Charm', avatiach: 'Series A',    catnap: 'Robotaxi',
+    duchifat: 'Cable Car Rush', afifon: 'Bay Kite',
   },
 };
 

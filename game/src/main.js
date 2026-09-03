@@ -87,11 +87,19 @@ const REVIEW = APP.review;
 const quality = S.quality = createQuality(engine, { override: Q.get('q') || undefined });
 const QS = () => quality.settings;
 
+// The title card names the place you are about to race, not always Amikam. The orchard-cut
+// tip is Amikam's own — there is no olive grove on a San Francisco waterfront.
+const PLACE_SUBTITLE = {
+  amikam: 'Moshav Amikam · Ramot Menashe',
+  dogpatch: 'Dogpatch · San Francisco',
+};
 const menu = S.menu = createMenu({
   mount: app,
   roster: [],                                   // filled once the roster is known (below)
   courses: [],
   quality,
+  subtitle: PLACE_SUBTITLE[COURSE] || PLACE_SUBTITLE.amikam,
+  ...(COURSE === 'amikam' ? {} : { dropTips: ['orchard cut'] }),
 });
 
 /** Yield to the browser so the loading screen can actually paint between build steps. */

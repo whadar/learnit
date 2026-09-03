@@ -274,6 +274,7 @@ export function createMenu(opts = {}) {
     quality: null,
     title: 'Kat Racing',
     subtitle: 'Moshav Amikam · Ramot Menashe',
+    dropTips: [],       // substrings of tips that do not apply to this course
     tips: [
       'Hold DRIFT through a corner to charge a mini-turbo — three tiers, three colours.',
       'Hold accelerate as the last light goes out for a rocket start. Too early and you bog down.',
@@ -302,6 +303,9 @@ export function createMenu(opts = {}) {
   const emit = (t, e = {}) => { const a = listeners.get(t); if (a) for (const cb of a) { try { cb(e); } catch (err) { console.warn('[menu]', err); } } };
 
   /* ------------------------------------------------------------- state --- */
+  // Tips naming a feature this course does not have are simply wrong, not merely irrelevant.
+  const TIPS = (O.tips || []).filter(t => !(O.dropTips || []).some(d => t.includes(d)));
+
   const state = {
     screen: 'loading',
     character: 0,
@@ -651,7 +655,7 @@ export function createMenu(opts = {}) {
       el.loadfill.style.width = (state.loading * 100).toFixed(1) + '%';
       if (msg) el.loadmsg.textContent = msg;
       if (!el.loadtip.textContent || (tipTimer++ % 40) === 0) {
-        el.loadtip.textContent = O.tips[(state.tip++) % O.tips.length];
+        el.loadtip.textContent = TIPS[(state.tip++) % TIPS.length];
       }
       return api;
     },

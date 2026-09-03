@@ -324,10 +324,25 @@ function design(b, world, idx, TH = themeOf(world)) {
   } else {                                     // greenhouse
     storeys = 1; storeyH = 2.6 + r1 * 1.0; roofKind = 'gable';
   }
-  if (b.lv) storeys = clamp(b.lv | 0, 1, 3);
-  if (b.h) storeyH = clamp(b.h / storeys, 2.4, 9);
-
-  const wallH = storeys * storeyH;
+  /*
+   * Where the source data knows the real height, that is the truth and nothing else gets a
+   * vote. The old form — storeys x clamp(b.h / storeys, 2.4, 9), with storeys capped at 3 —
+   * silently squashed every building over 9 m. On Dogpatch that is 1,213 of 5,329 buildings
+   * (23%), 115 of them beside the circuit, including a 91 m tower rendered as a 9 m shed: the
+   * neighbourhood had real massing in the data and threw it away.
+   *
+   * It was tuned on Amikam, which carries a height tag on ZERO of its 552 buildings — so this
+   * branch never runs there and the village is bit-for-bit what it was.
+   */
+  let wallH;
+  if (b.h > 0) {
+    wallH = clamp(b.h, 2.4, 95);
+    storeys = clamp(Math.round(wallH / 3.3), 1, 30);
+    storeyH = wallH / storeys;
+  } else {
+    if (b.lv) storeys = clamp(b.lv | 0, 1, 3);
+    wallH = storeys * storeyH;
+  }
   const pitch = (kind === 'house' ? 25 + rand() * 7 : 16 + rand() * 8) * Math.PI / 180;
   const ov = kind === 'house' ? 0.62 + rand() * 0.20 : 0.36 + rand() * 0.20;
 

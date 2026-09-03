@@ -24,6 +24,7 @@ import * as THREE from 'three';
 import { clamp, lerp, damp, rng, wrapPi, TAU } from '../core/mathx.js';
 
 import * as ItemMeshes from './itemMeshes.js';
+import { themeOf } from '../world/themes.js';
 
 /** Mesh factories are optional: the headless sim and any stripped build run without them. */
 const MESHES = (ItemMeshes && typeof ItemMeshes.createItemMesh === 'function') ? ItemMeshes : null;
@@ -221,6 +222,13 @@ function racerYaw(racer, rec) {
  * @param {object} opts   { scene, seed, visuals, boxRespawn, laps, immunity }
  */
 export function createItemSystem(world, track, opts = {}) {
+  /*
+   * What the HUD calls each item. The mechanics are one shared set; only the names are of a
+   * place, and a bowl of hummus reads as someone else's game when you are racing past Pier 70.
+   */
+  const ITEM_NAMES = themeOf(world).items || {};
+  const nameOf = id => (id && (ITEM_NAMES[id] || ITEMS[id]?.name)) || null;
+
   const O = Object.assign({
     seed: 4242,
     visuals: DOM,
@@ -1204,7 +1212,7 @@ export function createItemSystem(world, track, opts = {}) {
       return {
         item: rec.item, count: rec.count, place: rec.place,
         rouletteFace: rec.roulette?.face ?? null, spinning: !!rec.pending,
-        name: rec.item ? ITEMS[rec.item].name : (rec.roulette ? ITEMS[rec.roulette.face]?.name : null),
+        name: rec.item ? nameOf(rec.item) : (rec.roulette ? nameOf(rec.roulette.face) : null),
         color: rec.item ? ITEMS[rec.item].color : (rec.roulette ? ITEMS[rec.roulette.face]?.color : 0xffffff),
         shield: !!(rec.shieldProj || rec.orbiters.length),
       };
