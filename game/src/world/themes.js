@@ -56,7 +56,7 @@ const LEVANT = {
   },
   items: {},            // the canonical names in items.js ARE the Levant set
   // Identity multiply: the terrain layers were authored for exactly this place.
-  ground: { tint: 0xffffff, skirt: 0x9a8f6a },
+  ground: { tint: [1, 1, 1], skirt: 0x9a8f6a },
 };
 
 /*
@@ -148,7 +148,14 @@ const BAYFRONT = {
    * the shader already multiplies its albedo by the material colour, so a cool grey multiply
    * turns warm ochre into something that reads as concrete and worn asphalt.
    */
-  ground: { tint: 0xa8b0bc, skirt: 0x6f757e },
+  /*
+   * A float triple, not a hex, because the blue multiplier has to exceed 1. The base layer is
+   * warm limestone around (0.75, 0.68, 0.50); any multiplier capped at 1 can only darken it,
+   * which is why the first attempt at 0xa8b0bc came back grey-ish but still visibly tan. This
+   * lands near (0.60, 0.63, 0.65) — neutral, and still bright enough to read as sunlit
+   * concrete rather than wet slate.
+   */
+  ground: { tint: [0.80, 0.92, 1.30], skirt: 0x6f757e },
 };
 
 export const THEMES = { levant: LEVANT, bayfront: BAYFRONT };

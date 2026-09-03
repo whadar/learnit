@@ -663,7 +663,7 @@ export function createTerrainMaterial(world, tex, opts = {}) {
   // `diffuseColor.rgb *= kAlbedo` below starts from this colour, so it is a free per-place
   // multiply over the whole ground — white for a place whose layers were authored for it.
   const mat = new THREE.MeshStandardMaterial({
-    color: themeOf(world).ground?.tint ?? 0xffffff,
+    color: new THREE.Color().setRGB(...(themeOf(world).ground?.tint ?? [1, 1, 1])),
     roughness: 1.0, metalness: 0.0, dithering: true, fog: true,
   });
   const u = {
