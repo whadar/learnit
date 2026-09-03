@@ -82,7 +82,10 @@ function buildChunk(world, i0, j0, iN, jN, step, half, lo, hi) {
       }
       // gentle deterministic mottling so a big flat plane is not one dead value
       const v = 0.94 + 0.12 * fract(Math.sin(gi * 12.9898 + gj * 78.233) * 43758.5453);
-      col[k] = c[0] * v; col[k + 1] = c[1] * v; col[k + 2] = c[2] * v;
+      // Vertex colours are read as LINEAR while these are authored the way you would pick them
+      // in a colour picker, i.e. sRGB. Handing 0.53 straight over renders it near-white; the
+      // ground came back looking like snow. Convert once, here.
+      col[k] = srgb(c[0] * v); col[k + 1] = srgb(c[1] * v); col[k + 2] = srgb(c[2] * v);
     }
   }
   for (let j = 0; j < jN; j++) {
@@ -100,5 +103,6 @@ function buildChunk(world, i0, j0, iN, jN, step, half, lo, hi) {
   return g;
 }
 
+const srgb = v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
 const mix = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 const fract = v => v - Math.floor(v);

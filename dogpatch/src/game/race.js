@@ -167,7 +167,7 @@ export function createRace(world, track, opts = {}) {
         lap: Math.min(p.lap + 1, laps), laps, place: p.place, field: racers.length,
         speed: p.vehicle.state.speed * 3.6, time: state.time,
         best: Number.isFinite(p.best) ? p.best : null,
-        item: p.item, wrongWay: p.wrongWay, boost: p.vehicle.state.boost.time > 0,
+        item: p.item ? items.ITEMS[p.item].name : null, wrongWay: p.wrongWay, boost: p.vehicle.state.boost.time > 0,
         drift: p.vehicle.state.drift.tier, sector: track.nearest(p.vehicle.state.pos) };
     },
     reset: start,

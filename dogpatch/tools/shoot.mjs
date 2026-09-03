@@ -14,7 +14,12 @@ const p = await (await b.newContext({ viewport: { width: 1280, height: 720 } }))
 p.on('pageerror', e => console.log('  page error: ' + e.message));
 await p.goto(URL + '?audio=0', { waitUntil: 'load', timeout: 240000 });
 await p.waitForFunction(() => window.__game && (window.__game.ready || window.__game.error), null, { timeout: 600000 });
-await p.evaluate(() => window.__game.startRace(0));
+await p.evaluate(() => {
+  window.__game.startRace(0);
+  // Nobody is at the keyboard in a screenshot, so hand the player's kart to the AI. Otherwise
+  // every shot is a parked kart, which is what the first run produced.
+  window.__game.race.setInput(null);
+});
 
 let t = 0;
 for (const v of VIEWS) {

@@ -25,9 +25,13 @@ export function createVFX(scene, opts = {}) {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   g.setAttribute('size', new THREE.BufferAttribute(siz, 1));
+  // PointsMaterial takes ONE size for every point: the per-point `size` attribute is ignored
+  // unless a shader reads it, so authoring 0.5 metre points gave half-metre white squares all
+  // over the frame. Small, round-ish, and normally blended — additive on top of that was what
+  // made them read as blocks of paper.
   const mat = new THREE.PointsMaterial({
-    size: 0.5, vertexColors: true, transparent: true, opacity: 0.85,
-    depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
+    size: 0.16, vertexColors: true, transparent: true, opacity: 0.7,
+    depthWrite: false, sizeAttenuation: true,
   });
   const points = new THREE.Points(g, mat);
   points.name = 'vfx'; points.frustumCulled = false;
@@ -54,7 +58,7 @@ export function createVFX(scene, opts = {}) {
         for (const side of [-1, 1]) {
           emit(s.pos.x - fwd.x * 0.8 + rgt.x * side * 0.66, s.pos.y - 0.18,
                s.pos.z - fwd.z * 0.8 + rgt.z * side * 0.66,
-               c, d.tier > 0 ? 2.4 : 1.1, d.tier > 0 ? 0.34 : 0.5, d.tier > 0 ? 0.34 : 0.5);
+               c, d.tier > 0 ? 2.4 : 1.1, 1, d.tier > 0 ? 0.34 : 0.5);
         }
       }
       if (s.boost.time > 0) {
