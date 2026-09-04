@@ -59,6 +59,7 @@ async function boot() {
   S.world = game.world = await World.load('data/').catch(() => World.load('./data/'));
   menu.loading('Draping the circuit');
   S.track = game.track = buildTrack(S.world, { laps: num('laps', 3) });
+  S.world.carve(S.track);          // grade the ground to the road before anything is built from it
 
   menu.loading('Pouring concrete');
   S.sky = createSky(scene, { shadows: renderer.shadowMap.enabled });

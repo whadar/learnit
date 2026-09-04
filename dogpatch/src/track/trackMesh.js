@@ -11,7 +11,15 @@ import { clamp01, rng } from '../core/math.js';
 const RAISE = 0.06;                 // road above the drape, metres
 const SHOULDER = 3.0;               // concrete shoulder each side
 
-/** Walk the centreline building a triangle strip between two lateral offsets. */
+/**
+ * Walk the centreline building a triangle strip between two lateral offsets.
+ *
+ * The index order matters and is not arbitrary. Each row pushes the `from` vertex then the `to`
+ * vertex, so winding them (p, p+2, p+1) gives triangles whose normal points DOWN: with the
+ * default FrontSide material the whole ribbon is back-face culled and the circuit vanishes —
+ * road, shoulder, edge lines and kerbs all at once, leaving bare terrain where the street should
+ * be. It shipped that way once and read as a kart race across a sandy field.
+ */
 function strip(track, from, to, opts = {}) {
   const N = track.count, ds = track.ds, lift = opts.lift ?? RAISE;
   const pos = [], uv = [], idx = [];
@@ -29,7 +37,7 @@ function strip(track, from, to, opts = {}) {
   }
   for (let r = 0; r < row - 1; r++) {
     const p = r * 2;
-    idx.push(p, p + 2, p + 1, p + 1, p + 2, p + 3);
+    idx.push(p, p + 1, p + 2, p + 1, p + 3, p + 2);
   }
   if (!row) return null;
   const g = new THREE.BufferGeometry();
@@ -88,7 +96,7 @@ export function createTrackMesh(track, world, opts = {}) {
         pos.push(m.pos.x - m.normal.x * w, m.pos.y + RAISE + 0.012, m.pos.z - m.normal.z * w);
         pos.push(m.pos.x + m.normal.x * w, m.pos.y + RAISE + 0.012, m.pos.z + m.normal.z * w);
       }
-      idx.push(v, v + 2, v + 1, v + 1, v + 2, v + 3); v += 4;
+      idx.push(v, v + 1, v + 2, v + 1, v + 3, v + 2); v += 4;
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -112,7 +120,7 @@ export function createTrackMesh(track, world, opts = {}) {
           pos[b].push(q.pos.x + q.normal.x * side * inner, q.pos.y + RAISE + 0.02, q.pos.z + q.normal.z * side * inner);
           pos[b].push(q.pos.x + q.normal.x * side * outer, q.pos.y + RAISE + 0.06, q.pos.z + q.normal.z * side * outer);
         }
-        idx[b].push(v[b], v[b] + 2, v[b] + 1, v[b] + 1, v[b] + 2, v[b] + 3); v[b] += 4;
+        idx[b].push(v[b], v[b] + 1, v[b] + 2, v[b] + 1, v[b] + 3, v[b] + 2); v[b] += 4;
       }
       for (const b of [0, 1]) {
         if (!pos[b].length) continue;

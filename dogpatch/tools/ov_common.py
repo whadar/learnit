@@ -1,7 +1,7 @@
 import io, os, requests, pyarrow.parquet as pq
 BUCKET="https://overturemaps-us-west-2.s3.amazonaws.com"
 REL="release/2026-08-19.0"
-S=requests.Session(); S.headers["User-Agent"]="amikam-extract"
+S=requests.Session(); S.headers["User-Agent"]="dogpatch-extract"
 class S3File(io.RawIOBase):
     def __init__(self,url):
         self.url=url; self.pos=0

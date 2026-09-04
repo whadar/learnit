@@ -51,4 +51,43 @@ export class World {
   }
 
   inBounds(x, z) { return Math.abs(x) < this.half && Math.abs(z) < this.half; }
+
+  /**
+   * Grade the heightfield to the circuit's own draped height, the way a real road corridor is cut.
+   *
+   * Without this the road ribbon is flat across its width while the ground under it keeps its
+   * natural cross-slope, so the terrain rises through the asphalt and eats the verge in ragged
+   * tan wedges — measured at 22 cm of terrain standing proud of the road surface. Grade the
+   * ground to the road instead of bending the road to the ground: the circuit is the reference.
+   *
+   * Must run after buildTrack (which reads these heights to drape itself) and before the terrain
+   * mesh is built from them.
+   */
+  carve(track, opts = {}) {
+    const flat = opts.flat ?? 10.5;              // fully graded out to here, metres
+    const blend = opts.blend ?? 7;               // then eased back to the natural ground
+    const r = this.res, step = this.step, half = this.half;
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+    for (const p of track.points) {
+      if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0];
+      if (p[1] < z0) z0 = p[1]; if (p[1] > z1) z1 = p[1];
+    }
+    const pad = flat + blend + step;
+    const gi0 = Math.max(0, Math.floor((x0 - pad + half) / step)), gi1 = Math.min(r - 1, Math.ceil((x1 + pad + half) / step));
+    const gj0 = Math.max(0, Math.floor((z0 - pad + half) / step)), gj1 = Math.min(r - 1, Math.ceil((z1 + pad + half) / step));
+    const q = { x: 0, z: 0 };
+    for (let j = gj0; j <= gj1; j++) {
+      for (let i = gi0; i <= gi1; i++) {
+        q.x = -half + i * step; q.z = -half + j * step;
+        const n = track.nearest(q);
+        const d = Math.abs(n.lateral);
+        if (d > flat + blend) continue;
+        const t = d <= flat ? 1 : 1 - (d - flat) / blend;
+        const k = t * t * (3 - 2 * t);           // smoothstep, so there is no crease at the edge
+        const idx = j * r + i;
+        this.h[idx] += (n.y - this.h[idx]) * k;
+      }
+    }
+    return this;
+  }
 }

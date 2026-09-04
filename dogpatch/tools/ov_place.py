@@ -10,7 +10,7 @@ carries per-row-group statistics including a bbox, so reading only the footers (
 of HTTP range requests) is enough to find the handful of row groups covering a 3 km box, and only
 those get read in full. The whole extract takes well under a minute.
 
-This replaces ov_extract.py / ov_theme.py, which hard-coded Amikam's centre and — more
+This replaces ov_extract.py / ov_theme.py, which hard-coded a single place's centre and — more
 importantly — selected row groups by asking whether the group's bbox *contained the centre point*.
 That works only by luck: a row group covering the northern half of the box and nothing else would
 be skipped, silently losing every feature in it. Here the test is a real bbox intersection.
