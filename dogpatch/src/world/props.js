@@ -116,7 +116,11 @@ export function createProps(world, track, opts = {}) {
       const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
         map: boardTexture(b[0], b[1], b[2], b[3]), roughness: 0.85, side: THREE.DoubleSide }));
       mesh.position.set(x, world.heightAt(x, z) + 1.5, z);
-      mesh.rotation.y = Math.atan2(m.tangent.x, m.tangent.z) + (side > 0 ? Math.PI : 0);
+      // A plane's front face looks down its local +Z, so rotating by the track heading points the
+      // printed side DOWN the road, away from oncoming traffic — with DoubleSide on you then read
+      // the back of the board and every sponsor name comes out mirrored. Turn it to face oncoming
+      // traffic, then cant it slightly toward the road so it is readable on approach.
+      mesh.rotation.y = Math.atan2(m.tangent.x, m.tangent.z) + Math.PI - side * 0.3;
       mesh.castShadow = shadows;
       mesh.name = 'props:board';
       group.add(mesh);

@@ -4,8 +4,10 @@ import { chromium } from 'playwright';
 const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 const OUT = process.env.OUT || 'shots';
 const URL = process.env.URL || 'http://127.0.0.1:4180/';
-const VIEWS = (process.env.VIEWS || 'grid,street,corner').split(',');
-const AT = { grid: 0.2, street: 9, corner: 17, wide: 25 };
+const VIEWS = (process.env.VIEWS || 'grid,launch,street,corner,pack,waterfront').split(',');
+// The review set. Named moments rather than arbitrary times, so two runs are comparable and a
+// critic sees the same six situations every round.
+const AT = { grid: 0.2, launch: 4.2, street: 9, corner: 17, pack: 25, waterfront: 34, wide: 25 };
 
 fs.mkdirSync(OUT, { recursive: true });
 const b = await chromium.launch({ executablePath: CHROME,
