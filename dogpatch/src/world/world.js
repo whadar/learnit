@@ -16,12 +16,31 @@ export class World {
     this.half = json.terrain.extent / 2;
   }
 
+  /**
+   * Load the world, from the embedded payload if the single-file build put one there, otherwise
+   * over the network. The packed form carries only what the game actually reads — building rings,
+   * heights and storeys — and stores the heightfield as decimetre Int16 rather than Float32,
+   * which is half the bytes at a precision the eye cannot find on a hillside. The road corridor
+   * is graded to exact float heights by carve() after this, so quantisation never reaches it.
+   */
   static async load(base = 'data/') {
+    const packed = globalThis.__DOGPATCH_WORLD;
+    if (packed) return World.unpack(packed);
     const [json, bin] = await Promise.all([
       fetch(base + 'world.json').then(r => r.json()),
       fetch(base + 'world-height.bin').then(r => r.arrayBuffer()),
     ]);
     return new World(json, new Float32Array(bin));
+  }
+
+  static unpack(p) {
+    const raw = atob(p.h);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    const dm = new Int16Array(bytes.buffer);
+    const h = new Float32Array(dm.length);
+    for (let i = 0; i < dm.length; i++) h[i] = dm[i] / 10;
+    return new World({ meta: p.meta, terrain: p.terrain, buildings: p.buildings }, h);
   }
 
   /** Grid height, clamped at the edges so sampling outside the box never reads garbage. */
