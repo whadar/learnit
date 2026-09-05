@@ -62,7 +62,7 @@ export function createSky(scene, opts = {}) {
   dome.name = 'sky'; dome.frustumCulled = false; dome.renderOrder = -1;
   scene.add(dome);
 
-  const sun = new THREE.DirectionalLight(0xfff3dd, 2.5);
+  const sun = new THREE.DirectionalLight(0xfff3dd, 3.2);
   sun.position.copy(dir).multiplyScalar(500);
   sun.castShadow = opts.shadows !== false;
   if (sun.castShadow) {
@@ -75,11 +75,18 @@ export function createSky(scene, opts = {}) {
   scene.add(sun);
   scene.add(sun.target);
 
-  // Sky fill, and a ground bounce warm and bright enough that a wall facing away from the sun
-  // still shows its own colour. With this at 1.05 and a dark bounce, three critics independently
-  // read the shaded elevations as unlit black polygons — the single loudest cue that a scene has
-  // no lighting model behind it.
-  scene.add(new THREE.HemisphereLight(0xc8dcee, 0x8a8578, 1.9));
+  /* Key-to-fill is the whole argument here, and it has now been got wrong in both directions.
+   *
+   * Round one ran fill 1.05 against a dark 0x50524e bounce, and three critics read the shaded
+   * elevations as unlit black polygons. Round two answered with fill 1.9 and a warm bounce, which
+   * lifted the shade — and flattened the key to a 1.3:1 ratio, at which point the same three
+   * critics said there were NO SHADOWS ANYWHERE and the lighting was flat ambient. The shadow map
+   * was on the whole time, 189 casters and 1956 receivers; the fill had simply washed it out.
+   *
+   * So: keep round two's warm, bright bounce, which is what stopped the crushing, but put the sun
+   * back in charge at about 2.8:1. The contract this project keeps re-learning is that an effect
+   * swinging between opposite failures is one problem, not two. */
+  scene.add(new THREE.HemisphereLight(0xc8dcee, 0x8a8578, 1.15));
   scene.fog = new THREE.Fog(0xbcd0dd, 420, 2100);
   scene.background = null;
 

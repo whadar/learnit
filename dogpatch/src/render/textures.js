@@ -129,9 +129,29 @@ export function ground(size = 256) {
   return finish(c);
 }
 
+/**
+ * A soft round puff for the particle pool.
+ *
+ * Points are squares. Without a sprite with an alpha falloff, tyre smoke is a cloud of little
+ * grey tiles, which is worse than no smoke at all — round one shipped half-metre white squares
+ * for exactly this reason.
+ */
+export function puff(size = 64) {
+  const [c, g] = canvas(size);
+  const r = size / 2;
+  const grd = g.createRadialGradient(r, r, 0, r, r, r);
+  grd.addColorStop(0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+  grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, size, size);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 /** Built once and shared; every mesh that wants a surface asks here. */
 let cache = null;
 export function surfaces() {
-  if (!cache) cache = { asphalt: asphalt(), concrete: concrete(), facade: facade(), ground: ground() };
+  if (!cache) cache = { asphalt: asphalt(), concrete: concrete(), facade: facade(), ground: ground(), puff: puff() };
   return cache;
 }

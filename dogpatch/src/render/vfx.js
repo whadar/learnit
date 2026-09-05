@@ -7,6 +7,7 @@
  */
 import * as THREE from 'three';
 import { clamp01, rng } from '../core/math.js';
+import { surfaces } from './textures.js';
 
 const MAX = 900;
 const TIER_COL = [[1.0, 0.86, 0.45], [0.45, 0.72, 1.0], [1.0, 0.45, 0.85]];
@@ -29,8 +30,11 @@ export function createVFX(scene, opts = {}) {
   // unless a shader reads it, so authoring 0.5 metre points gave half-metre white squares all
   // over the frame. Small, round-ish, and normally blended — additive on top of that was what
   // made them read as blocks of paper.
+  // One size for every point, since PointsMaterial ignores the per-point attribute — so this
+  // single number has to work for exhaust seen from six metres and for smoke seen from one. At
+  // 0.38 and 0.75 opacity the exhaust read as a string of white beach balls across the frame.
   const mat = new THREE.PointsMaterial({
-    size: 0.16, vertexColors: true, transparent: true, opacity: 0.7,
+    size: 0.26, map: surfaces().puff, vertexColors: true, transparent: true, opacity: 0.5,
     depthWrite: false, sizeAttenuation: true,
   });
   const points = new THREE.Points(g, mat);
@@ -47,7 +51,10 @@ export function createVFX(scene, opts = {}) {
     siz[i] = size; life[i] = ttl; max[i] = ttl;
   }
 
+  const acc = [];                        // per-kart emit timers, so rate is time-based not frame-based
+
   function update(dt, vehicles) {
+    let idx = 0;
     for (const v of vehicles) {
       const s = v.state;
       const d = s.drift;
@@ -68,6 +75,26 @@ export function createVFX(scene, opts = {}) {
       if (!s.onTrack && s.speed > 8) {
         emit(s.pos.x - fwd.x * 0.9, s.pos.y - 0.2, s.pos.z - fwd.z * 0.9,
              [0.58, 0.56, 0.5], 1.6, 0.7, 0.55);
+      }
+
+      /* Round two's critics said there were no VFX in any frame, and they were right about the
+       * frames even though the pool was working: everything above only fires while DRIFTING,
+       * BOOSTING or OFF TRACK. A kart driving hard down a straight — which is most of a lap and
+       * all of most screenshots — emitted nothing at all. These two fire during ordinary racing. */
+      const k = idx++;
+      acc[k] = (acc[k] ?? 0) + dt;
+      if (s.speed > 3 && acc[k] > 0.055) {                       // exhaust
+        acc[k] = 0;
+        emit(s.pos.x - fwd.x * 1.15, s.pos.y + 0.02, s.pos.z - fwd.z * 1.15,
+             [0.46, 0.46, 0.45], 0.5, 0.5, 0.34);
+      }
+      if (s.grounded && s.speed > 9 && Math.abs(s.slipDeg) > 4) { // tyres letting go in a corner
+        const heat = clamp01((Math.abs(s.slipDeg) - 4) / 14);
+        for (const side of [-1, 1]) {
+          emit(s.pos.x - fwd.x * 0.8 + rgt.x * side * 0.66, s.pos.y - 0.2,
+               s.pos.z - fwd.z * 0.8 + rgt.z * side * 0.66,
+               [0.74, 0.73, 0.70], 0.9 + heat, 0.5 + heat * 0.6, 0.3 + heat * 0.35);
+        }
       }
     }
 

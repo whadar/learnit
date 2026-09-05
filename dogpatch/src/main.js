@@ -76,7 +76,7 @@ async function boot() {
 
   menu.loading('Warming the grid');
   S.input = createInput({ touch: 'auto' });
-  S.cam = createCamera(camera, S.world);
+  S.cam = createCamera(camera, S.world, S.track);
   S.vfx = createVFX(scene);
   S.hud = createHUD(app);
   S.audio = createAudio({ enabled: flag('audio', true) });
@@ -93,7 +93,7 @@ async function boot() {
 /* ----------------------------------------------------------------------- race --- */
 let rigs = [];
 function buildRace(playerIndex) {
-  for (const r of rigs) { scene.remove(r.object3D); r.dispose(); }
+  for (const r of rigs) { scene.remove(r.object3D); if (r.contact) scene.remove(r.contact); r.dispose(); }
   rigs = [];
   const chosen = DRIVERS[clamp(playerIndex | 0, 0, DRIVERS.length - 1)];
   const field = [chosen, ...DRIVERS.filter(d => d.id !== chosen.id)].slice(0, 8);
@@ -104,7 +104,7 @@ function buildRace(playerIndex) {
   });
   for (const d of field) {
     const rig = createKart(d, { shadows: renderer.shadowMap.enabled });
-    scene.add(rig.object3D); rigs.push(rig);
+    scene.add(rig.object3D); scene.add(rig.contact); rigs.push(rig);
   }
   S.race.on('lap', e => { if (e.racer.isPlayer) S.hud.flash(); });
   S.race.on('hit', e => { if (e.racer.isPlayer) S.cam.hit(0.8); });

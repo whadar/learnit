@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp, lerp } from '../core/math.js';
 
-export function createCamera(camera, world) {
+export function createCamera(camera, world, track) {
   const pos = new THREE.Vector3(), aim = new THREE.Vector3();
   let started = false, shake = 0, fov = 62;
 
@@ -34,6 +34,25 @@ export function createCamera(camera, world) {
       if (d < back * 0.72) {
         const push = (back * 0.72 - d) * 0.8;
         wx -= fwd.x * push; wz -= fwd.z * push; wy += push * 0.25;
+      }
+    }
+
+    /* Keep the camera in the street.
+     *
+     * Nothing stops a kart driving into a building, and when one does the chase camera follows it
+     * inside and the whole frame becomes the interior of a warehouse wall. Rather than raycast
+     * the neighbourhood every frame, clamp the camera's LATERAL offset from the centreline: the
+     * circuit is a street canyon, so staying within a dozen metres of it is the same thing as
+     * staying outdoors, and it costs one O(1) lookup instead of a ray against 100k triangles. */
+    if (track) {
+      const n = track.nearest({ x: wx, z: wz });
+      const limit = n.width * 0.5 + 11;
+      if (Math.abs(n.lateral) > limit) {
+        const m = track.sample(n.s);
+        const keep = Math.sign(n.lateral) * limit;
+        wx = m.pos.x + m.normal.x * keep;
+        wz = m.pos.z + m.normal.z * keep;
+        wy = Math.max(wy, world.heightAt(wx, wz) + 1.5);
       }
     }
 

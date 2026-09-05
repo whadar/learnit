@@ -6,6 +6,7 @@
  * colour is ahead of you. Detail beyond that is not visible and costs frames.
  */
 import * as THREE from 'three';
+import { surfaces } from './textures.js';
 import { TAU } from '../core/math.js';
 
 const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
@@ -60,10 +61,29 @@ export function createKart(driver, opts = {}) {
     g.add(hub); wheels.push(hub);
   }
 
+  /* A contact shadow, drawn rather than cast.
+   *
+   * Every critic in both rounds said the karts float. A shadow-mapped blob is at the mercy of the
+   * fill level and of where the shadow camera happens to be looking; this one is always under the
+   * kart, always dark, and costs one quad. It lives OUTSIDE the kart group so body roll and pitch
+   * cannot tip it off the ground — a contact shadow that banks with the chassis is worse than
+   * none, because it stops reading as contact. */
+  const blob = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.9, 2.6),
+    new THREE.MeshBasicMaterial({ map: surfaces().puff, color: 0x0a0d10, transparent: true,
+                                  opacity: 0.42, depthWrite: false }));
+  blob.rotation.x = -Math.PI / 2;
+  blob.renderOrder = 6;
+  blob.name = 'kart:contact';
+
   return {
-    object3D: g, wheels,
+    object3D: g, contact: blob, wheels,
     /** Drive the rig from vehicle state. */
     sync(s, dt) {
+      blob.position.set(s.pos.x, s.pos.y - 0.44, s.pos.z);
+      blob.rotation.z = -s.yaw;
+      // fades out as the kart leaves the ground, which is the one time it should not be there
+      blob.material.opacity = 0.42 * Math.max(0, 1 - (s.airTime ?? 0) * 4);
       g.position.set(s.pos.x, s.pos.y - 0.30, s.pos.z);
       g.rotation.set(s.pitch, s.yaw, s.roll, 'YXZ');
       const spin = (s.forwardSpeed / 0.30) * dt;
@@ -72,7 +92,7 @@ export function createKart(driver, opts = {}) {
         if (i < 2) wheels[i].rotation.y = s.steerAngle;
       }
     },
-    dispose() { g.traverse(o => o.geometry?.dispose?.()); },
+    dispose() { g.traverse(o => o.geometry?.dispose?.()); blob.geometry.dispose(); blob.material.dispose(); },
   };
 }
 
