@@ -1,0 +1,164 @@
+/**
+ * What a place is made of.
+ *
+ * The geometry of a course comes from real GIS data, but almost none of the *material* does:
+ * across the 365 Dogpatch buildings nearest the circuit, Overture supplies a roof shape for
+ * zero of them and a facade material for zero of them, and 95% carry no class at all. Only
+ * height is well populated. So every surface falls through to a default, and if that default
+ * is Amikam's the San Francisco waterfront renders with terracotta pantiles and Jerusalem
+ * stone — which is exactly what the first Dogpatch screenshot showed.
+ *
+ * A theme is therefore not decoration; it is the entire material identity of a level. Each
+ * world asset names its own (`world.meta.theme`), so the renderers can ask the world what it
+ * is made of rather than being told by the boot sequence.
+ *
+ * Tints are multiplicative against the base material colour, so 1.0 is "unchanged".
+ */
+
+/* Moshav Amikam: lime-washed plaster, Jerusalem stone, clay pantiles, farm sheeting. */
+const LEVANT = {
+  id: 'levant',
+  wallTints: [
+    [1.00, 0.99, 0.96], [0.99, 0.95, 0.87], [0.97, 0.91, 0.79],
+    [1.00, 0.97, 0.92], [0.94, 0.88, 0.76], [0.98, 0.95, 0.90],
+    [0.92, 0.85, 0.72], [1.00, 0.98, 0.94], [0.88, 0.84, 0.78],
+    [0.99, 0.92, 0.85], [0.96, 0.94, 0.91], [0.91, 0.86, 0.75],
+    [1.00, 0.94, 0.90], [0.86, 0.83, 0.79],
+  ],
+  // clay pantiles run from fresh orange to sun-bleached brown; a few roofs are re-laid grey
+  roofTints: [
+    [1.02, 0.94, 0.88], [0.80, 0.70, 0.64], [1.18, 1.02, 0.86],
+    [0.68, 0.62, 0.60], [1.10, 0.88, 0.72], [0.96, 0.90, 0.86],
+    [1.14, 0.98, 0.82], [0.74, 0.66, 0.60], [0.88, 0.80, 0.76],
+    [1.06, 0.86, 0.66], [0.92, 0.86, 0.86], [1.00, 0.80, 0.62],
+  ],
+  // fibre-cement / galvanised sheeting on the farm buildings
+  sheetTints: [[0.60, 0.64, 0.68], [0.70, 0.71, 0.70], [0.52, 0.56, 0.60], [0.66, 0.66, 0.64]],
+  flatBias: 0,          // added to the probability a roof is flat
+  furniture: {},        // the village dressing is Amikam's own
+  streetTree: 'cypress',// the moshav's punctuation marks
+  sheetChance: 0.55,
+  stoneChance: 0.11,
+  // Trackside boards are bilingual here: the big line is Hebrew, the small line English.
+  signs: {
+    gantry:   ['מסלול מושב עמיקם', 'AMIKAM VILLAGE CIRCUIT'],
+    startFin: ['זינוק · סיום', 'START / FINISH'],
+    winery:   ['יקב רמות מנשה', 'MENASHE HILLS WINERY'],
+    tyres:    ['צמיגי עמיקם', 'AMIKAM TYRES'],
+    marshal:  ['עמדת שופט', 'MARSHAL POST'],
+    grandPrix:['אליפות החתולים', 'KAT RACING GRAND PRIX'],
+    lastLap:  ['הקפה אחרונה', 'FINAL LAP'],
+    sponsorA: ['בית הבד עמיקם', 'AMIKAM OLIVE PRESS'],
+    sponsorB: ['מחלבת רמות מנשה', 'RAMOT MENASHE DAIRY'],
+    sponsorC: ['אבטיחי העמק', 'VALLEY WATERMELONS'],
+    hazard:   ['סיבוב חד', 'HAIRPIN'],
+    street:   ['רחוב רקפת', 'REHOV RAKEFET'],
+  },
+  items: {},            // the canonical names in items.js ARE the Levant set
+  // Identity multiply: the terrain layers were authored for exactly this place.
+  ground: { tint: [1, 1, 1], skirt: 0x9a8f6a, verge: null },
+};
+
+/*
+ * Dogpatch: one of the few San Francisco neighbourhoods that survived 1906, so it is red brick
+ * warehouses and Victorian workers' cottages standing next to corrugated industrial sheds and
+ * new grey-panelled infill. Almost everything is flat-roofed — a pitched terracotta roof is the
+ * single most out-of-place thing you can put on this shore — and what pitch exists is shallow
+ * clapboard gable on the old cottages. Roofs read as tar, gravel and galvanised steel.
+ */
+const BAYFRONT = {
+  id: 'bayfront',
+  wallTints: [
+    [0.78, 0.46, 0.38], [0.72, 0.41, 0.34], [0.85, 0.52, 0.42],   // red brick, weathered
+    [0.66, 0.38, 0.33],                                            // dark engineering brick
+    [0.94, 0.94, 0.92], [0.98, 0.97, 0.94], [0.90, 0.90, 0.88],   // painted clapboard
+    [0.72, 0.74, 0.76], [0.62, 0.65, 0.68], [0.55, 0.58, 0.61],   // industrial grey panel
+    [0.86, 0.82, 0.74], [0.80, 0.77, 0.71],                        // stucco, cream and buff
+    [0.48, 0.52, 0.56],                                            // dark corrugated shed
+    [0.70, 0.60, 0.52],                                            // sun-bleached brick
+  ],
+  // tar-and-gravel, asphalt sheet, galvanised steel — dark and desaturated, never orange
+  roofTints: [
+    [0.42, 0.44, 0.46], [0.36, 0.38, 0.40], [0.50, 0.52, 0.54],
+    [0.30, 0.32, 0.34], [0.46, 0.47, 0.47], [0.55, 0.57, 0.58],
+    [0.38, 0.40, 0.43], [0.62, 0.63, 0.62],
+  ],
+  sheetTints: [[0.58, 0.62, 0.66], [0.68, 0.70, 0.71], [0.46, 0.50, 0.54], [0.74, 0.75, 0.73]],
+  // No olive grove, and no village-fete bunting strung over an industrial waterfront.
+  furniture: { grove: false, bunting: false, bales: false, crates: false },
+  /*
+   * Monterey pine, not Italian cypress. Monterey CYPRESS is genuinely Californian, so the
+   * species name is not the problem — buildCypress draws the narrow columnar Italian form,
+   * and a row of those down a San Francisco street reads as Tuscany. The pine's spreading
+   * crown is what actually grows on this coast.
+   */
+  streetTree: 'pine',
+  /*
+   * 0.88, not 0.55. The roof tints here are multiplicative against the pantile texture, so the
+   * greys below can only ever make a clay roof dark RED — they cannot make it grey. The first
+   * themed render proved it: the nearest, most prominent building still wore a pitched red
+   * roof. Flat roofs do not use that texture at all, so pushing nearly every roof flat is what
+   * actually removes the pantile, and it happens to be true of the neighbourhood as well.
+   */
+  flatBias: 0.88,
+  sheetChance: 0.72,
+  stoneChance: 0.02,    // brick, not ashlar
+  // Same two-line board, but the shore speaks English. The names are real: Pier 70 is the old
+  // Union Iron Works yard the Illinois straight runs past, and the American Industrial Center
+  // is the block of warehouses on 3rd that Tennessee Run goes behind.
+  signs: {
+    gantry:   ['DOGPATCH WATERFRONT', 'SAN FRANCISCO · CALIFORNIA'],
+    startFin: ['START / FINISH', 'ILLINOIS STREET'],
+    winery:   ['PIER 70 IRON WORKS', 'SHIPS · PLATE · FORGE'],
+    tyres:    ['AMERICAN INDUSTRIAL CENTER', 'THIRD STREET'],
+    marshal:  ['MARSHAL POST', 'TURN 4 · 22ND ST'],
+    grandPrix:['KAT RACING GRAND PRIX', 'BAY CIRCUIT'],
+    lastLap:  ['FINAL LAP', 'ONE TO GO'],
+    /*
+     * The sponsor hoardings are INVENTED. Dogpatch really is full of robotics and AI shops —
+     * Overture even names some of them, and those real names are used on the buildings
+     * themselves, which is map fidelity. A trackside hoarding is different: it says a company
+     * paid to sponsor this race, and putting a real firm's name there would be a claim about
+     * them that is not true. So the boards are plausible SF tech that does not exist.
+     */
+    sponsorA: ['DOGPATCH ROBOTICS', 'AUTONOMY LAB · 22ND ST'],
+    sponsorB: ['PIER 70 COMPUTE', 'GPU CLUSTER · BY THE HOUR'],
+    sponsorC: ['ILLINOIS INFERENCE', 'MODELS SERVED FRESH'],
+    hazard:   ['SHARP TURN', '90°'],
+    street:   ['TENNESSEE ST', '22ND STREET'],
+  },
+  /*
+   * The same twelve items, re-skinned for the bay. Mechanics, colours, speeds and hit types
+   * are untouched — only what the HUD calls them. A hoopoe and a bowl of hummus are Amikam's
+   * jokes; racing past Pier 70 they just read as someone else's game.
+   */
+  items: {
+    sabra: 'Delivery Drone',   jaffa: 'Sourdough Roll',  jaffa3: 'Triple Sourdough',
+    pan: 'Firewall',           falafel: 'Cold Brew',     falafel3: 'Triple Cold Brew',
+    hummus: 'Spilled Latte',   pardes: 'Server Rack',    khamsin: 'Karl the Fog',
+    hamsa: 'Golden Gate Charm', avatiach: 'Series A',    catnap: 'Robotaxi',
+    duchifat: 'Cable Car Rush', afifon: 'Bay Kite',
+  },
+  /*
+   * The six ground layers are procedurally authored Levantine surfaces — limestone, nari soil,
+   * terra rossa, wheat stubble, tilled farm soil, scree — and the splat that chooses between
+   * them is driven by farm / crop / grass / forest land cover. Dogpatch is a city and has
+   * almost none, so every pixel falls through to the base limestone: the sandy verge along a
+   * San Francisco street. Re-authoring six surfaces is a bigger job than this deserves, but
+   * the shader already multiplies its albedo by the material colour, so a cool grey multiply
+   * turns warm ochre into something that reads as concrete and worn asphalt.
+   */
+  /*
+   * A float triple, not a hex, because the blue multiplier has to exceed 1. The base layer is
+   * warm limestone around (0.75, 0.68, 0.50); any multiplier capped at 1 can only darken it,
+   * which is why the first attempt at 0xa8b0bc came back grey-ish but still visibly tan. This
+   * lands near (0.60, 0.63, 0.65) — neutral, and still bright enough to read as sunlit
+   * concrete rather than wet slate.
+   */
+  ground: { tint: [0.80, 0.92, 1.30], skirt: 0x6f757e, verge: [0.72, 0.80, 0.95] },
+};
+
+export const THEMES = { levant: LEVANT, bayfront: BAYFRONT };
+
+/** The theme a world declares, falling back to Amikam's so an older asset still renders. */
+export const themeOf = world => THEMES[world?.meta?.theme] || THEMES.levant;

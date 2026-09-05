@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>buildings preview</title>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden}#app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}</style>
+</head><body><div id="app"></div>
+<script type="module">
+  import { boot } from './common.js';
+  import { createBuildings } from '../src/world/buildings.js';
+  boot({
+    name: 'buildings',
+    modules: async (ctx) => { ctx.buildings = createBuildings(ctx.engine, ctx.world, { quality: 1 }); window.__buildings = ctx.buildings; },
+    views: {
+      // eye level on the moshav's residential lane, roughly kart-driver height
+      lane:      { pos: [244, 84.2, -64], look: [202, 84.6, -92], fov: 62 },
+      // close on a single front elevation
+      facade:    { pos: [240, 83.0, -58], look: [227.6, 84.6, -47.7], fov: 55 },
+      // over the rooftops: solar heaters, ridges, parapets
+      roofline:  { pos: [268, 106, -20], look: [222, 84, -62], fov: 46 },
+      // wide establishing shot of the whole village on its ridge
+      establish: { pos: [-190, 250, 560], look: [300, 90, -60], fov: 40 },
+      // LOD check: the far half of the village
+      farview:   { pos: [780, 210, 320], look: [220, 85, -90], fov: 42 },
+    },
+  });
+</script></body></html>

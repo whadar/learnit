@@ -1,0 +1,650 @@
+<!doctype html><html><head><meta charset="utf-8"><title>vehicle preview</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070d;overflow:hidden;font:12px/1.35 ui-monospace,Menlo,Consolas,monospace}
+  #app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}
+  #hud{position:fixed;left:14px;top:14px;padding:10px 13px;border-radius:9px;
+       background:rgba(6,10,16,.62);color:#dbe6f2;backdrop-filter:blur(3px);
+       border:1px solid rgba(255,255,255,.10);white-space:pre;letter-spacing:.2px;
+       text-shadow:0 1px 2px rgba(0,0,0,.8);pointer-events:none}
+  #hud b{color:#ffd166}
+  #hud .g{color:#7fe3a1}#hud .r{color:#ff8a7a}#hud .m{color:#8fb7ff}
+</style>
+</head><body><div id="app"></div><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Engine } from '../src/core/engine.js';
+import { WorldData } from '../src/world/worldData.js';
+import { clamp, lerp, smoothstep, wrapPi, rng } from '../src/core/mathx.js';
+import { createVehicle, makeFallbackTrack, DEFAULTS } from '../src/physics/vehicle.js';
+
+const hud = document.getElementById('hud');
+
+/* ------------------------------------------------------------------ boot ---- */
+/* Other agents are rewriting sky/terrain/track right now, so every dependency is
+   optional: if it will not import or throws, we substitute something plain and keep going. */
+async function tryMod(path, fn, label) {
+  try { const m = await import(/* @vite-ignore */ path); return fn(m); }
+  catch (e) { console.warn('[vehicle preview] ' + label + ' unavailable:', e.message); return null; }
+}
+
+const engine = new Engine(document.getElementById('app'));
+engine.renderer.toneMappingExposure = 1.05;
+const game = window.__game = {
+  engine, world: null, ready: false, error: null, views: {},
+  setView(n) { const v = this.views[n]; if (!v) throw new Error('unknown view: ' + n); applyView(n, v); },
+  renderOnce() { engine.render(); },
+};
+
+function applyView(name, v) {
+  const s = SCENES[name];
+  if (s) {
+    runScene(s);
+    const c = s.cam();
+    let gy = kart.collision.groundHeight(c.pos[0], c.pos[2]);
+    for (let q = 1; q <= 10; q++) {                   // sample the line of sight too
+      const f = q / 11;
+      gy = Math.max(gy, kart.collision.groundHeight(
+        lerp(c.pos[0], kart.state.pos.x, f), lerp(c.pos[2], kart.state.pos.z, f)) - f * 0.2);
+    }
+    c.pos[1] = Math.max(c.pos[1], gy + 1.5);         // never film from inside the hillside
+    Object.assign(v, c);
+  }
+  engine.camera.position.set(...v.pos);
+  engine.camera.up.set(0, 1, 0);
+  engine.camera.lookAt(new THREE.Vector3(...v.look));
+  engine.camera.fov = v.fov ?? 58;
+  engine.camera.updateProjectionMatrix();
+  engine.camera.updateMatrixWorld(true);
+  syncVisuals();
+  drawHud(name);
+}
+
+let world, track, kart, ribbon;
+
+async function main() {
+  const T0 = performance.now(); const mark = m => console.log('[t] ' + m + ' ' + Math.round(performance.now() - T0) + 'ms');
+  world = game.world = await WorldData.load('/data/');
+  mark('world');
+
+  // Other agents are actively rewriting sky.js / terrain.js; this page is about the physics,
+  // so by default it lights and grounds itself. Append ?full=1 to pull in the real world art.
+  const FULL = location.search.includes('full');
+  if (FULL) await tryMod('../src/world/sky.js', m => m.createSky(engine, world), 'sky.js');
+  if (!engine.scene.children.some(c => c.isDirectionalLight)) {
+    engine.scene.background = new THREE.Color(0x9dc0dc);
+    const sun = new THREE.DirectionalLight(0xfff2dc, 3.3);
+    sun.position.set(-420, 520, 300); sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    const c = sun.shadow.camera; c.left = -34; c.right = 34; c.top = 34; c.bottom = -34; c.near = 1; c.far = 1400;
+    sun.shadow.bias = -0.0009; sun.shadow.normalBias = 0.06;
+    engine.scene.add(sun, sun.target);
+    engine.scene.add(new THREE.HemisphereLight(0xcfe2f5, 0x77653f, 0.95));
+    engine.scene.fog = new THREE.Fog(0x9dc0dc, 90, 430);
+    game.sun = sun;
+  }
+  mark('lights');
+  if (FULL) await tryMod('../src/world/terrain.js', m => m.createTerrain(engine, world), 'terrain.js');
+  mark('sky/terrain');
+
+  track = await tryMod('../src/track/track.js', m => {
+    const t = m.buildTrack(world, {}); t.sample(0); t.nearest({ x: 0, y: 0, z: 0 }); return t;
+  }, 'track.js');
+  if (!track) track = makeFallbackTrack(world, { seed: 7 });
+
+  mark('track');
+  kart = createVehicle(world, track, { seed: 7 });
+  mark('vehicle');
+  findSpots();
+  if (!FULL) buildGround();
+  mark('ground');
+  ribbon = buildRibbon();
+  mark('ribbon');
+  buildKart();
+  buildFX();
+  mark('meshes');
+
+  game.views = {
+    chase:    { pos: [0, 5, 12], look: [0, 1, 0], fov: 58 },
+    drift:    { pos: [0, 3, 10], look: [0, 1, 0], fov: 52 },
+    crest:    { pos: [0, 3, 10], look: [0, 1, 0], fov: 46 },
+    air:      { pos: [0, 6, 14], look: [0, 1, 0], fov: 58 },
+    offroad:  { pos: [0, 4, 11], look: [0, 1, 0], fov: 58 },
+  };
+  engine.add({ update: (dt) => { if (LIVE) { stepLive(dt); syncVisuals(); drawHud('live'); } } });
+  game.setView('chase');
+  mark('firstView');
+  engine.start();
+  game.ready = true;
+}
+
+/* --------------------------------------------------------------- terrain ---- */
+/** Local ground patch over the real heightfield, tinted by the physics surface raster:
+    dry limestone, wheat stubble, olive-grove soil and grass, the way Amikam actually looks. */
+function buildGround() {
+  const seg = 300, size = 760;
+  const geo = new THREE.PlaneGeometry(size, size, seg, seg);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  const col = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  const PAL = {
+    grass: 0xb6c46a, crop: 0xe8d494, scrub: 0xa9ad68, forest: 0x62864f,
+    orchard: 0xacA55f, soil: 0xd2a068, farmyard: 0xd8c69c, dirt: 0xdcc894,
+    gravel: 0xd0c5b4, sand: 0xf0dcae, water: 0x6a94a2, tarmac: 0x6d6d76,
+    dirt_track: 0xdcbe86, kerb: 0xd6d0c0, concrete: 0xc2beb2, unpaved: 0xdcbe86,
+  };
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    // Use the *physics* ground, not the raw heightfield: the track ribbon is a smoothed drape
+    // and the raw terrain pokes through it near the road, burying the kart in the render.
+    pos.setY(i, kart.collision.groundHeight(x, z));
+    const sn = kart.collision.surfaceAt(x, z);
+    c.setHex(PAL[sn] ?? 0xb0a075);
+    // a little deterministic mottling so big fields do not read as flat paint
+    const n = (Math.sin(x * 0.21) * Math.cos(z * 0.17) + Math.sin(x * 0.06 + z * 0.05)) * 0.05
+            + (Math.sin(x * 1.13 + z * 0.71) * Math.sin(z * 1.31 - x * 0.53)) * 0.055
+            + (Math.sin(x * 3.7) * Math.sin(z * 4.1)) * 0.028;
+    col[i * 3] = c.r * (1 + n); col[i * 3 + 1] = c.g * (1 + n * 0.72); col[i * 3 + 2] = c.b * (1 + n * 0.5);
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.97 }));
+  m.receiveShadow = true;
+  engine.scene.add(m);
+  const skirt = new THREE.Mesh(new THREE.RingGeometry(size * 0.46, 3000, 64, 1),
+    new THREE.MeshBasicMaterial({ color: 0x9dc0dc, fog: false }));
+  skirt.rotation.x = -Math.PI / 2;
+  skirt.position.y = (world.minH ?? world.heightAt(0, 0)) - 30;   // below every hill, never in front of the kart
+  engine.scene.add(skirt);
+}
+
+/* ---------------------------------------------------------------- ribbon ---- */
+/** Road surface drawn from the *physics* ground function, so wheels never float or sink. */
+function buildRibbon() {
+  const col = kart.collision;
+  const L = track.length, along = Math.max(160, Math.round(L / 1.1)), across = 15;
+  const pos = [], nrm = [], uv = [], idx = [], colr = [];
+  const c0 = new THREE.Color(0x76767f), c1 = new THREE.Color(0x6a6a73);
+  const ck = new THREE.Color(0xef5b45), cw = new THREE.Color(0xf6f2ea);
+  const tmp = new THREE.Color();
+  for (let i = 0; i <= along; i++) {
+    const s = i / along * L, sm = track.sample(s);
+    const lat = col.lateralAxis(sm);
+    const hw = (sm.width || 12) * 0.5;
+    for (let j = 0; j < across; j++) {
+      const u = (j / (across - 1)) * 2 - 1;
+      const off = u * (hw + 1.5);
+      const x = sm.pos.x + lat.x * off, z = sm.pos.z + lat.z * off;
+      const y = col.groundHeight(x, z) + 0.035;
+      pos.push(x, y, z);
+      const n = col.groundNormal(x, z);
+      nrm.push(n.x, n.y, n.z);
+      uv.push(u * 0.5 + 0.5, s * 0.12);
+      const a = Math.abs(u) * (hw + 1.5);
+      if (a > hw) tmp.copy((i & 1) ? ck : cw);                     // kerb stripes
+      else if (a > hw - 0.35) tmp.copy(cw);                        // white edge line
+      else {
+        const grain = 0.955 + 0.09 * (Math.sin(i * 2.7 + j * 5.3) * 0.5 + 0.5) + 0.03 * (Math.sin(i * 11.3 - j * 7.1));
+        const line = 1 - 0.10 * Math.exp(-((Math.abs(u) - 0.30) ** 2) / 0.012)      // racing-line polish
+                       - 0.06 * Math.exp(-((Math.abs(u)) ** 2) / 0.02);
+        tmp.copy(c0).lerp(c1, (j % 3) * 0.10).multiplyScalar(grain * line);
+      }
+      colr.push(tmp.r, tmp.g, tmp.b);
+    }
+  }
+  for (let i = 0; i < along; i++) for (let j = 0; j < across - 1; j++) {
+    const a = i * across + j, b = a + across;
+    idx.push(a, b, a + 1, a + 1, b, b + 1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(colr, 3));
+  g.setIndex(idx);
+  const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.88, metalness: 0.0,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  }));
+  mesh.receiveShadow = true;
+  engine.scene.add(mesh);
+
+  // boost pads
+  for (const p of (track.boostPads || [])) {
+    const pp = p.pos || p;
+    const pad = new THREE.Mesh(new THREE.PlaneGeometry(6, 4),
+      new THREE.MeshBasicMaterial({ color: 0x36c8ff, transparent: true, opacity: 0.72 }));
+    pad.rotation.x = -Math.PI / 2;
+    pad.position.set(pp.x, kart.collision.groundHeight(pp.x, pp.z) + 0.07, pp.z);
+    engine.scene.add(pad);
+  }
+  return mesh;
+}
+
+/* ------------------------------------------------------------------ kart ---- */
+let kartRoot, wheelMeshes = [], boostFlame, catHead;
+function buildKart() {
+  kartRoot = new THREE.Group();
+  const paint = new THREE.MeshStandardMaterial({ color: 0xe23c2e, roughness: 0.35, metalness: 0.15 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x25272c, roughness: 0.55 });
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x17181b, roughness: 0.92 });
+  const rim = new THREE.MeshStandardMaterial({ color: 0xf0d774, roughness: 0.35, metalness: 0.5 });
+  const fur = new THREE.MeshStandardMaterial({ color: 0xd9a86a, roughness: 0.85 });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.94, 0.30, 1.62), paint);
+  body.position.set(0, -0.05, 0.02); kartRoot.add(body);
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(1.06, 0.09, 1.78), dark);
+  floor.position.set(0, -0.20, 0.0); kartRoot.add(floor);
+  const nose = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.40, 0.62, 12), paint);
+  nose.rotation.x = Math.PI / 2; nose.position.set(0, -0.06, 1.06); kartRoot.add(nose);
+  const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.06, 0.26), dark);
+  spoiler.position.set(0, 0.30, -0.86); kartRoot.add(spoiler);
+  for (const sx of [-0.42, 0.42]) {
+    const stay = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.28, 0.045), dark);
+    stay.position.set(sx, 0.15, -0.86); kartRoot.add(stay);
+  }
+  for (const sx of [-0.60, 0.60]) {                      // side pods
+    const pod = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.20, 0.72), paint);
+    pod.position.set(sx, -0.10, 0.02); kartRoot.add(pod);
+  }
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.42, 0.24), dark);
+  seat.position.set(0, 0.20, -0.42); kartRoot.add(seat);
+
+  // cat driver — a stand-in until src/characters/cat.js lands
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.20, 0.20, 4, 10), fur);
+  torso.position.set(0, 0.32, -0.24); torso.rotation.x = 0.24; kartRoot.add(torso);
+  catHead = new THREE.Mesh(new THREE.SphereGeometry(0.19, 14, 12), fur);
+  catHead.position.set(0, 0.66, -0.16); kartRoot.add(catHead);
+  for (const ex of [-0.115, 0.115]) {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.062, 0.13, 7), fur);
+    ear.position.set(ex, 0.78, -0.17); ear.rotation.z = ex > 0 ? -0.28 : 0.28; kartRoot.add(ear);
+  }
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.195, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    new THREE.MeshStandardMaterial({ color: 0x2f6fd0, roughness: 0.3, metalness: 0.2 }));
+  helmet.position.set(0, 0.665, -0.16); kartRoot.add(helmet);
+  const wheelBar = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.028, 6, 14), dark);
+  wheelBar.position.set(0, 0.30, 0.26); wheelBar.rotation.x = -0.9; kartRoot.add(wheelBar);
+
+  kartRoot.traverse(o => { o.castShadow = true; });
+  engine.scene.add(kartRoot);
+
+  for (const w of kart.wheels) {
+    const r = w.radius, wd = w.front ? 0.20 : 0.30;
+    const g = new THREE.Group();
+    const tyre = new THREE.Mesh(new THREE.CylinderGeometry(r, r, wd, 18), rubber);
+    tyre.rotation.z = Math.PI / 2; tyre.castShadow = true; g.add(tyre);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.5, r * 0.5, wd + 0.02, 12), rim);
+    hub.rotation.z = Math.PI / 2; g.add(hub);
+    const spoke = new THREE.Mesh(new THREE.BoxGeometry(wd + 0.03, r * 0.9, 0.05), rim);
+    spoke.rotation.y = Math.PI / 2; g.add(spoke);
+    engine.scene.add(g); wheelMeshes.push({ g, spoke });
+  }
+
+  // cone geometry baked to point along -Z (out of the back of the kart)
+  const flameGeo = new THREE.ConeGeometry(0.19, 0.85, 12, 1, true);
+  flameGeo.translate(0, -0.43, 0);
+  flameGeo.rotateX(Math.PI / 2);
+  boostFlame = new THREE.Mesh(flameGeo, new THREE.MeshBasicMaterial({
+    color: 0x2a7fbf, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false,
+    blending: THREE.AdditiveBlending }));
+  boostFlame.visible = false;
+  engine.scene.add(boostFlame);
+}
+
+/* -------------------------------------------------------------------- FX ---- */
+let puffPoints, sparkPoints;
+const PUFF_MAX = 240, SPARK_MAX = 160;
+function softTex(inner) {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d').createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, inner); g.addColorStop(0.45, 'rgba(255,255,255,.35)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  const x = c.getContext('2d'); x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function buildFX() {
+  const mk = (n, tex, size, opacity, blend) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(n * 3), 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(n * 3), 3));
+    g.setAttribute('size', new THREE.Float32BufferAttribute(new Float32Array(n), 1));
+    const m = new THREE.PointsMaterial({
+      size, map: tex, vertexColors: true, transparent: true, opacity,
+      depthWrite: false, sizeAttenuation: true, blending: blend,
+    });
+    const p = new THREE.Points(g, m); p.frustumCulled = false; engine.scene.add(p); return p;
+  };
+  puffPoints = mk(PUFF_MAX, softTex('rgba(255,255,255,.95)'), 2.1, 0.62, THREE.NormalBlending);
+  sparkPoints = mk(SPARK_MAX, softTex('rgba(255,255,255,1)'), 0.20, 0.9, THREE.AdditiveBlending);
+}
+
+const TIER_COLOR = [null, new THREE.Color(0x49b7ff), new THREE.Color(0xff9d24), new THREE.Color(0xff5adf)];
+
+/* ---------------------------------------------------------------- driver ---- */
+const DRIFT_BIAS = DEFAULTS.driftInnerBias, DRIFT_RANGE = DEFAULTS.driftSteerRange;
+function autoDrive(k, dt, over) {
+  const st = k.state;
+  const nr = track.nearest(st.pos);
+  const spd = Math.max(st.forwardSpeed, 0);
+  const look = clamp(7 + spd * 1.05, 9, 30);
+  const a = track.sample(nr.s + look);
+  let err = wrapPi(Math.atan2(a.pos.x - st.pos.x, a.pos.z - st.pos.z) - st.yaw);
+  err -= clamp(nr.lateral / 14, -0.4, 0.4) * 0.45;
+  let steer = clamp(err * 1.9 - st.angVel.y * 0.30, -1, 1);
+  let kmax = 0;
+  for (let d = 8; d < 60; d += 8) {
+    const p0 = track.sample(nr.s + d - 6), p1 = track.sample(nr.s + d), p2 = track.sample(nr.s + d + 6);
+    const h0 = Math.atan2(p1.pos.x - p0.pos.x, p1.pos.z - p0.pos.z);
+    const h1 = Math.atan2(p2.pos.x - p1.pos.x, p2.pos.z - p1.pos.z);
+    kmax = Math.max(kmax, Math.abs(wrapPi(h1 - h0)) / 6);
+  }
+  const vmax = kmax > 1e-4 ? Math.sqrt(13.5 / kmax) : 999;
+  let throttle = 1, brake = 0;
+  if (spd > vmax * 1.06) { throttle = 0; brake = clamp((spd - vmax) / 5, 0, 1); }
+  else if (spd > vmax * 0.98) throttle = 0.35;
+  // While drifting the kart applies its own lock, so invert that mapping: feed the amount of
+  // counter-steer that lands on the lock this driver actually wants. Without this any AI
+  // (or scripted scene) over-rotates the moment a drift starts and runs off the road.
+  if (k.drifting) {
+    const dd = k.state.drift.dir || 1;
+    const want = clamp(steer * dd, -1, 1);
+    steer = dd * clamp((want - DRIFT_BIAS) / DRIFT_RANGE, -1, 1);
+  }
+
+  // Only commit to a drift once the steering has held the *same* direction for a while:
+  // hopping into a drift on a transient correction points the slide out of the corner.
+  const sgn = Math.sign(steer) || 0;
+  const tight = Math.abs(steer) > 0.20 && spd > 12 && Math.abs(nr.lateral) < 4.5;
+  if (tight && (autoDrive.dir === sgn || !autoDrive.hold)) { autoDrive.hold = (autoDrive.hold || 0) + dt; autoDrive.dir = sgn; }
+  else { autoDrive.hold = 0; autoDrive.dir = 0; }
+  let drift = (autoDrive.hold > 0.22 || (k.drifting && Math.abs(err) > 0.04)) ? 1 : 0;
+  if (k.drifting && (!k.state.onTrack || Math.abs(nr.lateral) > 5.0 || k.state.drift.dir !== (autoDrive.dir || k.state.drift.dir))) drift = 0;
+  const inp = { throttle, brake, steer, drift, item: 0, look: 0 };
+  return over ? over(inp, k) : inp;
+}
+
+/* --------------------------------------------------------------- scenes ---- */
+const trail = [];                          // recorded dust/smoke puffs
+let puffAcc = 0;
+function record(k, dt) {
+  const st = k.state;
+  puffAcc += dt;
+  const rate = 1 / 55;
+  while (puffAcc > rate) {
+    puffAcc -= rate;
+    const tf = k.getTransform();
+    for (const w of k.wheels) {
+      const strength = Math.max(w.dust, w.skid);
+      if (strength < 0.10 || !w.contact) continue;
+      const j = trail.length;
+      trail.push({
+        x: w.pos.x - tf.forward.x * 0.35 + tf.right.x * ((j % 3) - 1) * 0.12,
+        y: w.pos.y - w.radius * 0.75,
+        z: w.pos.z - tf.forward.z * 0.35 + tf.right.z * ((j % 3) - 1) * 0.12,
+        s: strength, dust: w.dust, surf: w.surface, t: 0,
+        drift: (j % 5) * 0.06,
+      });
+      if (trail.length > PUFF_MAX) trail.shift();
+    }
+  }
+  for (const p of trail) p.t += dt;
+}
+
+const DIR = () => SPOTS.dir || 1;    // the tightest corner's actual turn direction
+
+/* Interesting places on the course, found once from the geometry itself (after boot). */
+let SPOTS = { corner: 0, crest: 0, bump: 0, dir: 1 };
+function findSpots() {
+  const L = track.length, STEP = 4, WIN = 90;
+  const n = Math.floor(L / STEP);
+  const turn = new Float64Array(n);        // signed heading change per step
+  const ys = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = i * STEP;
+    const a = track.sample(s - STEP), b = track.sample(s), c = track.sample(s + STEP);
+    const h0 = Math.atan2(b.pos.x - a.pos.x, b.pos.z - a.pos.z);
+    const h1 = Math.atan2(c.pos.x - b.pos.x, c.pos.z - b.pos.z);
+    turn[i] = wrapPi(h1 - h0);
+    ys[i] = b.pos.y;
+  }
+  // the stretch of WIN metres with the largest *net* turn: a long sweeper, not a kink
+  const w = Math.round(WIN / STEP);
+  let corner = 0, best = 0;
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < w; j++) sum += turn[(i + j) % n];
+    if (Math.abs(sum) > Math.abs(best)) { best = sum; corner = i * STEP; }
+  }
+  // biggest crest, and the roughest patch (ribbon furthest from the raw terrain)
+  let crest = 0, cc = -1e9, bump = 0, bk = 0;
+  for (let i = 0; i < n; i++) {
+    const conv = 2 * ys[i] - ys[(i - 7 + n) % n] - ys[(i + 7) % n];
+    if (conv > cc) { cc = conv; crest = i * STEP; }
+    const b = track.sample(i * STEP);
+    const rough = Math.abs(kart.collision.groundHeight(b.pos.x, b.pos.z) - b.pos.y);
+    if (rough > bk) { bk = rough; bump = i * STEP; }
+  }
+  SPOTS = { corner, crest, bump, dir: Math.sign(best) || 1, netTurn: best, crestConv: cc };
+  console.log('[spots]', JSON.stringify(SPOTS));
+}
+
+/** Drop the kart on the racing line at `s`, already rolling at `speed`. */
+function placeAt(s, speed) {
+  const sm = track.sample(s);
+  kart.reset({ x: sm.pos.x, y: sm.pos.y, z: sm.pos.z }, Math.atan2(sm.tangent.x, sm.tangent.z));
+  const tl = Math.hypot(sm.tangent.x, sm.tangent.y, sm.tangent.z) || 1;
+  kart.state.vel.x = sm.tangent.x / tl * speed;
+  kart.state.vel.y = sm.tangent.y / tl * speed;
+  kart.state.vel.z = sm.tangent.z / tl * speed;
+  for (const w of kart.wheels) w.omega = speed / w.radius;
+}
+
+/** Deterministically replay a short scripted scene; leaves the kart at the interesting frame. */
+function runScene(scene) {
+  if (runScene.last === scene) return;
+  runScene.last = scene;
+  trail.length = 0;
+  autoDrive.hold = 0;
+  scene.begin?.();
+  placeAt(scene.start(), scene.speed);
+  const dt = 1 / 120;
+  let t = 0;
+  while (t < scene.maxT) {
+    const inp = autoDrive(kart, dt, (i, k) => scene.input(i, k, t));
+    kart.update(dt, inp);
+    record(kart, dt);
+    t += dt;
+    if (t > scene.minT && scene.until(kart, t)) break;
+  }
+  scene.t = t;
+}
+
+/**
+ * Chase framing. The camera sits behind a blend of the kart's heading and its direction of
+ * travel — exactly why a Mario Kart drift *looks* like a drift: the kart yaws inside the
+ * frame while the camera keeps following the line the kart is actually taking.
+ */
+const camOf = (dist, height, side, aheadY = 1.05, ahead = 3.0, fov = 58, velMix = 0.45) => () => {
+  const tf = kart.getTransform(), p = tf.position, f = tf.forward, r = tf.right;
+  const v = kart.state.vel, vl = Math.hypot(v.x, v.z);
+  let bx = f.x, bz = f.z;
+  if (vl > 4) { bx = lerp(f.x, v.x / vl, velMix); bz = lerp(f.z, v.z / vl, velMix); }
+  const bl = Math.hypot(bx, bz) || 1; bx /= bl; bz /= bl;
+  const sx = bz, sz = -bx;
+  return {
+    pos: [p.x - bx * dist + sx * side, p.y + height, p.z - bz * dist + sz * side],
+    look: [p.x + bx * ahead, p.y + aheadY, p.z + bz * ahead],
+    fov,
+  };
+};
+
+const SCENES = {
+  // behind the kart, super mini-turbo charged into the tightest corner on the course
+  chase: {
+    start: () => SPOTS.corner - 30, speed: 20, minT: 0.8, maxT: 22,
+    input: (i, k, t) => { i.drift = (k.drifting || Math.abs(i.steer) > 0.15) ? 1 : 0; i.throttle = Math.max(i.throttle, 0.85); i.brake = 0; return i; },
+    until: k => k.driftTier >= 1 && k.state.drift.charge > 0.9 && k.state.onTrack && k.grounded,
+    cam: camOf(6.2, 2.25, 0.3, 1.25, 8.0, 66),
+  },
+  // low three-quarter, deep in an ultra charge: reads the slip angle and the sparks
+  drift: {
+    start: () => SPOTS.corner - 40, speed: 20, minT: 1.0, maxT: 26,
+    input: (i, k, t) => { i.drift = (k.drifting || Math.abs(i.steer) > 0.15) ? 1 : 0; i.throttle = Math.max(i.throttle, 0.9); i.brake = 0; return i; },
+    until: k => k.driftTier >= 2 && k.state.onTrack && k.grounded,
+    // rear three-quarter from the outside of the slide: the kart's nose points into the
+    // corner while the camera stays behind the line it is actually travelling
+    cam: () => camOf(5.6, 2.0, -2.6 * (kart.state.drift.dir || 1), 1.0, 6.5, 64, 0.55)(),
+  },
+  // side-on over the roughest stretch: chassis pitch and four different suspension travels
+  crest: {
+    start: () => SPOTS.bump - 55, speed: 24, minT: 1.6, maxT: 6,
+    input: i => i,
+    until: (k, t) => k.grounded && (Math.abs(k.state.pitch) > 0.05 || Math.abs(k.state.roll) > 0.07),
+    cam: () => {
+      const tf = kart.getTransform(), p = tf.position, r = tf.right;
+      return { pos: [p.x + r.x * 7.6, p.y + 2.35, p.z + r.z * 7.6], look: [p.x, p.y + 0.20, p.z], fov: 38 };
+    },
+  },
+  // launched off the biggest crest with a trick armed: wheels hang on full droop
+  air: {
+    start: () => SPOTS.crest - 190, speed: 26, minT: 0.5, maxT: 14,
+    begin() { this.launched = false; },
+    input(i, k, t) {
+      i.throttle = 1; i.brake = 0; i.steer = clamp(i.steer, -0.30, 0.30);
+      if (t > 0.05 && t < 0.10) k.addBoost(5.0, 0.45, 'pad');
+      // the ramp: a real course has one, this loop does not, so kick the kart at the crest
+      const ds = Math.abs(wrapPi((k.state.trackS - SPOTS.crest) / track.length * Math.PI * 2));
+      if (!this.launched && k.grounded && t > 1.0 && ds < 0.05) {
+        k.state.vel.y += 6.6; this.launched = true;
+      }
+      if (!k.grounded && k.state.airTime > 0.10) i.drift = 1;    // trick
+      return i;
+    },
+    until: (k) => !k.grounded && k.state.airTime > 0.34,
+    cam: camOf(6.8, 1.55, 2.9, 1.7, 5.0, 62, 0.2),
+  },
+  // dropped off the ribbon into the field: dust, and the speed it costs
+  offroad: {
+    start: () => SPOTS.corner + 260, speed: 23, minT: 1.4, maxT: 7,
+    input: (i, k, t) => {
+      i.throttle = 1; i.brake = 0; i.drift = 0;
+      if (t > 0.9) { const off = Math.abs(k.state.lateral); i.steer = off < 10 ? 0.34 : -0.05; }
+      return i;
+    },
+    until: (k, t) => !k.state.onTrack && Math.abs(k.state.lateral) > 10 && k.state.dust > 0.2 && t > 2.4,
+    cam: camOf(5.4, 1.95, 3.2, 1.0, 6.0, 68),
+  },
+};
+
+/* ------------------------------------------------------------- visuals ---- */
+const _q = new THREE.Quaternion(), _v = new THREE.Vector3();
+function syncVisuals() {
+  const tf = kart.getTransform();
+  kartRoot.position.set(tf.position.x, tf.position.y, tf.position.z);
+  kartRoot.quaternion.set(tf.quaternion.x, tf.quaternion.y, tf.quaternion.z, tf.quaternion.w);
+  const ws = kart.wheelTransforms();
+  for (let i = 0; i < ws.length; i++) {
+    const w = ws[i], m = wheelMeshes[i];
+    m.g.position.set(w.pos.x, w.pos.y, w.pos.z);
+    _q.set(tf.quaternion.x, tf.quaternion.y, tf.quaternion.z, tf.quaternion.w);
+    m.g.quaternion.copy(_q);
+    m.g.rotateY(w.steerAngle);
+    m.g.rotateX(w.spin);
+  }
+  // driver leans into the corner and ducks under acceleration
+  catHead.position.x = clamp(-kart.state.lateralSpeed * 0.035, -0.13, 0.13);
+  catHead.position.y = 0.66 - clamp(kart.state.engineLoad * 0.05, 0, 0.05);
+
+  const b = kart.state.boost;
+  boostFlame.visible = b.time > 0;
+  if (boostFlame.visible) {
+    const f = tf.forward, u = tf.up;
+    boostFlame.position.set(tf.position.x - f.x * 0.95 - u.x * 0.02,
+      tf.position.y - f.y * 0.95 - u.y * 0.02,
+      tf.position.z - f.z * 0.95 - u.z * 0.02);
+    boostFlame.quaternion.set(tf.quaternion.x, tf.quaternion.y, tf.quaternion.z, tf.quaternion.w);
+    boostFlame.scale.set(0.75 + b.power * 0.6, 0.75 + b.power * 0.6, 0.7 + b.power * 0.9);
+    boostFlame.material.color.setHex(b.power > 0.3 ? 0xa03878 : 0x2a7fbf);
+  }
+
+  // dust / smoke ribbon
+  const pp = puffPoints.geometry.attributes.position.array;
+  const pc = puffPoints.geometry.attributes.color.array;
+  const n = Math.min(trail.length, PUFF_MAX);
+  const DUST = {
+    grass: 0xb9c47e, crop: 0xd8c489, scrub: 0xbcbc86, forest: 0x9aae86,
+    orchard: 0xcfae7d, soil: 0xd2a878, farmyard: 0xd9cba6, sand: 0xeedaaf,
+    gravel: 0xd6cec2, dirt: 0xd8c79a, dirt_track: 0xdcc79a,
+  };
+  const cc = new THREE.Color(), smokeCol = new THREE.Color(0xf0f0f0);
+  for (let i = 0; i < PUFF_MAX; i++) {
+    const k = trail.length - n + i;
+    if (i >= n || k < 0) { pp[i * 3] = 0; pp[i * 3 + 1] = -9999; pp[i * 3 + 2] = 0; continue; }
+    const p = trail[k], age = clamp(p.t / 1.35, 0, 1);
+    pp[i * 3] = p.x; pp[i * 3 + 1] = p.y + age * age * 1.5 + p.drift; pp[i * 3 + 2] = p.z;
+    if (p.dust > 0.22) cc.setHex(DUST[p.surf] ?? 0xd8c79a); else cc.copy(smokeCol);
+    const f = (1 - age) * (1 - age) * clamp(p.s * 1.4, 0, 1);
+    pc[i * 3] = cc.r * f; pc[i * 3 + 1] = cc.g * f; pc[i * 3 + 2] = cc.b * f;
+  }
+  puffPoints.geometry.attributes.position.needsUpdate = true;
+  puffPoints.geometry.attributes.color.needsUpdate = true;
+
+  // mini-turbo sparks at the rear wheels
+  const sp = sparkPoints.geometry.attributes.position.array;
+  const sc = sparkPoints.geometry.attributes.color.array;
+  const tier = kart.driftTier;
+  const col = TIER_COLOR[tier] || TIER_COLOR[1];
+  const r = rng(1234 + Math.round(kart.state.drift.charge * 60));
+  for (let i = 0; i < SPARK_MAX; i++) {
+    if (!tier || !kart.drifting) { sp[i * 3 + 1] = -9999; continue; }
+    const w = ws[2 + (i & 1)];
+    const spread = 0.18 + (i / SPARK_MAX) * 0.9;
+    const f = tf.forward;
+    sp[i * 3] = w.pos.x - f.x * spread + (r() - 0.5) * 0.22;
+    sp[i * 3 + 1] = w.pos.y - 0.26 + r() * 0.30 * (i / SPARK_MAX);
+    sp[i * 3 + 2] = w.pos.z - f.z * spread + (r() - 0.5) * 0.22;
+    const fade = 1 - i / SPARK_MAX;
+    sc[i * 3] = col.r * fade; sc[i * 3 + 1] = col.g * fade; sc[i * 3 + 2] = col.b * fade;
+  }
+  sparkPoints.geometry.attributes.position.needsUpdate = true;
+  sparkPoints.geometry.attributes.color.needsUpdate = true;
+
+  if (game.sun) { game.sun.position.set(tf.position.x - 300, tf.position.y + 420, tf.position.z + 220); game.sun.target.position.set(tf.position.x, tf.position.y, tf.position.z); game.sun.target.updateMatrixWorld(); }
+}
+
+function drawHud(name) {
+  const s = kart.state, t = kart.telemetry();
+  const tier = ['-', 'MINI', 'SUPER', 'ULTRA'][kart.driftTier];
+  hud.innerHTML =
+    `<b>${name}</b>   t=${(SCENES[name]?.t ?? 0).toFixed(2)}s\n` +
+    `speed    ${(kart.speed * 3.6).toFixed(1)} km/h   (${kart.speed.toFixed(1)} m/s)\n` +
+    `surface  <span class="${['tarmac', 'kerb'].includes(s.surface) ? 'g' : 'r'}">${s.surface}</span>   lateral ${s.lateral.toFixed(1)} m  ${s.onTrack ? '' : '<span class="r">OFF TRACK</span>'}\n` +
+    `drift    ${s.drift.active ? (s.drift.dir > 0 ? 'RIGHT' : 'LEFT') : 'no'}   charge ${s.drift.charge.toFixed(2)}s  <b>${tier}</b>\n` +
+    `slip     body ${(Math.atan2(s.lateralSpeed, Math.abs(s.forwardSpeed) + .1) * 57.3).toFixed(1)}deg   yaw ${s.angVel.y.toFixed(2)} rad/s\n` +
+    `attitude pitch ${(s.pitch * 57.3).toFixed(1)}  roll ${(s.roll * 57.3).toFixed(1)}   ${s.grounded ? 'ground ' + (s.groundFrac * 4) + '/4' : '<span class="m">AIRBORNE ' + s.airTime.toFixed(2) + 's</span>'}\n` +
+    `susp     ${t.comp.map(c => c.toFixed(2)).join('  ')}\n` +
+    `load N   ${t.load.join('  ')}\n` +
+    `boost    ${s.boost.time > 0 ? '<span class="g">' + s.boost.source + ' ' + s.boost.time.toFixed(2) + 's</span>' : '-'}`;
+}
+
+/* --------------------------------------------------- optional live drive ---- */
+let LIVE = location.hash.includes('drive');
+const keys = {};
+addEventListener('keydown', e => { keys[e.code] = 1; if (e.code === 'KeyL') { LIVE = !LIVE; runScene.last = null; } });
+addEventListener('keyup', e => { keys[e.code] = 0; });
+function stepLive(dt) {
+  const inp = {
+    throttle: keys.KeyW || keys.ArrowUp ? 1 : 0,
+    brake: keys.KeyS || keys.ArrowDown ? 1 : 0,
+    steer: (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0),
+    drift: keys.ShiftLeft || keys.Space ? 1 : 0, item: 0, look: 0,
+  };
+  kart.update(dt, keys.KeyG ? autoDrive(kart, dt) : inp);
+  record(kart, dt);
+  const c = camOf(6.6, 2.5, 0, 1.1, 5)();
+  engine.camera.position.lerp(_v.set(...c.pos), 1 - Math.exp(-9 * dt));
+  engine.camera.lookAt(new THREE.Vector3(...c.look));
+}
+
+/* Everything above is declaration-only: boot last so no binding is used before it exists. */
+try { await main(); } catch (e) { game.error = String((e && e.stack) || e); console.error(e); }
+</script></body></html>
