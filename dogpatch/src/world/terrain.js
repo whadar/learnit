@@ -8,6 +8,7 @@
  */
 import * as THREE from 'three';
 import { clamp01, lerp, smoothstep } from '../core/math.js';
+import { surfaces } from '../render/textures.js';
 
 const CHUNK = 24;                       // grid posts per chunk edge
 const SEA = 0.4;                        // metres; below this is Bay
@@ -27,8 +28,11 @@ export function createTerrain(world, opts = {}) {
   const res = world.res, step = world.step, half = world.half;
   const lo = world.terrain.min, hi = world.terrain.max;
 
+  // The map is greyscale and multiplies the vertex ramp, so the height-and-slope colouring
+  // survives and only gains grain. UVs are world metres over TILE, so the grain is the same size
+  // everywhere rather than stretching with the chunk.
   const mat = new THREE.MeshStandardMaterial({
-    vertexColors: true, roughness: 0.96, metalness: 0, flatShading: false,
+    vertexColors: true, map: surfaces().ground, roughness: 0.96, metalness: 0, flatShading: false,
   });
   mat.name = 'terrain';
 
@@ -54,6 +58,8 @@ function buildChunk(world, i0, j0, iN, jN, step, half, lo, hi) {
   const pos = new Float32Array(w * h * 3);
   const col = new Float32Array(w * h * 3);
   const nrm = new Float32Array(w * h * 3);
+  const uv = new Float32Array(w * h * 2);
+  const TILE = 13;
   const idx = [];
   const n = { x: 0, y: 1, z: 0 };
 
@@ -64,6 +70,7 @@ function buildChunk(world, i0, j0, iN, jN, step, half, lo, hi) {
       const y = world.grid(gi, gj);
       const k = (j * w + i) * 3;
       pos[k] = x; pos[k + 1] = y; pos[k + 2] = z;
+      uv[(j * w + i) * 2] = x / TILE; uv[(j * w + i) * 2 + 1] = z / TILE;
 
       world.normalAt(x, z, n);
       nrm[k] = n.x; nrm[k + 1] = n.y; nrm[k + 2] = n.z;
@@ -98,6 +105,7 @@ function buildChunk(world, i0, j0, iN, jN, step, half, lo, hi) {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   g.setIndex(idx);
   g.computeBoundingSphere();
   return g;

@@ -11,6 +11,7 @@
  */
 import * as THREE from 'three';
 import { clamp, rng } from '../core/math.js';
+import { surfaces } from '../render/textures.js';
 
 const WALL = [
   { name: 'brick',    col: 0x8c4a35, rough: 0.94 },
@@ -42,10 +43,16 @@ export function createBuildings(world, track, opts = {}) {
   const far = opts.far ?? 1500;
 
   // bucket geometry by material so the whole neighbourhood is a handful of draws
-  const buckets = WALL.map(() => ({ pos: [], nrm: [], idx: [], n: 0 }));
-  const roof = { pos: [], nrm: [], idx: [], n: 0 };
+  const buckets = WALL.map(() => ({ pos: [], nrm: [], uv: [], idx: [], n: 0 }));
+  const roof = { pos: [], nrm: [], uv: [], idx: [], n: 0 };
 
-  const push = (b, x, y, z, nx, ny, nz) => { b.pos.push(x, y, z); b.nrm.push(nx, ny, nz); return b.n++; };
+  // BAY and STOREY are the real-world size of one cell of the facade texture, so a 40 m warehouse
+  // gets ten bays and a 6 m cottage gets one and a half — the openings stay the size of windows
+  // instead of scaling with the building.
+  const BAY = 5.5, STOREY = 3.4;
+  const push = (b, x, y, z, nx, ny, nz, u = 0, v = 0) => {
+    b.pos.push(x, y, z); b.nrm.push(nx, ny, nz); b.uv.push(u, v); return b.n++;
+  };
 
   for (const bld of world.buildings) {
     const ring = bld.rings?.[0];
@@ -71,20 +78,22 @@ export function createBuildings(world, track, opts = {}) {
     const top = gy + h;
 
     const cw = area(ring) > 0 ? 1 : -1;
-    const start = B.n;
+    const vTop = h / STOREY;
+    let run = 0;                                   // running length around the footprint, metres
     for (let i = 0, n = ring.length - 1; i < n; i++) {
       const p = ring[i], q = ring[i + 1];
       const ex = q[0] - p[0], ez = q[1] - p[1];
       const L = Math.hypot(ex, ez) || 1;
       const nx = (ez / L) * cw, nz = (-ex / L) * cw;
+      const u0 = run / BAY, u1 = (run + L) / BAY;
+      run += L;
       const v = B.n;
-      push(B, p[0], gy, p[1], nx, 0, nz);
-      push(B, q[0], gy, q[1], nx, 0, nz);
-      push(B, p[0], top, p[1], nx, 0, nz);
-      push(B, q[0], top, q[1], nx, 0, nz);
+      push(B, p[0], gy, p[1], nx, 0, nz, u0, 0);
+      push(B, q[0], gy, q[1], nx, 0, nz, u1, 0);
+      push(B, p[0], top, p[1], nx, 0, nz, u0, vTop);
+      push(B, q[0], top, q[1], nx, 0, nz, u1, vTop);
       B.idx.push(v, v + 2, v + 1, v + 1, v + 2, v + 3);
     }
-    void start;
 
     // flat roof: fan from the centroid, which is enough for convex-ish city footprints
     let cx = 0, cz = 0, k = 0;
@@ -104,14 +113,19 @@ export function createBuildings(world, track, opts = {}) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(b.nrm, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(b.uv, 2));
     g.setIndex(b.idx);
     g.computeBoundingSphere();
     const m = new THREE.Mesh(g, mat);
     m.name = name; m.castShadow = shadows; m.receiveShadow = shadows;
     group.add(m);
   };
+  // One greyscale facade map multiplied by each material's own colour: seven materials, one
+  // texture, and the brick still reads as brick rather than as grey with windows on it.
+  const fac = surfaces().facade;
   WALL.forEach((w, i) => finish(buckets[i],
-    new THREE.MeshStandardMaterial({ color: w.col, roughness: w.rough, metalness: 0 }), 'bld:' + w.name));
+    new THREE.MeshStandardMaterial({ color: w.col, map: fac, roughness: w.rough, metalness: 0 }),
+    'bld:' + w.name));
   finish(roof, new THREE.MeshStandardMaterial({ color: ROOF.col, roughness: ROOF.rough }), 'bld:roof');
 
   return { object3D: group, count: group.children.length,

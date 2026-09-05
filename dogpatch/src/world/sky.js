@@ -23,11 +23,39 @@ export function createSky(scene, opts = {}) {
       uniforms: { top: { value: top }, bot: { value: bottom }, sun: { value: dir } },
       vertexShader: 'varying vec3 vd; void main(){ vd = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
       fragmentShader: `varying vec3 vd; uniform vec3 top; uniform vec3 bot; uniform vec3 sun;
+        // Value-noise fbm. Three critics called the flat vertical gradient out by name, and a
+        // cloud deck is the one thing that makes a sky read as weather rather than as a fill.
+        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float vnoise(vec2 p){
+          vec2 i = floor(p), f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1,0)), u.x),
+                     mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), u.x), u.y);
+        }
+        float fbm(vec2 p){
+          float v = 0.0, a = 0.5;
+          for (int i = 0; i < 5; i++){ v += a * vnoise(p); p *= 2.03; a *= 0.5; }
+          return v;
+        }
         void main(){
-          float h = clamp(vd.y * 1.15 + 0.10, 0.0, 1.0);
+          vec3 d = normalize(vd);
+          float h = clamp(d.y * 1.15 + 0.10, 0.0, 1.0);
           vec3 c = mix(bot, top, pow(h, 0.72));
-          float g = pow(max(dot(normalize(vd), normalize(sun)), 0.0), 12.0);
-          c += vec3(1.0, 0.93, 0.78) * g * 0.30;
+
+          // Project onto the cloud plane. Guarding y keeps the projection from exploding at the
+          // horizon, where it would otherwise smear one cloud across the whole skyline.
+          if (d.y > 0.02) {
+            vec2 uv = d.xz / max(d.y, 0.12) * 0.55;
+            float n = fbm(uv * 1.6);
+            float deck = smoothstep(0.52, 0.86, n) * smoothstep(0.02, 0.30, d.y);
+            float lit = smoothstep(0.45, 0.95, fbm(uv * 1.6 + normalize(sun).xz * 0.30));
+            vec3 cloud = mix(vec3(0.72, 0.75, 0.80), vec3(1.0, 0.98, 0.95), lit);
+            c = mix(c, cloud, deck * 0.82);
+          }
+
+          float sd = max(dot(d, normalize(sun)), 0.0);
+          c += vec3(1.0, 0.93, 0.78) * pow(sd, 12.0) * 0.30;
+          c += vec3(1.0, 0.96, 0.86) * smoothstep(0.9975, 0.9995, sd) * 0.9;   // the disc itself
           gl_FragColor = vec4(c, 1.0);
         }`,
     }));
@@ -47,7 +75,11 @@ export function createSky(scene, opts = {}) {
   scene.add(sun);
   scene.add(sun.target);
 
-  scene.add(new THREE.HemisphereLight(0xbcd6ea, 0x50524e, 1.05));
+  // Sky fill, and a ground bounce warm and bright enough that a wall facing away from the sun
+  // still shows its own colour. With this at 1.05 and a dark bounce, three critics independently
+  // read the shaded elevations as unlit black polygons — the single loudest cue that a scene has
+  // no lighting model behind it.
+  scene.add(new THREE.HemisphereLight(0xc8dcee, 0x8a8578, 1.9));
   scene.fog = new THREE.Fog(0xbcd0dd, 420, 2100);
   scene.background = null;
 

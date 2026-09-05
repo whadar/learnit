@@ -7,6 +7,7 @@
  */
 import * as THREE from 'three';
 import { clamp01, rng } from '../core/math.js';
+import { surfaces } from '../render/textures.js';
 
 const RAISE = 0.06;                 // road above the drape, metres
 const SHOULDER = 3.0;               // concrete shoulder each side
@@ -32,7 +33,10 @@ function strip(track, from, to, opts = {}) {
     if (a === null || b === null) continue;
     pos.push(m.pos.x + m.normal.x * a, m.pos.y + lift, m.pos.z + m.normal.z * a);
     pos.push(m.pos.x + m.normal.x * b, m.pos.y + lift, m.pos.z + m.normal.z * b);
-    uv.push(0, s / (opts.vScale ?? 4), 1, s / (opts.vScale ?? 4));
+    // UVs in metres, not 0..1 across the ribbon: a road that stretches one texture over its
+    // whole width smears the aggregate into streaks and gets wider-looking on the wide sectors.
+    const T = opts.vScale ?? 4;
+    uv.push(a / T, s / T, b / T, s / T);
     row++;
   }
   for (let r = 0; r < row - 1; r++) {
@@ -72,12 +76,17 @@ export function createTrackMesh(track, world, opts = {}) {
    * circuit is pavement. Authoring it as sun-bleached grit gives you a sandy verge down a San
    * Francisco street, and no amount of tinting the TERRAIN fixes it, because this is not the
    * terrain — it is the circuit's own mesh. */
-  add(strip(track, m => -m.width * 0.5 - SHOULDER, m => m.width * 0.5 + SHOULDER, { lift: RAISE - 0.03 }),
-      new THREE.MeshStandardMaterial({ color: 0x8d9095, roughness: 0.95 }), 'circuit:shoulder', 0);
+  // Slabs every 8 m rather than every 4: the joints are half as dense down the length of the
+  // pavement, which is the direction the camera spends the whole lap looking along.
+  add(strip(track, m => -m.width * 0.5 - SHOULDER, m => m.width * 0.5 + SHOULDER,
+            { lift: RAISE - 0.03, vScale: 8 }),
+      new THREE.MeshStandardMaterial({ map: surfaces().concrete, roughness: 0.95 }),
+      'circuit:shoulder', 0);
 
   /* ---- the road ---- */
   add(strip(track, m => -m.width * 0.5, m => m.width * 0.5),
-      new THREE.MeshStandardMaterial({ color: 0x2b2d31, roughness: 0.88 }), 'circuit:road', 1);
+      new THREE.MeshStandardMaterial({ map: surfaces().asphalt, roughness: 0.88 }),
+      'circuit:road', 1);
 
   /* ---- edge lines ---- */
   const white = paint(0xe9e9e4);
