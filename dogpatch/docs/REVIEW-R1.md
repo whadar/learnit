@@ -53,3 +53,60 @@ One thing worth noting about this round specifically: the defect that mattered m
 the entire circuit rendering invisible because every strip triangle faced downward — was found by
 opening a PNG, not by a critic. The critics scored the frames *after* that fix. A round of critics
 on the broken frames would have produced a long list of art findings about a game that had no road.
+
+---
+
+# Rounds 2 and 3
+
+Same six frames, same rubric, three fresh critics each round. Binding is the minimum.
+
+```
+round 1   41  36  36     binding 36      mean 37.7
+round 2   34  34  37     binding 34      mean 35.0
+round 3   46  36  47     binding 36      mean 43.0     target 88
+```
+
+And the mechanical measure over the same frames (`tools/frame-stats.mjs`):
+
+```
+          lum    dark   detail
+round 1   0.296   9.0%  0.0061
+round 2   0.363   5.0%  0.0105
+round 3   0.357   6.9%  0.0101      clipping 0.0% throughout
+```
+
+## What each round did
+
+**Round 2 — materials and light.** Procedural canvas textures for asphalt, concrete, building
+facades and ground; hemisphere fill raised from 1.05 to 1.9; an fbm cloud deck and a sun disc.
+Detail rose 72%, near-black fell from 9.0% to 5.0%. **The score fell from 36 to 34.**
+
+**Round 3 — undoing half of round 2.** All three critics said the same new thing: no shadows
+anywhere, lighting reads as flat ambient. The shadow map had been on the whole time — 189
+casters, 1956 receivers, measured — but fill at 1.9 against a 2.5 sun is a 1.3:1 key ratio, which
+washes shadows out until they are invisible. Fill back to 1.15, sun to 3.2. Plus drawn contact
+shadows under every kart, VFX that fire during ordinary racing rather than only while drifting,
+and a camera clamped to the street canyon.
+
+## What the arc says
+
+The binding score is where it started. Round 2 was a real regression caused by fixing round 1's
+complaint too hard — the same effect failing in opposite directions across two rounds, which is
+failure mode two in CONTRACT.md and which this project has now committed three times.
+
+The mean moved 37.7 -> 43.0, and the two critics who moved most went 41 -> 46 and 36 -> 47. The
+binding score did not move because one critic held at 36 both times. That is the honest reading:
+the work was real, and the metric the project uses cannot see it.
+
+Every round has also produced findings that are simply true and unaddressed — no character
+models, no tonemap grade, no set-dressing density, no water at the waterfront. Those are large
+pieces of work, not tuning, and no further round of critics is needed to know they are missing.
+
+## Not fixed, and worth naming
+
+- Buildings have no collision. A kart can drive inside one; the camera clamp treats the symptom.
+  Buildings standing in the roadway are now cleared at build time, which removes the worst of it.
+- A tall building at the kerb still fills a third of the frame at grazing angles, where the facade
+  texture compresses to nothing. Two rounds called this the most damaging artifact in the set.
+- The frame-stats `dark` measure cannot tell a crushed black from a real shadow. Round 2 scored
+  best on it precisely because it had washed the shadows out.

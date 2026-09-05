@@ -50,6 +50,7 @@ export function createBuildings(world, track, opts = {}) {
   // gets ten bays and a 6 m cottage gets one and a half — the openings stay the size of windows
   // instead of scaling with the building.
   const BAY = 5.5, STOREY = 3.4;
+  let cleared = 0;
   const push = (b, x, y, z, nx, ny, nz, u = 0, v = 0) => {
     b.pos.push(x, y, z); b.nrm.push(nx, ny, nz); b.uv.push(u, v); return b.n++;
   };
@@ -65,6 +66,23 @@ export function createBuildings(world, track, opts = {}) {
       d = Math.min(d, Math.hypot(ring[i][0] - track.points[n.i][0], ring[i][1] - track.points[n.i][1]));
     }
     if (d > far) continue;
+
+    /* Buildings standing IN the street.
+     *
+     * The circuit is a hand-authored polyline over real Dogpatch streets, and where it does not
+     * follow a street centreline exactly, a real footprint can overlap the road. Nothing removed
+     * those, so a warehouse wall could sit at the kerb with the racing line running through it:
+     * the chase camera ends up hard against an untextured elevation filling a third of the frame,
+     * and a kart that leaves the road drives inside the building. Two rounds of critics called
+     * that mass the single most damaging thing in the set, reading it as a backface or a broken
+     * shadow volume. It is neither — it is architecture the road was drawn through.
+     *
+     * Clear the corridor: road, shoulder, and a metre of daylight past it. */
+    if (d < track.widths[track.nearest({ x: ring[0][0], z: ring[0][1] }).i] * 0.5 + 4) {
+      cleared++;
+      continue;
+    }
+
     const a = Math.abs(area(ring));
     if (a < (d > near ? 260 : 34)) continue;      // skip sheds far away, keep them close
 
@@ -128,6 +146,6 @@ export function createBuildings(world, track, opts = {}) {
     'bld:' + w.name));
   finish(roof, new THREE.MeshStandardMaterial({ color: ROOF.col, roughness: ROOF.rough }), 'bld:roof');
 
-  return { object3D: group, count: group.children.length,
+  return { object3D: group, count: group.children.length, cleared,
     dispose() { group.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); }); } };
 }
