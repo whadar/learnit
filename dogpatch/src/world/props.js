@@ -9,6 +9,7 @@
  * and that would be a claim about a real firm that is not true.
  */
 import * as THREE from 'three';
+import { LEGS } from '../track/streets.js';
 import { rng, TAU } from '../core/math.js';
 
 const BOARDS = [
@@ -35,6 +36,35 @@ function boardTexture(top, sub, bg, fg) {
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
+  return t;
+}
+
+/**
+ * A San Francisco mast-arm street blade.
+ *
+ * MUTCD green with white lettering and a white border, and — the detail that dates it — MIXED
+ * CASE. San Francisco adopted the federal manual in 2009 and has been replacing signs with
+ * mixed-case retroreflective faces since about 2012, so "22nd Street" is right and "22ND STREET"
+ * is a sign that should have been swapped out a decade ago.
+ */
+function bladeTexture(name) {
+  const W = 512, H = 128;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  x.fillStyle = '#00703c'; x.fillRect(0, 0, W, H);
+  x.strokeStyle = '#f2f4f1'; x.lineWidth = 6;
+  x.strokeRect(9, 9, W - 18, H - 18);
+  x.fillStyle = '#f7f9f6';
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  // shrink to fit rather than overflow: "Tennessee Street" is a lot wider than "20th Street"
+  let px = 62;
+  do { x.font = `600 ${px}px Overpass, "Helvetica Neue", Arial, sans-serif`; px -= 2; }
+  while (px > 26 && x.measureText(name).width > W - 60);
+  x.fillText(name, W / 2, H / 2 + 2);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
   return t;
 }
 
@@ -124,6 +154,51 @@ export function createProps(world, track, opts = {}) {
       mesh.castShadow = shadows;
       mesh.name = 'props:board';
       group.add(mesh);
+    }
+  }
+
+  /* ---- street name signs on signal mast arms -------------------------------------------
+   * One at the entry to each named leg of the circuit. The names are not decoration: they are
+   * derived in tools/streets.mjs by matching the circuit against the named roadways in the
+   * Overture extract, so the lap really does read Illinois -> 20th -> Indiana -> 22nd ->
+   * Tennessee -> 23rd, which is a real loop of Dogpatch blocks.
+   *
+   * The sign is placed a little BEFORE the corner and names the street being turned onto, which
+   * is how you actually read one at speed. */
+  if (canDraw) {
+    const steel = new THREE.MeshStandardMaterial({ color: 0x4c5358, roughness: 0.55, metalness: 0.5 });
+    for (const leg of LEGS) {
+      const at = (leg.s - 26 + track.length) % track.length;
+      const m = track.sample(at);
+      const yaw = Math.atan2(m.tangent.x, m.tangent.z);
+      const side = 1;                                   // kerb on the driver's right
+      const reach = m.width * 0.5 + 2.2;                // arm reaches back over the roadway
+      const g = new THREE.Group();
+
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.17, 6.8, 8), steel);
+      pole.position.set(0, 3.4, 0); pole.castShadow = shadows; g.add(pole);
+
+      // +X, not -X: the arm has to reach OVER the roadway. Pointed the other way it hangs the
+      // blade out over the pavement behind the pole, where no driver can read it.
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, reach, 8), steel);
+      arm.rotation.z = Math.PI / 2;
+      arm.position.set(reach * 0.5, 6.4, 0);
+      arm.castShadow = shadows; g.add(arm);
+
+      const blade = new THREE.Mesh(
+        new THREE.BoxGeometry(3.4, 0.86, 0.07),
+        [steel, steel, steel, steel,
+         new THREE.MeshStandardMaterial({ map: bladeTexture(leg.name), roughness: 0.42 }),
+         new THREE.MeshStandardMaterial({ map: bladeTexture(leg.name), roughness: 0.42 })]);
+      blade.position.set(reach * 0.72, 5.85, 0);
+      blade.castShadow = shadows; g.add(blade);
+
+      const x = m.pos.x + m.normal.x * side * (m.width * 0.5 + 1.9);
+      const z = m.pos.z + m.normal.z * side * (m.width * 0.5 + 1.9);
+      g.position.set(x, world.heightAt(x, z), z);
+      g.rotation.y = yaw + (side > 0 ? 0 : Math.PI);
+      g.name = 'props:streetsign';
+      group.add(g);
     }
   }
 

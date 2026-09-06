@@ -38,7 +38,9 @@ renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
 renderer.shadowMap.enabled = flag('shadows', true);
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = num('exposure', 1.05);
+// Pulled back from 1.05 once sky IBL joined the sun: the two together were washing the
+// paved ground to a pale desert beige.
+renderer.toneMappingExposure = num('exposure', 0.94);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 app.appendChild(renderer.domElement);
 

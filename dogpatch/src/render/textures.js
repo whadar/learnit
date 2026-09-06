@@ -112,6 +112,56 @@ export function facade(size = 512) {
   return finish(c);
 }
 
+/**
+ * Wooden cottage siding: narrow horizontal clapboard, tall sash windows, a door on the ground bay.
+ *
+ * Dogpatch is a designated historic district of about a hundred workers' flats and cottages built
+ * 1870-1910 — Italianate, Eastlake, Queen Anne — standing between the warehouses. They are the
+ * reason the neighbourhood looks like nowhere else on the Central Waterfront, and a city of
+ * uniform window-grid boxes has none of them in it.
+ */
+export function clapboard(size = 512) {
+  const [c, g] = canvas(size), r = noise(19);
+  const cell = size / 4;
+  g.fillStyle = '#e2e0da'; g.fillRect(0, 0, size, size);
+  for (let y = 0; y < size; y += 7) {                    // lap siding
+    g.fillStyle = `rgba(120,118,112,${0.10 + r() * 0.06})`;
+    g.fillRect(0, y + 5, size, 1.5);
+  }
+  for (let sy = 0; sy < 4; sy++) {
+    for (let sx = 0; sx < 4; sx++) {
+      const x = sx * cell, y = sy * cell;
+      const w = cell * 0.30, h = cell * 0.52;            // tall and narrow, not the shop grid
+      const ox = x + (cell - w) / 2, oy = y + cell * 0.20;
+      g.fillStyle = '#f4f2ec'; g.fillRect(ox - 5, oy - 6, w + 10, h + 10);  // moulded surround
+      g.fillStyle = r() > 0.8 ? '#cfd3cb' : '#41484f';
+      g.fillRect(ox, oy, w, h);
+      g.strokeStyle = 'rgba(240,238,232,0.9)'; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(ox, oy + h * 0.48); g.lineTo(ox + w, oy + h * 0.48); g.stroke();
+      g.fillStyle = 'rgba(90,88,84,0.30)';               // cornice line over each storey
+      g.fillRect(x, y + cell - 5, cell, 5);
+    }
+  }
+  return finish(c);
+}
+
+/** Corrugated industrial sheeting — the Pier 70 and shipyard vocabulary, vertical ribs. */
+export function corrugated(size = 512) {
+  const [c, g] = canvas(size), r = noise(37);
+  g.fillStyle = '#c2c6c8'; g.fillRect(0, 0, size, size);
+  for (let x = 0; x < size; x += 11) {
+    g.fillStyle = 'rgba(255,255,255,0.22)'; g.fillRect(x, 0, 3, size);
+    g.fillStyle = 'rgba(88,94,98,0.26)'; g.fillRect(x + 6, 0, 3, size);
+  }
+  for (let i = 0; i < 40; i++) {                         // rust and staining down the sheets
+    g.fillStyle = `rgba(${130 + r() * 40},${88 + r() * 30},${62 + r() * 24},${0.05 + r() * 0.08})`;
+    g.fillRect(r() * size, r() * size, 3 + r() * 9, 20 + r() * 90);
+  }
+  g.fillStyle = 'rgba(70,76,80,0.35)';                   // eaves band
+  g.fillRect(0, 0, size, 7);
+  return finish(c);
+}
+
 /** Ground grain — greyscale, multiplies the terrain's own height-and-slope colour ramp. */
 export function ground(size = 256) {
   const [c, g] = canvas(size), r = noise(53);
@@ -152,6 +202,8 @@ export function puff(size = 64) {
 /** Built once and shared; every mesh that wants a surface asks here. */
 let cache = null;
 export function surfaces() {
-  if (!cache) cache = { asphalt: asphalt(), concrete: concrete(), facade: facade(), ground: ground(), puff: puff() };
+  if (!cache) cache = { asphalt: asphalt(), concrete: concrete(), facade: facade(),
+                        clapboard: clapboard(), corrugated: corrugated(),
+                        ground: ground(), puff: puff() };
   return cache;
 }

@@ -13,11 +13,18 @@ import { surfaces } from '../render/textures.js';
 const CHUNK = 24;                       // grid posts per chunk edge
 const SEA = 0.4;                        // metres; below this is Bay
 
-// Concrete, worn asphalt, dry grass on the verges, and the Bay.
+/* Dogpatch is paved.
+ *
+ * The flats between the buildings are yard, lot, apron and sidewalk — asphalt and concrete, with
+ * dirt where a lot has gone unused. There is almost no grass in the neighbourhood at all, and
+ * rendering the ground as meadow is what made the frames read as a road through open country
+ * rather than as nine blocks of the Central Waterfront. Green is kept only for the shoulder of
+ * Potrero Hill rising to the west, where it belongs.
+ */
 const C = {
-  fill:   [0.53, 0.54, 0.55],
-  dust:   [0.60, 0.59, 0.55],
-  grass:  [0.42, 0.46, 0.34],
+  fill:   [0.36, 0.365, 0.375], // asphalt lot
+  dust:   [0.47, 0.45, 0.41],   // graded dirt and gravel
+  grass:  [0.42, 0.45, 0.38],   // hill scrub, not lawn
   rock:   [0.44, 0.45, 0.48],
   water:  [0.16, 0.26, 0.33],
 };
@@ -82,8 +89,8 @@ function buildChunk(world, i0, j0, iN, jN, step, half, lo, hi) {
       let c;
       if (y < SEA) c = C.water;
       else {
-        const up = smoothstep(0.08, 0.42, t);                 // flats -> hill
-        const base = mix(C.fill, C.dust, smoothstep(0.0, 0.18, t));
+        const up = smoothstep(0.34, 0.78, t);                 // flats stay paved much further out
+        const base = mix(C.fill, C.dust, smoothstep(0.0, 0.30, t));
         const hill = mix(C.grass, C.rock, smoothstep(0.10, 0.42, slope));
         c = mix(base, hill, up);
       }

@@ -65,7 +65,7 @@ export function createVFX(scene, world, opts = {}) {
     siz[i] = size; life[i] = ttl; max[i] = ttl;
   }
 
-  const acc = [];                        // per-kart emit timers, so rate is time-based not frame-based
+  const acc = [], smokeAcc = [];         // per-kart emit timers, so rate is time-based not frame-based
   const _p = new THREE.Vector3(), _d = new THREE.Vector3();
 
   function update(dt, vehicles) {
@@ -96,15 +96,21 @@ export function createVFX(scene, world, opts = {}) {
        * frames even though the pool was working: everything above only fires while DRIFTING,
        * BOOSTING or OFF TRACK. A kart driving hard down a straight — which is most of a lap and
        * all of most screenshots — emitted nothing at all. These two fire during ordinary racing. */
+      /* Rate-gated, and not by much guesswork: eight karts emitting once per FRAME is 480
+       * particles a second, which laid a bright dotted line down the middle of every straight
+       * and read as screen noise rather than exhaust. Both emitters below are on wall-clock
+       * intervals so the count does not change with frame rate either. */
       const k = idx++;
       acc[k] = (acc[k] ?? 0) + dt;
-      if (s.speed > 3 && acc[k] > 0.055) {                       // exhaust
+      smokeAcc[k] = (smokeAcc[k] ?? 0) + dt;
+      if (s.speed > 3 && acc[k] > 0.17) {                        // exhaust
         acc[k] = 0;
         emit(s.pos.x - fwd.x * 1.15, s.pos.y + 0.02, s.pos.z - fwd.z * 1.15,
-             [0.46, 0.46, 0.45], 0.5, 0.5, 0.34);
+             [0.40, 0.40, 0.39], 0.35, 0.5, 0.30);
       }
       const slipping = s.grounded && s.speed > 9 && Math.abs(s.slipDeg) > 4;
-      if (slipping) {                                            // tyres letting go in a corner
+      if (slipping && smokeAcc[k] > 0.05) {                      // tyres letting go in a corner
+        smokeAcc[k] = 0;
         const heat = clamp01((Math.abs(s.slipDeg) - 4) / 14);
         for (const side of [-1, 1]) {
           emit(s.pos.x - fwd.x * 0.8 + rgt.x * side * 0.66, s.pos.y - 0.2,

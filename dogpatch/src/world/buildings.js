@@ -13,15 +13,43 @@ import * as THREE from 'three';
 import { clamp, rng } from '../core/math.js';
 import { surfaces } from '../render/textures.js';
 
+/* Dogpatch by building type, not by dice roll.
+ *
+ * The district is about a hundred workers' cottages and flats from 1870-1910 standing among
+ * brick warehouses and shipyard sheds, with modern infill on the larger parcels. Which of those
+ * a footprint is can be read straight off its own geometry — a 60 m2 plan at 7 m is a cottage, a
+ * 900 m2 plan at 11 m is a warehouse — so the material follows the building instead of a random
+ * index, and a street of cottages comes out looking like a street of cottages.
+ *
+ * `skin` picks the facade texture; `col` tints it, since all three maps are drawn greyscale-ish
+ * and multiplied.
+ */
 const WALL = [
-  { name: 'brick',    col: 0x8c4a35, rough: 0.94 },
-  { name: 'brick2',   col: 0x9b5a42, rough: 0.94 },
-  { name: 'panel',    col: 0x9aa1a8, rough: 0.72 },
-  { name: 'panel2',   col: 0x7c858d, rough: 0.72 },
-  { name: 'concrete', col: 0xa8a49c, rough: 0.95 },
-  { name: 'board',    col: 0xc9c3b4, rough: 0.88 },
-  { name: 'board2',   col: 0x6f7f86, rough: 0.88 },
+  // cottages: painted timber, the palette Dogpatch actually wears
+  { name: 'cottage-cream', skin: 'clapboard', col: 0xd9d2c0, rough: 0.9 },
+  { name: 'cottage-grey',  skin: 'clapboard', col: 0xa8b0b4, rough: 0.9 },
+  { name: 'cottage-sage',  skin: 'clapboard', col: 0xa9b3a2, rough: 0.9 },
+  { name: 'cottage-blue',  skin: 'clapboard', col: 0x8ea0ae, rough: 0.9 },
+  { name: 'cottage-ochre', skin: 'clapboard', col: 0xd0b98a, rough: 0.9 },
+  // warehouses: red brick, the Schilling and Hulme & Hart vocabulary
+  { name: 'brick',    skin: 'facade',     col: 0x9c5a3f, rough: 0.95 },
+  { name: 'brick2',   skin: 'facade',     col: 0xa96a4c, rough: 0.95 },
+  // shipyard sheds: corrugated steel, Pier 70 sits on the Illinois leg
+  { name: 'shed',     skin: 'corrugated', col: 0xbfc4c4, rough: 0.68 },
+  { name: 'shed2',    skin: 'corrugated', col: 0x9aa6a8, rough: 0.68 },
+  // modern infill on the big parcels
+  { name: 'concrete', skin: 'facade',     col: 0xb3afa6, rough: 0.93 },
+  { name: 'panel',    skin: 'facade',     col: 0x9aa1a8, rough: 0.72 },
 ];
+const COTTAGE = [0, 1, 2, 3, 4], WAREHOUSE = [5, 6], SHED = [7, 8], MODERN = [9, 10];
+
+/** Which of Dogpatch's four building types is this footprint? */
+function typeOf(area, h, pick) {
+  if (area < 210 && h < 13) return COTTAGE[(pick * COTTAGE.length) | 0];
+  if (h > 17) return MODERN[(pick * MODERN.length) | 0];
+  if (area > 900) return pick < 0.55 ? SHED[(pick * 2) | 0] : WAREHOUSE[(pick * 2) | 0];
+  return pick < 0.62 ? WAREHOUSE[(pick * 2) | 0] : SHED[(pick * 2) | 0];
+}
 const ROOF = { col: 0x4a4d51, rough: 0.97 };
 
 /** Signed area of a ring; also tells us the winding. */
@@ -50,6 +78,7 @@ export function createBuildings(world, track, opts = {}) {
   // gets ten bays and a 6 m cottage gets one and a half — the openings stay the size of windows
   // instead of scaling with the building.
   const BAY = 5.5, STOREY = 3.4;
+  const COTTAGE_BAY = 3.2, COTTAGE_STOREY = 3.0;
   let cleared = 0;
   const push = (b, x, y, z, nx, ny, nz, u = 0, v = 0) => {
     b.pos.push(x, y, z); b.nrm.push(nx, ny, nz); b.uv.push(u, v); return b.n++;
@@ -87,7 +116,7 @@ export function createBuildings(world, track, opts = {}) {
     if (a < (d > near ? 260 : 34)) continue;      // skip sheds far away, keep them close
 
     const h = clamp(bld.h > 0 ? bld.h : (bld.lv ? bld.lv * 3.3 : 7 + rand() * 4), 2.6, 95);
-    const wi = (rand() * WALL.length) | 0;
+    const wi = typeOf(a, h, rand());
     const B = buckets[wi];
 
     // ground the footprint at its lowest corner so nothing floats on a slope
@@ -96,14 +125,16 @@ export function createBuildings(world, track, opts = {}) {
     const top = gy + h;
 
     const cw = area(ring) > 0 ? 1 : -1;
-    const vTop = h / STOREY;
+    const cottage = COTTAGE.includes(wi);
+    const bay = cottage ? COTTAGE_BAY : BAY, storey = cottage ? COTTAGE_STOREY : STOREY;
+    const vTop = h / storey;
     let run = 0;                                   // running length around the footprint, metres
     for (let i = 0, n = ring.length - 1; i < n; i++) {
       const p = ring[i], q = ring[i + 1];
       const ex = q[0] - p[0], ez = q[1] - p[1];
       const L = Math.hypot(ex, ez) || 1;
       const nx = (ez / L) * cw, nz = (-ex / L) * cw;
-      const u0 = run / BAY, u1 = (run + L) / BAY;
+      const u0 = run / bay, u1 = (run + L) / bay;
       run += L;
       const v = B.n;
       push(B, p[0], gy, p[1], nx, 0, nz, u0, 0);
@@ -140,9 +171,10 @@ export function createBuildings(world, track, opts = {}) {
   };
   // One greyscale facade map multiplied by each material's own colour: seven materials, one
   // texture, and the brick still reads as brick rather than as grey with windows on it.
-  const fac = surfaces().facade;
+  const skins = surfaces();
   WALL.forEach((w, i) => finish(buckets[i],
-    new THREE.MeshStandardMaterial({ color: w.col, map: fac, roughness: w.rough, metalness: 0 }),
+    new THREE.MeshStandardMaterial({ color: w.col, map: skins[w.skin], roughness: w.rough,
+                                     metalness: w.skin === 'corrugated' ? 0.25 : 0 }),
     'bld:' + w.name));
   finish(roof, new THREE.MeshStandardMaterial({ color: ROOF.col, roughness: ROOF.rough }), 'bld:roof');
 
