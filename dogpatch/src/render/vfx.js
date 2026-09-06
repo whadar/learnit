@@ -8,12 +8,26 @@
 import * as THREE from 'three';
 import { clamp01, rng } from '../core/math.js';
 import { surfaces } from './textures.js';
+import { createDecals } from './decals.js';
 
 const MAX = 900;
 const TIER_COL = [[1.0, 0.86, 0.45], [0.45, 0.72, 1.0], [1.0, 0.45, 0.85]];
 
-export function createVFX(scene, opts = {}) {
+export function createVFX(scene, world, opts = {}) {
   const rand = rng(opts.seed ?? 31);
+
+  /* Skidmarks, ported wholesale from the previous build's render/decals.js.
+   *
+   * An instanced decal system with its own shader, laying a ribbon of quads along each rear
+   * wheel and draping them on the ground normal. It needed only `scene`, `heightAt` and
+   * `normalAt`, all of which this build already has, so it came across unchanged apart from
+   * the import path. Rubber that stays on the road for fourteen seconds is the one VFX that
+   * shows where the race has BEEN rather than only where it is. */
+  // Longer segments and a bigger pool: at the 0.42 m default the field laid 4490 quads in
+  // twenty seconds, saturated 1200 slots and recycled the whole circuit's rubber every few
+  // seconds, so nothing survived long enough to read as a racing line.
+  const decals = world ? createDecals({ scene }, world, { capacity: 2400, seed: 21, segment: 0.9 }) : null;
+  let clock = 0;
   const pos = new Float32Array(MAX * 3);
   const col = new Float32Array(MAX * 3);
   const siz = new Float32Array(MAX);
@@ -52,6 +66,7 @@ export function createVFX(scene, opts = {}) {
   }
 
   const acc = [];                        // per-kart emit timers, so rate is time-based not frame-based
+  const _p = new THREE.Vector3(), _d = new THREE.Vector3();
 
   function update(dt, vehicles) {
     let idx = 0;
@@ -88,12 +103,32 @@ export function createVFX(scene, opts = {}) {
         emit(s.pos.x - fwd.x * 1.15, s.pos.y + 0.02, s.pos.z - fwd.z * 1.15,
              [0.46, 0.46, 0.45], 0.5, 0.5, 0.34);
       }
-      if (s.grounded && s.speed > 9 && Math.abs(s.slipDeg) > 4) { // tyres letting go in a corner
+      const slipping = s.grounded && s.speed > 9 && Math.abs(s.slipDeg) > 4;
+      if (slipping) {                                            // tyres letting go in a corner
         const heat = clamp01((Math.abs(s.slipDeg) - 4) / 14);
         for (const side of [-1, 1]) {
           emit(s.pos.x - fwd.x * 0.8 + rgt.x * side * 0.66, s.pos.y - 0.2,
                s.pos.z - fwd.z * 0.8 + rgt.z * side * 0.66,
                [0.74, 0.73, 0.70], 0.9 + heat, 0.5 + heat * 0.6, 0.3 + heat * 0.35);
+        }
+      }
+      if (decals && s.grounded && s.onTrack) {
+        /* Lower threshold than the smoke.
+         *
+         * At the smoke's 4 degrees the pool measured 46 stamps and zero alive after twenty
+         * seconds: the field slips off the line, then drives clean enough to leave nothing, so
+         * the road was bare rubber-free asphalt for the whole rest of the lap. Tyres scrub
+         * before they smoke, and a faint mark through every corner is what makes a circuit look
+         * driven rather than newly paved. */
+        const lay = s.drift.active || Math.abs(s.slipDeg) > 2.2 ||
+                    (s.speed > 14 && Math.abs(s.yawRate) > 0.55);
+        for (const side of [-1, 1]) {
+          const id = k * 2 + (side > 0 ? 1 : 0);
+          if (!lay) { decals.breakTrail(id); continue; }
+          _p.set(s.pos.x - fwd.x * 0.8 + rgt.x * side * 0.62, s.pos.y - 0.42,
+                 s.pos.z - fwd.z * 0.8 + rgt.z * side * 0.62);
+          _d.set(fwd.x, 0, fwd.z);
+          decals.trail(id, _p, _d, { width: 0.34, alpha: 0.22 + clamp01(Math.abs(s.slipDeg) / 20) * 0.45 });
         }
       }
     }
@@ -111,7 +146,9 @@ export function createVFX(scene, opts = {}) {
     g.attributes.position.needsUpdate = true;
     g.attributes.color.needsUpdate = true;
     g.attributes.size.needsUpdate = true;
+    if (decals) { clock += dt; decals.update(dt, clock); }
   }
 
-  return { update, points, dispose() { scene.remove(points); g.dispose(); mat.dispose(); } };
+  return { update, points, decals,
+    dispose() { scene.remove(points); g.dispose(); mat.dispose(); decals?.dispose(); } };
 }

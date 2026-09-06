@@ -77,7 +77,7 @@ async function boot() {
   menu.loading('Warming the grid');
   S.input = createInput({ touch: 'auto' });
   S.cam = createCamera(camera, S.world, S.track);
-  S.vfx = createVFX(scene);
+  S.vfx = createVFX(scene, S.world);
   S.hud = createHUD(app);
   S.audio = createAudio({ enabled: flag('audio', true) });
 
@@ -171,6 +171,8 @@ Object.assign(game, {
   stepFrame(dt = 1 / 60) { tick(dt); },
   render() { renderer.render(scene, camera); },
   setFixedStep(v) { APP.fixedStep = v || 0; },
+  /** Decal pool occupancy — a skidmark system that stamps nothing looks exactly like one that works. */
+  vfxStats() { return S.vfx?.decals?.stats?.() ?? null; },
   snapshot() {
     const r = S.race; if (!r) return null;
     const p = r.player;
