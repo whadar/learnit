@@ -62,7 +62,7 @@ async function boot() {
   S.world.carve(S.track);          // grade the ground to the road before anything is built from it
 
   menu.loading('Pouring concrete');
-  S.sky = createSky(scene, { shadows: renderer.shadowMap.enabled });
+  S.sky = createSky(scene, { shadows: renderer.shadowMap.enabled, world: S.world, renderer });
   S.terrain = createTerrain(S.world, { shadows: renderer.shadowMap.enabled });
   scene.add(S.terrain.object3D);
   S.circuit = createTrackMesh(S.track, S.world, { shadows: renderer.shadowMap.enabled });
@@ -151,7 +151,7 @@ function tick(dt) {
     const p = S.race.player;
     S.race.racers.forEach((r, i) => rigs[i]?.sync(r.vehicle.state, dt));
     S.cam.update(dt, p.vehicle, S.race.racers.map(r => r.vehicle));
-    S.sky.follow(p.vehicle.state.pos);
+    S.sky.follow(p.vehicle.state.pos, camera);
     S.vfx.update(dt, S.race.racers.map(r => r.vehicle));
     S.hud.update(S.race.hud());
     S.audio.update(dt, p.vehicle.state, S.race.state.phase);
@@ -160,7 +160,7 @@ function tick(dt) {
     S.race.update(dt, { autopilot: true });
     S.race.racers.forEach((r, i) => rigs[i]?.sync(r.vehicle.state, dt));
     S.cam.update(dt, S.race.racers[0].vehicle, S.race.racers.map(r => r.vehicle));
-    S.sky.follow(S.race.racers[0].vehicle.state.pos);
+    S.sky.follow(S.race.racers[0].vehicle.state.pos, camera);
   }
 }
 

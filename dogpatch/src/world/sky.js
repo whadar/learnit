@@ -7,8 +7,10 @@
  * hides inside the silhouette that casts it, which reads as no shadows at all.
  */
 import * as THREE from 'three';
+import { clamp } from '../core/math.js';
 
 export function createSky(scene, opts = {}) {
+  const world = opts.world ?? null;
   const azimuth = opts.azimuth ?? 2.15;        // radians; sun to the west-south-west
   const elev = opts.elevation ?? 0.60;         // ~34 degrees
 
@@ -65,12 +67,15 @@ export function createSky(scene, opts = {}) {
   const sun = new THREE.DirectionalLight(0xfff3dd, 3.2);
   sun.position.copy(dir).multiplyScalar(500);
   sun.castShadow = opts.shadows !== false;
+  const MAP = opts.shadowMap ?? 2048;
+  const NEAR_EXTENT = opts.shadowExtent ?? 92;     // half-width of the shadow box, metres
+  const FAR_EXTENT = opts.shadowExtentFar ?? 260;  // grown when the camera climbs
+  const LIGHT_BACK = 240;                          // clears the tallest thing above the focus
+  const BIAS_M = 0.020;                            // depth bias in METRES, not normalised units
+  const PENUMBRA_M = 0.26;                         // softness as a distance on the ground
   if (sun.castShadow) {
-    const c = sun.shadow.camera, R = opts.shadowRadius ?? 320;
-    c.left = -R; c.right = R; c.top = R; c.bottom = -R; c.near = 60; c.far = 1300;
-    sun.shadow.mapSize.set(opts.shadowMap ?? 2048, opts.shadowMap ?? 2048);
-    sun.shadow.bias = -0.0006;
-    sun.shadow.normalBias = 0.9;
+    sun.shadow.mapSize.set(MAP, MAP);
+    sun.shadow.camera.near = 1;
   }
   scene.add(sun);
   scene.add(sun.target);
@@ -86,17 +91,92 @@ export function createSky(scene, opts = {}) {
    * So: keep round two's warm, bright bounce, which is what stopped the crushing, but put the sun
    * back in charge at about 2.8:1. The contract this project keeps re-learning is that an effect
    * swinging between opposite failures is one problem, not two. */
-  scene.add(new THREE.HemisphereLight(0xc8dcee, 0x8a8578, 1.15));
-  scene.fog = new THREE.Fog(0xbcd0dd, 420, 2100);
+  /* Image-based fill, generated from this dome rather than guessed at.
+   *
+   * A hemisphere light gives shaded surfaces one colour from above and one from below. Real
+   * ambient carries the sky's whole distribution — bright toward the sun, cooler away, warm off
+   * the ground — which is what makes a shadowed elevation read as a lit surface in shade rather
+   * than as a darker version of itself. Prefiltering the dome we already drew costs one render
+   * at boot and nothing per frame.
+   *
+   * The hemisphere light stays, at about a third of its former strength: the IBL now carries
+   * most of the fill, and doubling up was what flattened the key in round two. */
+  if (opts.ibl !== false && opts.renderer) {
+    const pmrem = new THREE.PMREMGenerator(opts.renderer);
+    const tmp = new THREE.Scene();
+    tmp.add(dome.clone());
+    scene.environment = pmrem.fromScene(tmp, 0, 1, 6000).texture;
+    scene.environmentIntensity = opts.iblIntensity ?? 0.55;
+    pmrem.dispose();
+  }
+  scene.add(new THREE.HemisphereLight(0xc8dcee, 0x8a8578, 0.42));
+  // Haze that actually reaches the far side of the box. At 420-2100 m over a circuit whose
+  // furthest visible block is about 1.5 km out, distance cost almost nothing and the skyline
+  // sat at the same contrast as the kerb in front of the player — which every critic read as
+  // collapsed depth. Tinted toward the horizon colour so the fade lands in the sky, not in grey.
+  scene.fog = new THREE.Fog(0xc4d6e2, 160, 1500);
   scene.background = null;
+
+  /* ---------------------------------------------------------------- shadow fitting ---
+   * Ported from the previous build's render/lighting.js, which had solved this properly.
+   *
+   * The rig here was a fixed 320 m half-box over a 2048 px map: 0.31 m per texel, so a 2 m
+   * kart spanned six of them and its shadow could only ever be a smudge. Fitting the box to
+   * the camera at 92 m gives 0.09 m per texel and about 22 texels across the same kart —
+   * which is the difference between a contact shadow and a suggestion of one.
+   *
+   * Three details come with it and all three matter:
+   *   - the focus is pushed down the view axis, so the box is spent on what is in frame
+   *     rather than on the ground behind the camera;
+   *   - the focus is snapped to whole texels in light space, or the map crawls with
+   *     sub-texel camera motion and every shadow edge shimmers;
+   *   - bias and penumbra are expressed in METRES and converted per frame. `shadow.radius`
+   *     is in texels, and a texel is a different size in every view, so a constant radius
+   *     means a penumbra three times wider on one shot than another.
+   */
+  const lightDir = dir.clone().negate();                 // from the sun toward the ground
+  const _fwd = new THREE.Vector3(), _focus = new THREE.Vector3();
+  const _basis = new THREE.Matrix4(), _basisInv = new THREE.Matrix4();
+  const _origin = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
 
   return {
     sun, dome, direction: dir,
-    /** Keep the shadow volume on the action, or a 3 km map wastes the whole map on nothing. */
-    follow(p) {
-      sun.target.position.set(p.x, p.y, p.z);
-      sun.position.set(p.x + dir.x * 500, p.y + dir.y * 500, p.z + dir.z * 500);
+    /** Keep the shadow volume on the action, or a 3 km map is spent almost entirely on nothing. */
+    follow(p, camera) {
+      if (!sun.castShadow) return;
+      let extent = NEAR_EXTENT;
+      if (camera) {
+        camera.getWorldDirection(_fwd);
+        const g = world ? world.heightAt(camera.position.x, camera.position.z) : 0;
+        const height = Math.max(0, camera.position.y - (Number.isFinite(g) ? g : 0));
+        extent = clamp(NEAR_EXTENT + height * 3.2, NEAR_EXTENT, FAR_EXTENT);
+        _focus.copy(camera.position).addScaledVector(_fwd, extent * 0.55);
+      } else {
+        _focus.set(p.x, p.y, p.z);
+      }
+      const fy = world ? world.heightAt(_focus.x, _focus.z) : p.y;
+      _focus.y = (Number.isFinite(fy) ? fy : p.y) + 2;
+
+      const texel = (extent * 2) / MAP;
+      _basis.lookAt(_origin, lightDir, _up);
+      _basisInv.copy(_basis).invert();
+      _focus.applyMatrix4(_basisInv);
+      _focus.x = Math.floor(_focus.x / texel) * texel;
+      _focus.y = Math.floor(_focus.y / texel) * texel;
+      _focus.applyMatrix4(_basis);
+
+      sun.target.position.copy(_focus);
+      sun.position.copy(_focus).addScaledVector(lightDir, -LIGHT_BACK);
       sun.target.updateMatrixWorld();
+
+      const c = sun.shadow.camera;
+      c.left = -extent; c.right = extent; c.top = extent; c.bottom = -extent;
+      c.far = LIGHT_BACK + extent * 2.2;
+      c.updateProjectionMatrix();
+
+      sun.shadow.bias = -(BIAS_M / (c.far - c.near));
+      sun.shadow.normalBias = clamp(1.35 * texel, 0.035, 0.11);
+      sun.shadow.radius = clamp(PENUMBRA_M / texel, 1.15, 4.6);
     },
   };
 }
