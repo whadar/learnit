@@ -1,0 +1,18 @@
+{
+ "amikam": {
+  "slug": "amikam",
+  "place": "Moshav Amikam, Ramot Menashe, Haifa District, Israel",
+  "lon": 35.0208,
+  "lat": 32.5636,
+  "halfLon": 0.019954,
+  "halfLat": 0.016898
+ },
+ "dogpatch": {
+  "slug": "dogpatch",
+  "place": "Dogpatch, San Francisco, California, USA",
+  "lon": -122.39,
+  "lat": 37.757,
+  "halfLon": 0.021265,
+  "halfLat": 0.016883
+ }
+}

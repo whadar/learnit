@@ -1,0 +1,25 @@
+{
+  "name": "game",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "vite build",
+    "preview": "vite preview --port 4173 --strictPort --host 127.0.0.1",
+    "dev": "vite",
+    "smoke": "node tools/smoke.mjs",
+    "shoot": "node tools/shoot.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "pngjs": "^7.0.0",
+    "three": "^0.185.1",
+    "vite": "^8.2.2"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  },
+  "type": "module"
+}

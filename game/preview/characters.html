@@ -1,0 +1,248 @@
+<!doctype html><html><head><meta charset="utf-8"><title>characters preview</title>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden}#app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}</style>
+</head><body><div id="app"></div>
+<script type="module">
+import * as THREE from 'three';
+import { createRoster, createRacer } from '../src/characters/roster.js';
+import { createCat } from '../src/characters/cat.js';
+import { createKart, kartEnv, LIVERIES } from '../src/characters/kart.js';
+
+/* ---------------------------------------------------------------- staging */
+const GROUPS = {};
+const PADS = [];
+const DRIVEN = [];
+const env = kartEnv();
+
+function studio(scene) {
+  scene.background = new THREE.Color(0x1b2430);
+  // gradient cyclorama
+  const cv = document.createElement('canvas'); cv.width = 8; cv.height = 256;
+  const c = cv.getContext('2d');
+  const g = c.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0.00, '#8fb8e8'); g.addColorStop(0.42, '#d9e6f2');
+  g.addColorStop(0.52, '#f0e6d2'); g.addColorStop(1.00, '#c0ae8c');
+  c.fillStyle = g; c.fillRect(0, 0, 8, 256);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(1400, 24, 16),
+    new THREE.MeshBasicMaterial({ map: t, side: THREE.BackSide, fog: false }));
+  scene.add(dome);
+
+  const gcv = document.createElement('canvas'); gcv.width = gcv.height = 256;
+  const gc = gcv.getContext('2d');
+  gc.fillStyle = '#d9d0bb'; gc.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 5000; i++) {
+    const x = Math.random() * 256, y = Math.random() * 256, v = 180 + Math.random() * 60;
+    gc.fillStyle = `rgba(${v | 0},${(v * 0.94) | 0},${(v * 0.82) | 0},0.5)`;
+    gc.fillRect(x, y, 1.6, 1.6);
+  }
+  const gt = new THREE.CanvasTexture(gcv); gt.colorSpace = THREE.SRGBColorSpace;
+  gt.wrapS = gt.wrapT = THREE.RepeatWrapping; gt.repeat.set(60, 60);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(900, 900),
+    new THREE.MeshStandardMaterial({ map: gt, color: 0xa79d86, roughness: 0.95, metalness: 0 }));
+  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; ground.position.y = -0.004;
+  scene.add(ground);
+
+  // paddock pad: gives the karts something to sit on and makes shadows read
+  const pad = new THREE.Mesh(new THREE.CircleGeometry(11, 56),
+    new THREE.MeshStandardMaterial({ color: 0x6c675d, roughness: 0.97, metalness: 0 }));
+  pad.rotation.x = -Math.PI / 2; pad.position.y = 0.004; pad.receiveShadow = true;
+  scene.add(pad);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(10.55, 11.0, 56),
+    new THREE.MeshStandardMaterial({ color: 0xe6dfd0, roughness: 0.9 }));
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.006; scene.add(ring);
+  PADS.push(pad, ring);
+
+  scene.add(new THREE.HemisphereLight(0xbcd8ff, 0x8f8060, 0.42));
+  const key = new THREE.DirectionalLight(0xfff2dc, 2.45);
+  key.position.set(-6, 9, 7);
+  key.castShadow = true;
+  key.shadow.mapSize.set(1024, 1024);
+  const cam = key.shadow.camera;
+  cam.left = -14; cam.right = 14; cam.top = 10; cam.bottom = -6; cam.near = 1; cam.far = 40;
+  key.shadow.bias = -0.0012; key.shadow.normalBias = 0.02;
+  scene.add(key); scene.add(key.target);
+  const fill = new THREE.DirectionalLight(0xbfd6f2, 0.30); fill.position.set(7, 4, -4); scene.add(fill);
+  const rim = new THREE.DirectionalLight(0xffd9a0, 0.85); rim.position.set(1, 3, -9); scene.add(rim);
+  return { key, ground, dome };
+}
+
+function group(name, x) {
+  const g = new THREE.Group(); g.position.x = x; g.name = name;
+  GROUPS[name] = g; return g;
+}
+
+function build(scene, engine) {
+  if (engine?.renderer) engine.renderer.toneMappingExposure = 0.95;
+  const lights = studio(scene);
+  const roster = createRoster();
+
+  /* --- lineup: whole roster, staggered rows */
+  const gl = group('lineup', 0); scene.add(gl);
+  const LAY = [[-3.15, 0], [-1.05, 0], [1.05, 0], [3.15, 0],
+               [-2.10, -2.75], [0.05, -2.75], [2.20, -2.75],
+               [-3.30, -5.50], [0.05, -5.50], [3.40, -5.50]];
+  roster.forEach((r, i) => {
+    const [x, z] = LAY[i];
+    const racer = createRacer(r.id, { detail: i < 4 ? 'high' : 'med', env });
+    racer.object3D.position.set(x, 0, z);
+    racer.object3D.rotation.y = -x * 0.045;
+    gl.add(racer.object3D);
+    DRIVEN.push({ g: 'lineup', r: racer, st: { speed: 2.5 + i * 0.5, steer: Math.sin(i * 1.7) * 0.32, noBlink: true, lookYaw: -x * 0.06 } });
+  });
+
+  /* --- closeup: hero cat in its kart */
+  const gc = group('closeup', 100); scene.add(gc);
+  const hero = createRacer('mitzi', { detail: 'high', env });
+  hero.object3D.rotation.y = -0.45;
+  gc.add(hero.object3D);
+  DRIVEN.push({ g: 'closeup', r: hero, st: { speed: 9, steer: 0.45, drift: 0.2, noBlink: true, lookYaw: 0.35, lookPitch: -0.05 } });
+  const hero2 = createRacer('yaffa', { detail: 'med', env });
+  hero2.object3D.position.set(2.6, 0, -1.9); hero2.object3D.rotation.y = -0.3;
+  gc.add(hero2.object3D);
+  DRIVEN.push({ g: 'closeup', r: hero2, st: { speed: 9, steer: 0.3, noBlink: true } });
+
+  /* --- faces: bare cats, head height, to judge fur / eyes / ears */
+  const gf = group('faces', 200); scene.add(gf);
+  roster.forEach((r, i) => {
+    const cat = createCat(r.id, { detail: i < 6 ? 'high' : 'med', env, noGrip: true });
+    const col = i % 5, row = (i / 5) | 0;
+    cat.object3D.position.set((col - 2) * 0.90 + row * 0.45, 0, row * -1.15);
+    cat.object3D.rotation.y = (col - 2) * -0.10 + row * 0.10;
+    gf.add(cat.object3D);
+    DRIVEN.push({ g: 'faces', c: cat, st: { speed: 1.5, steer: (col - 2) * 0.12, noBlink: true, lookYaw: (col - 2) * 0.10 } });
+  });
+  /* --- karts: the four chassis, one per livery */
+  const gk = group('karts', 300); scene.add(gk);
+  const kinds = ['standard', 'sport', 'buggy', 'pipe'];
+  const livs = ['citrus', 'olive', 'sabra', 'bauhaus'];
+  kinds.forEach((k, i) => {
+    const kart = createKart(k, { livery: livs[i], number: [7, 3, 12, 5][i], env, detail: 'high' });
+    kart.object3D.position.set((i - 1.5) * 1.95, 0, (i % 2) * -1.55);
+    kart.object3D.rotation.y = 0.55 - i * 0.12;
+    gk.add(kart.object3D);
+    DRIVEN.push({ g: 'karts', k: kart, st: { speed: 6, steer: 0.4 - i * 0.25 } });
+  });
+
+  /* --- action: drift, boost, hit, cheer, slump */
+  const ga = group('action', 400); scene.add(ga);
+  const acts = [
+    ['tamar', { speed: 24, steer: -0.9, drift: -1, boosting: true, noBlink: true }, null, [-2.05, 0, 0.45], 0.85],
+    ['layla', { speed: 26, steer: 0.1, boosting: true, noBlink: true }, 'tuck', [-1.15, 0, -2.65], 0.30],
+    ['kobi', { speed: 8, steer: -0.2, hit: true, noBlink: true }, 'flinch', [0.20, 0, 0.55], -0.30],
+    ['shelly', { speed: 2, steer: 0, place: 1, finished: true, noBlink: true }, 'cheer', [2.35, 0, 0.30], -0.75],
+    ['boaz', { speed: 2, steer: 0, place: 8, finished: true, noBlink: true }, 'slump', [1.45, 0, -2.70], -0.45],
+  ];
+  for (const [id, st, pose, pos, ry] of acts) {
+    const racer = createRacer(id, { detail: 'high', env });
+    racer.object3D.position.set(pos[0], pos[1], pos[2]);
+    racer.object3D.rotation.y = ry;
+    ga.add(racer.object3D);
+    if (pose) racer.setPose(pose, 1);
+    DRIVEN.push({ g: 'action', r: racer, st });
+  }
+
+  return { lights, roster };
+}
+
+/* ------------------------------------------------------------------ views */
+const VIEWS = {
+  lineup:  { pos: [0.15, 1.72, 5.55],   look: [0.05, 0.74, -2.3],  fov: 42 },
+  closeup: { pos: [100.86, 1.00, 1.88], look: [100.02, 0.84, -0.04], fov: 34 },
+  faces:   { pos: [200.25, 0.86, 3.25], look: [200.20, 0.52, -0.5], fov: 31 },
+  karts:   { pos: [300.05, 1.45, 6.30],  look: [300.0, 0.44, -0.85], fov: 38 },
+  action:  { pos: [400.15, 1.70, 4.85],  look: [400.15, 0.78, -0.85], fov: 44 },
+};
+const SHOW = { lineup: ['lineup'], closeup: ['closeup'], faces: ['faces'], karts: ['karts'], action: ['action'] };
+
+/* ------------------------------------------------------------------- boot */
+function updateAll(dt) {
+  for (const d of DRIVEN) {
+    if (GROUPS[d.g] && !GROUPS[d.g].visible) continue;
+    const o = d.r || d.c || d.k;
+    o.update(dt, d.st);
+  }
+}
+function applyVisibility(name) {
+  const keep = SHOW[name] || [];
+  for (const k in GROUPS) GROUPS[k].visible = keep.includes(k);
+  const g = GROUPS[keep[0]];
+  for (const p of PADS) { p.position.x = g ? g.position.x : 0; p.position.z = name === 'lineup' ? -2.4 : -0.8; }
+}
+
+async function main() {
+  let game = null;
+  try {
+    const mod = await import('./common.js');
+    game = await mod.boot({
+      name: 'characters', sky: false, terrain: false,
+      modules: async (ctx) => { build(ctx.engine.scene, ctx.engine); ctx.engine.add({ update: (dt) => updateAll(dt) }); },
+      views: VIEWS,
+    });
+    if (game.error) throw new Error(game.error);
+  } catch (e) {
+    console.warn('common.js boot unavailable, using local studio boot:', e && e.message);
+    game = await studioBoot();
+  }
+  const inner = game.setView.bind(game);
+  game.setView = (n) => { applyVisibility(n); inner(n); };
+  game.setView(Object.keys(VIEWS)[0]);
+  game.ready = true;
+  game.error = null;
+}
+
+async function studioBoot() {
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+  let Engine;
+  try { ({ Engine } = await import('../src/core/engine.js')); } catch (e) { Engine = null; }
+  let engine;
+  if (Engine) engine = new Engine(app);
+  else engine = miniEngine(app);
+  const g = window.__game = {
+    engine, world: null, ready: false, error: null, views: VIEWS,
+    setView(n) {
+      const v = this.views[n]; if (!v) throw new Error('unknown view: ' + n);
+      engine.camera.position.set(...v.pos);
+      engine.camera.up.set(0, 1, 0);
+      engine.camera.lookAt(new THREE.Vector3(...v.look));
+      engine.camera.fov = v.fov ?? 55; engine.camera.updateProjectionMatrix();
+      engine.camera.updateMatrixWorld(true);
+    },
+    renderOnce() { engine.render(); },
+  };
+  build(engine.scene, engine);
+  engine.add({ update: (dt) => updateAll(dt) });
+  engine.start();
+  g.ready = true;
+  return g;
+}
+function miniEngine(container) {
+  const renderer = new THREE.WebGLRenderer({ antialias: false });
+  renderer.setPixelRatio(1);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  container.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 3000);
+  const clock = new THREE.Clock();
+  const systems = [];
+  const resize = () => {
+    const w = container.clientWidth || innerWidth, h = container.clientHeight || innerHeight;
+    renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+  };
+  addEventListener('resize', resize); resize();
+  return {
+    renderer, scene, camera, systems, composer: null,
+    add(s) { systems.push(s); return s; },
+    start() { renderer.setAnimationLoop(() => { const dt = Math.min(clock.getDelta(), 1 / 15); for (const s of systems) s.update?.(dt); renderer.render(scene, camera); }); },
+    render() { renderer.render(scene, camera); },
+  };
+}
+
+main().catch(e => {
+  console.error(e);
+  window.__game = window.__game || {};
+  window.__game.error = String(e && e.stack || e);
+});
+</script></body></html>

@@ -1,0 +1,27 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Kat Racing — Amikam Village Circuit</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070d;overflow:hidden;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#fff}
+  #app{position:fixed;inset:0}
+  canvas{display:block;width:100%;height:100%}
+</style>
+</head><body>
+<div id="app"></div>
+<script>
+// Neutralise Vite's HMR socket: a reload halfway through a multi-view software render throws
+// the whole shoot away, and other agents save shared modules constantly.
+(function () {
+  const OW = window.WebSocket;
+  const dead = () => ({ readyState: 3, send() {}, close() {}, addEventListener() {}, removeEventListener() {} });
+  window.WebSocket = function (url, protocols) {
+    const p = Array.isArray(protocols) ? protocols.join() : String(protocols || '');
+    if (p.includes('vite-hmr')) return dead();
+    return new OW(url, protocols);
+  };
+  window.WebSocket.prototype = OW.prototype;
+})();
+</script>
+<script type="module" src="../src/main.js"></script>
+</body></html>

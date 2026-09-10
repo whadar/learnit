@@ -1,0 +1,503 @@
+<!doctype html><html><head><meta charset="utf-8"><title>items preview</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070d;overflow:hidden;
+            font:12px/1.4 ui-monospace,Menlo,Consolas,monospace}
+  #app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}
+  #hud{position:fixed;left:14px;top:14px;padding:9px 12px;border-radius:9px;
+       background:rgba(6,10,16,.6);color:#dbe6f2;border:1px solid rgba(255,255,255,.10);
+       white-space:pre;text-shadow:0 1px 2px rgba(0,0,0,.8);pointer-events:none}
+  #hud b{color:#ffd166}#hud .g{color:#7fe3a1}#hud .r{color:#ff8a7a}
+</style>
+</head><body><div id="app"></div><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { boot } from './common.js';
+import { clamp, lerp, damp, rng, TAU } from '../src/core/mathx.js';
+import { createItemSystem, fallbackTrack, ITEMS, ITEM_IDS } from '../src/game/items.js';
+import { createItemMesh, createItemBoxMesh, makeHummusSlick, makeKhamsin, createPickupBurst, makeTrail, ITEM_VISUALS } from '../src/game/itemMeshes.js';
+
+const hudEl = document.getElementById('hud');
+const views = {};                        // filled in below; boot() keeps this reference
+const STEP = 1 / 60;                     // scenarios are stepped at a fixed rate so shots repeat
+
+let ctx = null, track = null, items = null, karts = [], scene = null, engine = null;
+let hudScene = null, hudCam = null, hudHolder = null, hudFace = null, hero = null;
+let current = null, simTime = 0, pending = [];
+let itemsAdopt = null, adoptTimer = 0;
+
+/* Other agents are writing track.js right now: use it if it is ready, else our own loop. */
+async function loadTrack(world) {
+  try {
+    const path = '../src/track/' + 'track.js';        // opaque to the bundler: the file may not exist yet
+    const m = await import(/* @vite-ignore */ path);
+    const t = m.buildTrack?.(world, { laps: 3 });
+    if (t && typeof t.sample === 'function' && typeof t.nearest === 'function' && t.length > 1) {
+      console.log('[items] using src/track/track.js');
+      return t;
+    }
+  } catch (e) { console.warn('[items] track.js unavailable:', e.message); }
+  return fallbackTrack(world, { seed: 1337, radius: 205, width: 12.5 });
+}
+
+/* A plain road ribbon so the items have tarmac to sit on until trackMesh.js lands. */
+function roadRibbon(trk, world) {
+  const N = 520, pos = [], uv = [], idx = [];
+  for (let i = 0; i <= N; i++) {
+    const s = i / N * trk.length, sm = trk.sample(s);
+    const hw = (sm.width ?? 12) * 0.5;
+    for (const k of [-1, 1]) {
+      const x = sm.pos.x + sm.normal.x * hw * k, z = sm.pos.z + sm.normal.z * hw * k;
+      const ty = (world?.heightAt?.(x, z) ?? sm.pos.y);
+      pos.push(x, Math.max(sm.pos.y, ty) + 0.12, z);
+      uv.push(k * 0.5 + 0.5, s * 0.12);
+    }
+    if (i < N) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  const nrm = new Float32Array((pos.length / 3) * 3);
+  for (let i = 0; i < nrm.length; i += 3) nrm[i + 1] = 1;      // the ribbon is flat enough
+  g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+  const c = cv.getContext('2d'); const r = rng(2);
+  c.fillStyle = '#9a999f'; c.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 5200; i++) {
+    c.fillStyle = `rgba(${150 + r() * 90 | 0},${148 + r() * 84 | 0},${148 + r() * 84 | 0},${r() * 0.30})`;
+    c.fillRect(r() * 256, r() * 256, 1 + r() * 2.4, 1 + r() * 2.4);
+  }
+  c.fillStyle = '#f2eee0'; c.fillRect(0, 0, 11, 256); c.fillRect(245, 0, 11, 256);
+  c.fillStyle = 'rgba(242,238,224,.85)';
+  for (let y = 0; y < 256; y += 42) c.fillRect(124, y, 8, 24);        // dashed centre line
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    map: t, roughness: 0.94, metalness: 0.0, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
+  mesh.receiveShadow = true;
+  mesh.name = 'road-ribbon';
+  return mesh;
+}
+
+/* ------------------------------------------------------------------- karts */
+async function makeKarts(n) {
+  let createRacer = null;
+  const rosterPath = '../src/characters/' + 'roster.js';
+  try { ({ createRacer } = await import(/* @vite-ignore */ rosterPath)); }
+  catch (e) { console.warn('[items] roster unavailable:', e.message); }
+  const ids = ['mitzi', 'shuki', 'yaffa', 'kobi', 'layla', 'shelly'];
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    let visual = null;
+    try { visual = createRacer?.(ids[i % ids.length], { detail: 'med', shadows: true }); } catch (e) { visual = null; }
+    if (!visual) {                                   // plain stand-in kart
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.5, 1.9),
+        new THREE.MeshStandardMaterial({ color: [0xef8b1f, 0x2f6fd0, 0x7cad4e, 0xc0341c, 0xdfe4f4, 0xe8bf5a][i % 6], roughness: 0.4 }));
+      body.position.y = 0.45; body.castShadow = true; g.add(body);
+      visual = { object3D: g, update() {} };
+    }
+    scene.add(visual.object3D);
+    out.push({
+      id: 'kart' + i, visual, index: i,
+      pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 }, yaw: 0,
+      s: 0, lateral: 0, speed: 20, targetLat: 0, drive: 1, spinVis: 0,
+    });
+  }
+  return out;
+}
+
+function placeKart(k, s, lateral, speed = 20) {
+  k.s = ((s % track.length) + track.length) % track.length;
+  k.lateral = lateral; k.targetLat = lateral; k.speed = speed; k.spinVis = 0;
+  syncKart(k, 0);
+}
+
+function syncKart(k, dt) {
+  const sm = track.sample(k.s);
+  k.pos.x = sm.pos.x + sm.normal.x * k.lateral;
+  k.pos.y = sm.pos.y + 0.02;
+  k.pos.z = sm.pos.z + sm.normal.z * k.lateral;
+  k.yaw = Math.atan2(sm.tangent.x, sm.tangent.z);
+  k.vel.x = sm.tangent.x * k.speed; k.vel.z = sm.tangent.z * k.speed;
+  const fx = items?.effects(k);
+  const o = k.visual.object3D;
+  const spun = fx && (fx.spin > 0 || fx.slip > 0 || fx.stall > 0);
+  k.spinVis = spun ? k.spinVis + dt * (fx.stall > 0 ? 7 : 13) : damp(k.spinVis, 0, 6, dt);
+  o.position.set(k.pos.x, k.pos.y + (fx?.glide > 0 ? 1.1 : 0), k.pos.z);
+  o.rotation.set(0, k.yaw + k.spinVis, spun ? Math.sin(k.spinVis * 0.7) * 0.12 : 0);
+  o.scale.setScalar(fx?.scale ?? 1);
+  try {
+    k.visual.update?.(Math.max(dt, 1 / 240), {
+      speed: k.speed, steer: clamp((k.targetLat - k.lateral) * 0.3, -1, 1), drift: 0,
+      airborne: (fx?.glide ?? 0) > 0, boosting: (fx?.boostTime ?? 0) > 0, hit: spun ? 1 : 0, place: k.index + 1,
+    });
+  } catch (e) { /* the characters agent is mid-rewrite */ }
+}
+
+function stepKarts(dt) {
+  for (const k of karts) {
+    const mul = items.speedMultiplier(k);
+    k.speed += (24 * k.drive * mul - k.speed) * clamp(6 * dt, 0, 1);
+    k.s += k.speed * dt;
+    k.lateral = damp(k.lateral, k.targetLat, 2.5, dt);
+    syncKart(k, dt);
+  }
+}
+
+/* --------------------------------------------------------------- scenarios */
+/* Each scene rewinds the world and replays a fixed number of 1/60 s steps, so the moment in
+   the screenshot is identical every run no matter how slow the software renderer is. */
+/* Cameras are evaluated AFTER the scenario has been replayed, so they frame where the karts
+   actually ended up rather than where they started. */
+const camAt = (k, back, side, up, aheadLook = 3, fov = 38) => {
+  const f = { x: Math.sin(k.yaw), z: Math.cos(k.yaw) };
+  const r = { x: f.z, z: -f.x };
+  return {
+    pos: [k.pos.x - f.x * back + r.x * side, k.pos.y + up, k.pos.z - f.z * back + r.z * side],
+    look: [k.pos.x + f.x * aheadLook, k.pos.y + 0.8, k.pos.z + f.z * aheadLook],
+    fov,
+  };
+};
+
+const SCENES = {
+  boxes: {
+    frames: 76, fov: 40,
+    setup() {
+      const b = items.boxes[3];
+      karts.forEach((k, i) => placeKart(k, b.s - 26 - i * 6.5, [-3.2, 0, 3.2, -1.6, 1.6][i], 21));
+      hero = karts[0];
+    },
+    camera() { return camAt(hero, 8.5, 0.6, 3.0, 14, 40); },
+  },
+  pickup: {
+    frames: 122, fov: 36,
+    setup() {
+      const b = items.boxes[3];
+      karts.forEach((k, i) => placeKart(k, b.s - 39.6 - i * 10, [-3.2, 3.2, 0, -1.6, 1.6][i], 21));
+      hero = karts[0];
+    },
+    camera() { return camAt(hero, 8.0, 5.0, 3.0, 2, 36); },
+  },
+  lineup: { frames: 30, fov: 34, display: true },
+  chaos: {
+    frames: 150, fov: 44,
+    setup() {
+      const s0 = items.boxes[6].s + 40;
+      karts.forEach((k, i) => placeKart(k, s0 + [0, -14, -26, -40, -54][i], [-1.0, 2.6, -2.8, 1.4, -3.4][i], 22));
+      hero = karts[0];
+      items.setItem(karts[0], 'pan');
+      items.setItem(karts[3], 'hummus');
+      items.setItem(karts[4], 'khamsin');
+      items.setItem(karts[1], 'pardes');
+      items.setItem(karts[2], 'sabra');
+      at(0.05, () => items.useItem(karts[0], false));    // the leader hangs its pan out behind
+      at(2.15, () => items.useItem(karts[3], true));     // hummus goes down on the racing line
+      at(0.70, () => items.useItem(karts[1], true));     // crate bursts into rolling oranges
+      at(1.65, () => items.useItem(karts[4], false));    // khamsin devil sets off up the road
+      at(1.95, () => items.useItem(karts[2], false));    // sabra launches at the kart ahead
+    },
+    camera() { return camAt(karts[4], 12, 5.5, 5.6, 34, 44); },
+  },
+  shield: {
+    frames: 96, fov: 38,
+    setup() {
+      const s0 = items.boxes[9].s;
+      karts.forEach((k, i) => placeKart(k, s0 + [0, 16, 26, 8, 34][i], [0, 3.4, -3.6, -3.2, 1.8][i], 19));
+      hero = karts[0];
+      items.setItem(karts[0], 'jaffa3');
+      items.setItem(karts[1], 'pan');
+      items.setItem(karts[2], 'hamsa');
+      items.setItem(karts[3], 'avatiach');
+      at(0.05, () => items.useItem(karts[1], false));
+      at(0.30, () => items.useItem(karts[2], false));
+      at(0.50, () => items.useItem(karts[3], false));
+    },
+    camera() { return camAt(hero, 7.6, 1.4, 2.6, 15, 38); },
+  },
+  catnap: {
+    frames: 215, fov: 42,
+    setup() {
+      const s0 = items.boxes[1].s + 30;
+      karts.forEach((k, i) => placeKart(k, s0 - i * 22, [0.5, -2.6, 2.4, -1.4, 3.0][i], 22));
+      hero = karts[0];
+      items.setItem(karts[4], 'catnap');
+      at(0.05, () => items.useItem(karts[4], false));
+    },
+    camera() { return camAt(hero, 11.5, 6.8, 4.8, 1, 42); },
+  },
+};
+
+function at(t, fn) { pending.push({ at: t, fn }); }
+
+/* ------------------------------------------------------------ item display */
+let display = null;
+function buildDisplay() {
+  const g = new THREE.Group();
+  const ids = ITEM_IDS;
+  const cols = 5, gap = 1.55;
+  ids.forEach((id, i) => {
+    const row = Math.floor(i / cols), col = i % cols, inRow = Math.min(cols, ids.length - row * cols);
+    const holder = new THREE.Group();
+    const m = iconOf(id, 0.95);
+    m.position.y = 0.72;
+    holder.add(m);
+    // plinth
+    const plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.60, 0.14, 20),
+      new THREE.MeshStandardMaterial({ color: 0x1a2230, roughness: 0.4, metalness: 0.3 }));
+    plinth.receiveShadow = true;
+    holder.add(plinth);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.54, 0.02, 6, 26),
+      new THREE.MeshStandardMaterial({ color: ITEMS[id].color, emissive: ITEMS[id].color, emissiveIntensity: 0.8, roughness: 0.3 }));
+    ring.rotation.x = -Math.PI / 2; ring.position.y = 0.08;
+    holder.add(ring);
+    holder.position.set((col - (inRow - 1) / 2) * gap, -row * 1.62, 0);
+    holder.userData = { id, m, phase: i * 0.7 };
+    g.add(holder);
+  });
+  return g;
+}
+
+/* ------------------------------------------------------------------ HUD 3D */
+function buildHud() {
+  hudScene = new THREE.Scene();
+  hudCam = new THREE.PerspectiveCamera(30, 1, 0.1, 40);
+  hudCam.position.set(0, 0.15, 4.6);
+  hudCam.lookAt(0, 0, 0);
+  hudScene.add(new THREE.HemisphereLight(0xdfe8ff, 0x30302a, 2.1));
+  const key = new THREE.DirectionalLight(0xfff2d8, 2.6);
+  key.position.set(2, 3, 4); hudScene.add(key);
+  const rim = new THREE.DirectionalLight(0x9fd0ff, 1.2);
+  rim.position.set(-3, 1, -2); hudScene.add(rim);
+  // panel
+  const panel = new THREE.Mesh(new THREE.PlaneGeometry(2.9, 2.9),
+    new THREE.MeshBasicMaterial({ color: 0x0a1220, transparent: true, opacity: 0.55 }));
+  panel.position.z = -1.2; hudScene.add(panel);
+  const frame = new THREE.Mesh(new THREE.TorusGeometry(1.95, 0.075, 8, 4),
+    new THREE.MeshStandardMaterial({ color: 0xf0c766, metalness: 0.9, roughness: 0.25, emissive: 0x4a3505, emissiveIntensity: 0.6 }));
+  frame.rotation.z = Math.PI / 4; frame.position.z = -1.05;
+  hudScene.add(frame);
+  hudHolder = new THREE.Group();
+  hudScene.add(hudHolder);
+  hudFace = null;
+  for (const id of ITEM_IDS) {          // pre-build: the roulette must not compile meshes mid-frame
+    const icon = iconOf(id);
+    icon.visible = false;
+    hudIcons.set(id, icon);
+    hudHolder.add(icon);
+  }
+}
+
+/** Normalise an item mesh into a 1.5-unit icon, centred, with its authored icon tilt. */
+function iconOf(id, span = 1.5) {
+  const holder = new THREE.Group();
+  const m = createItemMesh(id);
+  const box = new THREE.Box3().setFromObject(m);
+  const size = box.getSize(new THREE.Vector3());
+  const k = span / Math.max(size.x, size.y, size.z, 0.001);
+  m.scale.multiplyScalar(k);
+  m.position.sub(box.getCenter(new THREE.Vector3()).multiplyScalar(k));
+  holder.add(m);
+  holder.rotation.x = m.userData?.iconTilt ?? 0;
+  holder.userData = { id, inner: m, yaw: m.userData?.iconYaw ?? -0.55 };
+  m.rotation.y = holder.userData.yaw;
+  return holder;
+}
+
+const hudIcons = new Map();
+function setHudItem(id) {
+  if (hudFace === id) return;
+  hudFace = id;
+  for (const [k, o] of hudIcons) o.visible = (k === id);
+  if (!id || hudIcons.has(id)) return;
+  const icon = iconOf(id);
+  hudIcons.set(id, icon);
+  hudHolder.add(icon);
+}
+
+function renderHud() {
+  if (!hudScene || !hero) return;
+  const r = engine.renderer, size = new THREE.Vector2();
+  r.getSize(size);
+  const w = Math.round(Math.min(size.x, size.y) * 0.24), pad = Math.round(size.x * 0.016);
+  const st = items.hud(hero);
+  setHudItem(st.spinning ? st.rouletteFace : st.item);
+  hudHolder.rotation.y = Math.sin(simTime * 1.6) * 0.45;
+  hudHolder.rotation.x = Math.sin(simTime * 2.3) * 0.10;
+  hudHolder.scale.setScalar(st.spinning ? 0.86 : 1);
+  r.autoClear = false;
+  r.setScissorTest(true);
+  r.setViewport(size.x - w - pad, size.y - w - pad, w, w);
+  r.setScissor(size.x - w - pad, size.y - w - pad, w, w);
+  r.clearDepth();
+  r.render(hudScene, hudCam);
+  r.setScissorTest(false);
+  r.setViewport(0, 0, size.x, size.y);
+  r.autoClear = true;
+}
+
+function warmShaders() {
+  const g = new THREE.Group();
+  const cam = engine.camera;
+  g.position.set(cam.position.x, cam.position.y - 600, cam.position.z);
+  for (const id of ITEM_IDS) g.add(createItemMesh(id));
+  g.add(makeHummusSlick(1.7, 3));
+  g.add(makeKhamsin(3.6, 1));
+  g.add(createItemBoxMesh({ size: 1.5 }));
+  const burst = createPickupBurst({ seed: 5 });
+  burst.object3D.visible = true;
+  burst.play({ x: g.position.x, y: g.position.y, z: g.position.z }, 0xffd27a);
+  burst.update(0.01);
+  g.add(burst.object3D);
+  const tr = makeTrail(0xff9a3c);
+  tr.push({ x: g.position.x, y: g.position.y, z: g.position.z });
+  tr.push({ x: g.position.x + 1, y: g.position.y, z: g.position.z });
+  tr.update(0.01);
+  g.add(tr.object3D);
+  scene.add(g);
+  try {
+    engine.renderer.compile(scene, engine.camera);
+    if (hudScene) engine.renderer.compile(hudScene, hudCam);
+  } catch (e) { console.warn('[items] shader warmup failed:', e.message); }
+  scene.remove(g);
+  g.traverse(o => { if (o.isMesh) o.geometry?.dispose?.(); });
+}
+
+/* ---------------------------------------------------------------- stepping */
+function runEvents(t) {
+  while (pending.length && pending[0].at <= t) pending.shift().fn();
+}
+function seek(name) {
+  const sc = SCENES[name];
+  current = name;
+  pending = [];
+  simTime = 0;
+  items.reset();
+  if (display) display.visible = !!sc.display;
+  for (const k of karts) { k.drive = 1; k.visual.object3D.visible = !sc.display; }
+  if (sc.setup) sc.setup();
+  pending.sort((a, b) => a.at - b.at);
+  for (let i = 0; i < (sc.frames || 60); i++) {
+    runEvents(simTime);
+    if (!sc.display) stepKarts(STEP);
+    items.update(STEP, sc.display ? [] : karts);
+    simTime += STEP;
+  }
+  itemsAdopt?.();
+  updateHudText();
+}
+
+function updateHudText() {
+  if (!hero || !items) { hudEl.textContent = 'items preview'; return; }
+  const st = items.hud(hero);
+  const fx = items.effects(hero) || {};
+  const lines = [
+    `view  <b>${current}</b>   t=${simTime.toFixed(2)}s`,
+    `slot  ${st.spinning ? 'ROULETTE ' + (ITEMS[st.rouletteFace]?.name ?? '') : (st.item ? ITEMS[st.item].name + (st.count > 1 ? ' x' + st.count : '') : '(empty)')}`,
+    `boxes ${items.boxes.filter(b => b.active).length}/${items.boxes.length} armed   projectiles ${items.projectiles.length}   hazards ${items.hazards.length}`,
+    `hero  place ${st.place}  ${fx.spin > 0 ? '<span class="r">SPUN</span> ' : ''}${fx.invincible > 0 ? '<span class="g">HAMSA</span> ' : ''}${fx.grow > 0 ? '<span class="g">MEGA</span> ' : ''}${fx.blind > 0 ? '<span class="r">KHAMSIN</span> ' : ''}${st.shield ? 'SHIELD ' : ''}`,
+  ];
+  hudEl.innerHTML = lines.join('\n');
+}
+
+/* -------------------------------------------------------------------- boot */
+const game = await boot({
+  name: 'items',
+  views,
+  modules: async (c) => {
+    ctx = c; scene = c.scene; engine = c.engine;
+    track = await loadTrack(c.world);
+    scene.add(roadRibbon(track, c.world));
+    items = createItemSystem(c.world, track, { scene, seed: 90210 });
+    karts = await makeKarts(5);
+    hero = karts[0];
+    buildHud();
+
+    // the item museum, floating over the tarmac near the start line
+    display = buildDisplay();
+    const sm = track.sample(0);
+    display.position.set(sm.pos.x, sm.pos.y + 3.7, sm.pos.z);
+    display.rotation.y = Math.atan2(sm.tangent.x, sm.tangent.z) + Math.PI;
+    display.visible = false;
+    scene.add(display);
+
+    // make sure something lights the scene even if sky.js is mid-rewrite
+    let lit = false;
+    scene.traverse(o => { if (o.isLight) lit = true; });
+    if (!lit) {
+      scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x4a4436, 1.4));
+      const d = new THREE.DirectionalLight(0xfff0d6, 2.4);
+      d.position.set(-160, 220, 120); d.castShadow = true;
+      scene.add(d);
+    }
+
+    // camera views, derived from the real track geometry
+    for (const [name, sc] of Object.entries(SCENES)) {
+      if (sc.display) {
+        const p = display.position, f = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), display.rotation.y);
+        views[name] = { pos: [p.x + f.x * 11.0, p.y - 1.0, p.z + f.z * 11.0], look: [p.x, p.y - 1.3, p.z], fov: sc.fov };
+      } else {
+        const v = sc.camera();
+        views[name] = v;
+      }
+    }
+
+    engine.add({
+      update(dt) {
+        // creep forward slowly so the screenshot stays on the scripted beat
+        const d = 1 / 240;
+        runEvents(simTime + d);
+        if (!SCENES[current]?.display) stepKarts(d);
+        items.update(d, SCENES[current]?.display ? [] : karts);
+        simTime += d;
+        adoptTimer += d;
+        if (itemsAdopt && adoptTimer > 0.25) { adoptTimer = 0; itemsAdopt(); }
+        if (display?.visible) {
+          for (const h of display.children) {
+            const u = h.userData;
+            u.m.rotation.y = (u.m.userData.yaw ?? -0.55) + Math.sin(simTime * 6 + u.phase) * 0.12;
+            u.m.position.y = 0.78 + Math.sin(simTime * 30 + u.phase) * 0.05;
+          }
+        }
+        updateHudText();
+      },
+    });
+
+    // Adopt every material we just created into the lighting rig (CSM sun + aerial fog).
+    // Without this the road and the items are lit by ambient only and read almost black.
+    const adopt = () => { try { c.sky?.lighting?.scan?.(); } catch (e) { /* sky mid-rewrite */ } };
+    adopt();
+    itemsAdopt = adopt;
+
+    // The review harness renders under SwiftShader: 3 x 2048 shadow cascades cost more per
+    // frame than everything else combined, and this page only needs them to read as shadows.
+    scene.traverse(o => {
+      if (o.isDirectionalLight && o.shadow) {
+        o.shadow.mapSize.set(1024, 1024);
+        o.shadow.map?.dispose?.();
+        o.shadow.map = null;
+      }
+    });
+
+    // Warm every shader before `ready` flips: under SwiftShader a first-use compile of the
+    // iridescent box or a projectile costs tens of seconds, and it would land mid-screenshot.
+    warmShaders();
+
+    const origRender = engine.render.bind(engine);
+    engine.render = () => { origRender(); renderHud(); };
+  },
+});
+
+// wrap setView so every screenshot replays its scenario from a clean slate
+const baseSetView = game.setView.bind(game);
+game.setView = (n) => {
+  if (SCENES[n]) {
+    seek(n);
+    const sc = SCENES[n];
+    if (!sc.display) game.views[n] = sc.camera();
+  }
+  baseSetView(n);
+};
+if (game.ready) game.setView(Object.keys(views)[0]);
+</script></body></html>

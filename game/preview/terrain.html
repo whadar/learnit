@@ -1,0 +1,113 @@
+<!doctype html><html><head><meta charset="utf-8"><title>terrain preview</title>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden}#app{position:fixed;inset:0}canvas{display:block;width:100%;height:100%}</style>
+</head><body><div id="app"></div>
+<script>
+// Neutralise Vite's HMR socket: parallel agents save shared modules constantly, and a
+// full-reload halfway through a 5-view software render throws the whole shoot away.
+(function () {
+  const OW = window.WebSocket;
+  const dead = () => ({ readyState: 3, send() {}, close() {}, addEventListener() {}, removeEventListener() {} });
+  window.WebSocket = function (url, protocols) {
+    const p = Array.isArray(protocols) ? protocols.join() : String(protocols || '');
+    if (p.includes('vite-hmr')) return dead();
+    return new OW(url, protocols);
+  };
+  window.WebSocket.prototype = OW.prototype;
+})();
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  import { boot } from './common.js';
+  import { createTerrain } from '../src/world/terrain.js';
+
+  const views = {};
+
+  boot({
+    name: 'terrain',
+    sky: false,        // built here so a neighbour's in-flight sky edit cannot block this page
+    terrain: false,
+    modules: async (ctx) => {
+      const { engine, world } = ctx;
+      const scene = engine.scene;
+
+      // --- atmosphere ---------------------------------------------------------------------
+      // Deliberately a local rig: the ground has to be judged under a known exposure, and it
+      // keeps this page from reloading every time a neighbouring module is saved.
+      scene.background = new THREE.Color(0xa8c2d8);
+      scene.fog = new THREE.FogExp2(0xbfc9c8, 0.00042);
+      const sunDir = new THREE.Vector3().setFromSphericalCoords(
+        1, THREE.MathUtils.degToRad(90 - 42), THREE.MathUtils.degToRad(132));
+      const sun = new THREE.DirectionalLight(0xfff1d8, 2.6);
+      sun.position.copy(sunDir).multiplyScalar(1400);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(1024, 1024);
+      sun.shadow.normalBias = 0.05;
+      sun.shadow.bias = -0.00006;
+      const sc = sun.shadow.camera;
+      sc.left = -120; sc.right = 120; sc.top = 120; sc.bottom = -120; sc.near = 1; sc.far = 3000;
+      sc.updateProjectionMatrix();
+      scene.add(sun, sun.target);
+      scene.add(new THREE.HemisphereLight(0x9dc2ec, 0x9c8760, 0.62));
+      engine.renderer.toneMappingExposure = 0.92;
+      ctx.sun = sun;
+
+      // simple gradient backdrop so the horizon is readable without the full sky system
+      {
+        const cv = document.createElement('canvas'); cv.width = 4; cv.height = 256;
+        const g = cv.getContext('2d').createLinearGradient(0, 0, 0, 256);
+        g.addColorStop(0.0, '#5f92c8'); g.addColorStop(0.55, '#9fbcd6'); g.addColorStop(1.0, '#cdd3cd');
+        const c2 = cv.getContext('2d'); c2.fillStyle = g; c2.fillRect(0, 0, 4, 256);
+        const tex = new THREE.CanvasTexture(cv);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const dome = new THREE.Mesh(
+          new THREE.SphereGeometry(6000, 32, 16),
+          new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false }));
+        dome.renderOrder = -100;
+        scene.add(dome);
+      }
+
+      // --- the thing under review ----------------------------------------------------------
+      // ?apron=0 ?scatter=0 ?shadows=0 ?mat=plain ?tex=512 bisect cost while profiling.
+      const Q = new URLSearchParams(location.search);
+      if (Q.get('shadows') === '0') engine.renderer.shadowMap.enabled = false;
+      const t0 = performance.now();
+      const terrain = ctx.terrain = createTerrain(engine, world, {
+        apron: Q.get('apron') !== '0',
+        scatter: Q.get('scatter') !== '0',
+        texSize: Q.has('tex') ? +Q.get('tex') : undefined,
+      });
+      if (Q.get('mat') === 'plain') {
+        const plain = new THREE.MeshStandardMaterial({ color: 0xa89a75, roughness: 0.95 });
+        terrain.group.traverse(o => { if (o.isMesh && o.material === terrain.material) o.material = plain; });
+      }
+      console.log('[terrain] built in', (performance.now() - t0).toFixed(0), 'ms', JSON.stringify(terrain.stats?.() || {}));
+      window.__terrain = terrain;
+
+      // keep the shadow box near whatever we are looking at (the direction never changes)
+      engine.add({
+        update() {
+          const p = engine.camera.position;
+          sun.target.position.set(p.x, world.heightAt(p.x, p.z), p.z);
+          sun.position.copy(sun.target.position).addScaledVector(sunDir, 1400);
+          sun.target.updateMatrixWorld();
+          sun.updateMatrixWorld();
+        },
+      });
+
+      const h = (x, z) => world.heightAt(x, z);
+      Object.assign(views, {
+        // wide establishing shot across the whole moshav bowl
+        wide:   { pos: [-620, h(-620, 620) + 300, 620], look: [120, h(120, 120), 120], fov: 52 },
+        // eye level at kart height on broken, stony ground
+        eye:    { pos: [128, h(128, 13) + 1.6, 13], look: [420, h(420, 240) + 12, 240], fov: 62 },
+        // the terraced hillside: boulders, ledges, rock on the steeps
+        slope:  { pos: [300, h(300, 690) + 26, 690], look: [455, h(455, 555) + 4, 555], fov: 48 },
+        // stubble and ploughed fields meeting each other, low sun-lit angle
+        fields: { pos: [398, h(398, 304) + 1.7, 304], look: [660, h(660, 180) + 14, 180], fov: 60 },
+        // knee-high macro shot: detail maps, terrace stones, contact shadows
+        macro:  { pos: [432, h(432, 596) + 2.4, 596], look: [430, h(430, 566) - 1.5, 566], fov: 55 },
+      });
+    },
+    views,
+  });
+</script></body></html>

@@ -1,0 +1,33 @@
+import { chromium } from 'playwright';
+const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const url = (process.env.SHOOT_URL || 'http://127.0.0.1:4173/') + '?review=1&audio=0&q=high';
+const OUT='/tmp/claude-0/-home-user-learnit/8f6205af-22db-552b-aca3-2d3962bb4285/scratchpad/';
+const browser = await chromium.launch({ executablePath: CHROME,
+  args: ['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--no-sandbox','--disable-dev-shm-usage','--force-device-scale-factor=1'] });
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+page.setDefaultTimeout(300000);
+page.on('pageerror', e => console.log('[pageerror]', e.message));
+await page.goto(url, { waitUntil: 'load', timeout: 180000 });
+await page.waitForFunction(() => window.__game && (window.__game.ready || window.__game.error), null, { timeout: 600000 });
+const settle = n => page.evaluate(k => new Promise(r => { let i=0; const s=()=>(++i>=k?r():requestAnimationFrame(s)); requestAnimationFrame(s); }), n);
+await page.evaluate(() => window.__game.setView('gridStart'));
+await settle(10);
+console.log(await page.evaluate(() => {
+  const g = window.__game, E = g.engine, S = E.scene;
+  let src = null;
+  S.traverse(o => { if (!src && o.isMesh && o.castShadow && o.geometry && !o.isInstancedMesh && o.geometry.attributes.position.count < 5000 && /building|house|roof/i.test(o.name||'')) src = o; });
+  if (!src) S.traverse(o => { if (!src && o.isMesh && o.castShadow && !o.isInstancedMesh) src = o; });
+  const v = g.race.state.player?.vehicle || g.race.vehicles[0]; const p = v.position||v.pos;
+  const clone = new src.constructor(src.geometry, src.material);
+  clone.name = 'DBG-BLOCKER';
+  clone.castShadow = true; clone.receiveShadow = false; clone.frustumCulled = false;
+  clone.scale.setScalar(12);
+  clone.position.set(p.x - 6, p.y + 12, p.z - 6);
+  clone.updateMatrixWorld(true);
+  S.add(clone);
+  E.renderer.shadowMap.needsUpdate = true;
+  return 'blocker from ' + (src.name||'(unnamed)') + ' at ' + [clone.position.x,clone.position.y,clone.position.z].map(q=>q.toFixed(1));
+}));
+await settle(12);
+await page.screenshot({ path: OUT+'dbg_blocker.png', timeout: 300000 });
+await browser.close();
